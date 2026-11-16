@@ -1,0 +1,1158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>挂载自愈</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#f4f5f7; --card:#ffffff; --fg:#15171b; --muted:#6b7280;
+  --line:#e6e8ec; --line2:#f3f4f6;
+  --accent:#5159d8; --on-accent:#ffffff;
+  --good:#15803d; --good-bg:#e8f6ee;
+  --warn:#b45309; --warn-bg:#fdf3e4;
+  --bad:#b91c1c;  --bad-bg:#fdecec;
+  --info:#1d4ed8; --info-bg:#e9efff;
+  --radius:14px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0d0f12; --card:#16191e; --fg:#e9ebee; --muted:#9aa2ad;
+    --line:#272b32; --line2:#1d2126;
+    --accent:#7c83f5; --on-accent:#0d0f12;
+    --good:#4ade80; --good-bg:#12251a;
+    --warn:#fbbf24; --warn-bg:#2a2010;
+    --bad:#f87171;  --bad-bg:#2a1414;
+    --info:#7aa2ff; --info-bg:#141b2e;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg)}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Noto Sans SC","PingFang SC",system-ui,sans-serif;
+  font-size:14px;line-height:1.5;
+  padding:calc(14px + env(safe-area-inset-top)) 14px calc(26px + env(safe-area-inset-bottom));
+  max-width:720px;margin:0 auto;
+}
+h1,h2{margin:0;font-weight:600}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin:2px 2px 14px}
+.t1{font-size:17px;font-weight:600;letter-spacing:.2px}
+.t2{font-size:12px;color:var(--muted);margin-top:2px}
+.t2 .sep{margin:0 5px;opacity:.5}
+.title-row{min-width:0}
+.pill{
+  flex:none;display:inline-flex;align-items:center;gap:5px;
+  padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;
+  background:var(--line2);color:var(--muted);white-space:nowrap;
+}
+.pill.good{background:var(--good-bg);color:var(--good)}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.info{background:var(--info-bg);color:var(--info)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.card-head h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.6px}
+.card-head .muted,.muted{color:var(--muted)}
+.small{font-size:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.metric{background:var(--line2);border-radius:10px;padding:9px 11px;min-width:0}
+.metric .label{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metric .value{font-size:20px;font-weight:650;line-height:1.25;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metric .value.small-v{font-size:15px;font-weight:600}
+.metric.good .value{color:var(--good)}
+.metric.warn .value{color:var(--warn)}
+.metric.bad .value{color:var(--bad)}
+.kv{margin-top:10px}
+.kv .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.kv .row:last-child{border-bottom:0}
+.kv .k{color:var(--muted);font-size:12.5px;flex:none}
+.kv .v{font-size:12.5px;text-align:right;word-break:break-all;font-variant-numeric:tabular-nums}
+.banner{padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.5;margin-bottom:12px}
+.banner.info{background:var(--info-bg);color:var(--info)}
+.banner.warn{background:var(--warn-bg);color:var(--warn)}
+.banner.bad{background:var(--bad-bg);color:var(--bad)}
+.banner .b-title{font-weight:600;margin-bottom:2px}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0 10px}
+.switch-row span{font-size:14px}
+.switch-row input{position:absolute;opacity:0;pointer-events:none}
+.switch-row i{
+  flex:none;width:46px;height:27px;border-radius:999px;background:var(--line);position:relative;transition:background .18s;
+}
+.switch-row i::after{
+  content:"";position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.28);transition:transform .18s;
+}
+.switch-row input:checked + i{background:var(--accent)}
+.switch-row input:checked + i::after{transform:translateX(19px)}
+.switch-row input:disabled + i{opacity:.45}
+.field-label{display:flex;align-items:center;gap:6px;font-size:12.5px;margin:12px 0 6px;color:var(--fg)}
+.field-label .muted{margin-left:auto;font-size:11.5px}
+code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--muted);border-radius:5px;padding:1px 5px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--line2);border-radius:10px;padding:3px}
+.seg button{
+  appearance:none;border:0;background:transparent;color:var(--muted);
+  font:inherit;font-size:13px;padding:8px 0;border-radius:8px;cursor:pointer;
+}
+.seg button[aria-pressed="true"]{background:var(--card);color:var(--fg);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.seg button:disabled{opacity:.5}
+.stepper{display:grid;grid-template-columns:44px 1fr 44px;gap:8px;align-items:center}
+.stepper button{
+  appearance:none;height:40px;border:1px solid var(--line);background:transparent;color:var(--fg);
+  border-radius:10px;font-size:18px;line-height:1;cursor:pointer;
+}
+.stepper button:active{background:var(--line2)}
+.stepper input{
+  appearance:textfield;-moz-appearance:textfield;width:100%;height:40px;text-align:center;
+  border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);
+  font:inherit;font-size:15px;font-variant-numeric:tabular-nums;
+}
+.stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.stepper input.bad{border-color:var(--bad);color:var(--bad)}
+.stepper button:disabled,.stepper input:disabled{opacity:.45}
+.field-error{color:var(--bad);font-size:12px;margin-top:5px}
+.hint{background:var(--warn-bg);color:var(--warn);border-radius:9px;padding:9px 11px;font-size:12.5px;margin-bottom:10px}
+.row-actions{display:flex;gap:8px;margin-top:14px}
+.btn{
+  appearance:none;border:1px solid var(--line);background:transparent;color:var(--fg);
+  font:inherit;font-size:13.5px;height:42px;border-radius:11px;padding:0 14px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+.btn.ghost{background:transparent}
+.btn.tiny{height:30px;font-size:12.5px;padding:0 10px;border-radius:8px}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn[disabled]{opacity:.42;cursor:default;transform:none}
+.btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.result{margin-top:12px;background:var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px}
+.result.good{background:var(--good-bg);color:var(--good)}
+.result.warn{background:var(--warn-bg);color:var(--warn)}
+.result.bad{background:var(--bad-bg);color:var(--bad)}
+.result .r-title{font-weight:600;margin-bottom:3px}
+.result .r-body{color:var(--fg);opacity:.86;white-space:pre-wrap;word-break:break-word;margin-top:3px}
+.tbl{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+.tbl th{text-align:left;font-size:11.5px;font-weight:500;color:var(--muted);padding:8px 0 6px;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .app{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.tbl .st{width:74px;text-align:right}
+.chip{display:inline-block;font-size:11px;line-height:1.6;padding:1px 7px;border-radius:999px;background:var(--line2);color:var(--muted);margin:2px 4px 2px 0}
+.chip.ok{background:var(--good-bg);color:var(--good)}
+.chip.bad{background:var(--bad-bg);color:var(--bad)}
+.chip.na{background:var(--line2);color:var(--muted)}
+.st.done{color:var(--good);font-weight:600}
+.st.miss{color:var(--bad);font-weight:600}
+.st.off{color:var(--muted)}
+pre{
+  margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-all;
+  background:var(--line2);border-radius:10px;padding:10px;max-height:300px;overflow:auto;
+}
+details.card summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);list-style:none}
+details.card summary::-webkit-details-marker{display:none}
+details.card[open] summary{margin-bottom:8px}
+.empty{color:var(--muted);font-size:12.5px;padding:10px 0}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <div class="t1">存储空间隔离 · 挂载自愈</div>
+    <div class="t2"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></div>
+  </div>
+  <span class="pill" id="statePill">读取中</span>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<section class="card">
+  <div class="card-head"><h2>状态</h2><span class="muted small" id="stamp">—</span></div>
+  <div class="grid2" id="metrics"></div>
+  <div class="kv" id="kv"></div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>配置</h2><span class="muted small">config.conf</span></div>
+  <div id="cfgHint" class="hint" hidden></div>
+  <label class="switch-row">
+    <span>启用挂载自愈</span>
+    <input type="checkbox" id="cfgEnabled"><i></i>
+  </label>
+  <div class="field-label">模式偏好 <code>MODE</code></div>
+  <div class="seg" id="cfgMode">
+    <button type="button" data-mode="auto">自动</button>
+    <button type="button" data-mode="event">事件</button>
+    <button type="button" data-mode="poll">轮询</button>
+  </div>
+  <div id="cfgPollGroup" hidden>
+    <div class="field-label">轮询间隔 <code>POLL_INTERVAL</code><span class="muted">10–600 秒</span></div>
+    <div class="stepper">
+      <button type="button" data-step="-1" data-target="cfgInterval">−</button>
+      <input id="cfgInterval" type="number" min="10" max="600" step="1" inputmode="numeric" disabled>
+      <button type="button" data-step="1" data-target="cfgInterval">+</button>
+    </div>
+    <div class="field-error" id="cfgIntervalErr" hidden>轮询间隔需为 10–600 之间的整数</div>
+  </div>
+  <div class="field-label">最小进程年龄 <code>MIN_AGE</code><span class="muted">5–120 秒</span></div>
+  <div class="stepper">
+    <button type="button" data-step="-1" data-target="cfgMinAge">−</button>
+    <input id="cfgMinAge" type="number" min="5" max="120" step="1" inputmode="numeric" disabled>
+    <button type="button" data-step="1" data-target="cfgMinAge">+</button>
+  </div>
+  <div class="field-error" id="cfgMinAgeErr" hidden>最小进程年龄需为 5–120 之间的整数</div>
+  <div class="row-actions" id="cfgActions" hidden>
+    <button class="btn primary" id="cfgSave" style="flex:1">保存并重启守护</button>
+    <button class="btn ghost" id="cfgDiscard">撤销</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>操作</h2><span class="muted small" id="opStamp"></span></div>
+  <div class="btn-grid">
+    <button class="btn ghost" id="btnRefresh">刷新</button>
+    <button class="btn ghost" id="btnCheck">体检</button>
+    <button class="btn primary" id="btnFix">立即修复</button>
+    <button class="btn ghost" id="btnRestart">重启守护</button>
+  </div>
+  <div id="opResult" class="result" hidden></div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>应用与可访问目录</h2><button class="btn tiny ghost" id="btnApps">读取</button></div>
+  <div class="muted small" id="appsSum">未读取</div>
+  <div id="appsBody"></div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>日志</h2><button class="btn tiny ghost" id="btnLog">重新加载</button></div>
+  <pre id="logBox">（未加载）</pre>
+  <div class="muted small" id="logStamp"></div>
+</section>
+
+<details class="card">
+  <summary>诊断</summary>
+  <div class="kv" id="diag"></div>
+</details>
+
+<script>
+/* 只读快照：守护进程定期写入 webroot/snapshot.js，没有 WebUI 桥接时也能显示状态 */
+(function(){
+  try{document.write('<script src="snapshot.js?t=' + Date.now() + '"><\/script>');}catch(e){}
+})();
+</script>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     常量
+     ============================================================ */
+  var D = '/data/adb/si-mount-fix';
+  var P = {
+    status: D + '/status.json',
+    config: D + '/config.conf',
+    log: D + '/daemon.log',
+    mod: '/data/adb/modules/si-mount-fix'
+  };
+  P.fix = P.mod + '/scripts/fix-si-mounts.sh';
+  P.restart = P.mod + '/scripts/restart.sh';
+  P.list = P.mod + '/scripts/list-apps.sh';
+
+  var POLL_MS = 8000;
+  var CMD_TIMEOUT = 35000;
+
+  var MODE_CHIP = {
+    event: { label: '事件驱动', tone: 'good' },
+    poll: { label: '轮询降级', tone: 'warn' },
+    starting: { label: '启动中', tone: 'info' },
+    off: { label: '已停止', tone: 'bad' }
+  };
+
+  var REASON_LABEL = {
+    ok: '正常',
+    boot: '启动中',
+    disabled: '已停用',
+    tracefs_missing: '缺少 tracefs',
+    kprobe_failed: 'kprobe 注册失败',
+    selftest_failed: '事件自检失败',
+    pipe_busy: '事件通道被占用',
+    pipe_open_error: '事件通道打不开',
+    pipe_closed: '事件通道关闭',
+    trace_reset: 'trace 被重置',
+    forced_poll: '已强制轮询',
+    forced_event_unsupported: '事件模式不可用',
+    launch_failed: '启动失败',
+    blind: '事件通道异常（请重启手机）',
+    boot_wait: '开机等待 FUSE 就绪（自动重试）',
+    fuse_missing: 'FUSE 层未就绪（fail-closed）'
+  };
+
+  var STYLE_LABEL = { cb3: '回调（3 参）', cb2: '回调（2 参）', sync: '同步字符串' };
+
+  /* ============================================================
+     DOM / 工具
+     ============================================================ */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function toInt(v, d) { var n = parseInt(v, 10); return isFinite(n) ? n : (d || 0); }
+  function nowSec() { return Math.floor(Date.now() / 1000); }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function clock(ts) {
+    if (!ts) { return '—'; }
+    var d = new Date(ts * 1000);
+    return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  function rel(ts) {
+    if (!ts) { return '—'; }
+    var s = nowSec() - ts;
+    if (s < 0) { s = 0; }
+    if (s < 60) { return s + ' 秒前'; }
+    if (s < 3600) { return Math.floor(s / 60) + ' 分钟前'; }
+    if (s < 86400) { return Math.floor(s / 3600) + ' 小时前'; }
+    return Math.floor(s / 86400) + ' 天前';
+  }
+  function dur(sec) {
+    sec = Math.max(0, toInt(sec, 0));
+    if (sec < 60) { return sec + ' 秒'; }
+    if (sec < 3600) { return Math.floor(sec / 60) + ' 分'; }
+    if (sec < 86400) { return Math.floor(sec / 3600) + ' 小时 ' + Math.floor((sec % 3600) / 60) + ' 分'; }
+    return Math.floor(sec / 86400) + ' 天 ' + Math.floor((sec % 86400) / 3600) + ' 小时';
+  }
+  function setBanner(html, tone) {
+    var el = $('banner');
+    if (!html) { el.hidden = true; el.innerHTML = ''; return; }
+    el.className = 'banner ' + (tone || 'info');
+    el.innerHTML = html;
+    el.hidden = false;
+  }
+
+  /* ============================================================
+     桥接层：三种形态都要兼容
+       cb3  exec(cmd, optionsJson, callbackName)   KernelSU / WebUI-Next / KsuWebUI
+       cb2  exec(cmd, callbackName)                 KsuWebUI 旧版
+       sync exec(cmd) -> String                     WebUI-Next / KsuWebUI（会阻塞）
+     探测一次，记住能用的那种。
+     ============================================================ */
+  var BR = { obj: null, name: '', style: '', ok: false, note: '', latency: 0, error: '' };
+  var cbSeq = 0;
+
+  function normalize(res) {
+    if (typeof res === 'string') { return { errno: 0, stdout: res, stderr: '' }; }
+    if (!res || typeof res !== 'object') { return { errno: 0, stdout: '', stderr: '' }; }
+    return {
+      errno: toInt(res.errno, 0),
+      stdout: typeof res.stdout === 'string' ? res.stdout : (res.stdout == null ? '' : String(res.stdout)),
+      stderr: typeof res.stderr === 'string' ? res.stderr : (res.stderr == null ? '' : String(res.stderr))
+    };
+  }
+
+  function rawCall(style, cmd, waitMs) {
+    return new Promise(function (resolve) {
+      if (!BR.obj) { resolve(null); return; }
+      var name = '__SI_CB_' + (++cbSeq);
+      var done = false;
+      var timer = null;
+
+      function finish(v) {
+        if (done) { return; }
+        done = true;
+        if (timer) { clearTimeout(timer); }
+        try { delete window[name]; } catch (e) { /* noop */ }
+        resolve(v);
+      }
+
+      window[name] = function (errno, stdout, stderr) {
+        finish({ errno: toInt(errno, 0), stdout: String(stdout == null ? '' : stdout), stderr: String(stderr == null ? '' : stderr) });
+      };
+
+      if (waitMs > 0) {
+        timer = setTimeout(function () {
+          /* 桥接可能在 JS 线程上同步阻塞，定时器会被推迟到命令返回后才执行。
+             这里再给 5 秒宽限，避免"其实已经成功"却报超时。 */
+          timer = setTimeout(function () { finish(null); }, 5000);
+        }, waitMs);
+      }
+
+      var ret;
+      try {
+        if (style === 'cb3') { ret = BR.obj.exec(cmd, '{}', name); }
+        else if (style === 'cb2') { ret = BR.obj.exec(cmd, name); }
+        else { ret = BR.obj.exec(cmd); }
+      } catch (e) {
+        BR.error = String(e && e.message ? e.message : e);
+        finish(null);
+        return;
+      }
+
+      if (ret && typeof ret.then === 'function') {
+        ret.then(function (r) { finish(normalize(r)); }, function (e) {
+          BR.error = String(e && e.message ? e.message : e);
+          finish(null);
+        });
+        return;
+      }
+      if (typeof ret === 'string') { finish({ errno: 0, stdout: ret, stderr: '' }); return; }
+      if (ret && typeof ret === 'object') { finish(normalize(ret)); return; }
+      /* undefined：等回调 */
+    });
+  }
+
+  function candidates() {
+    var out = [];
+    var keys = ['ksu', 'ksuwebui', 'magisk'];
+    for (var i = 0; i < keys.length; i++) {
+      var o = null;
+      try { o = window[keys[i]]; } catch (e) { o = null; }
+      if (o && typeof o.exec === 'function') { out.push({ name: keys[i], obj: o }); }
+    }
+    try {
+      if (window.apatch && window.apatch.ksu && typeof window.apatch.ksu.exec === 'function') {
+        out.push({ name: 'apatch.ksu', obj: window.apatch.ksu });
+      }
+    } catch (e2) { /* noop */ }
+    return out;
+  }
+
+  function probeBridge() {
+    var list = candidates();
+    if (!list.length) { BR.note = '未检测到 WebUI 桥接'; return Promise.resolve(false); }
+
+    var styles = ['cb3', 'cb2', 'sync'];
+    var ci = 0, si = 0;
+
+    function step() {
+      if (ci >= list.length) {
+        BR.obj = null; BR.name = ''; BR.style = '';
+        BR.note = '桥接存在但没有响应';
+        return Promise.resolve(false);
+      }
+      var c = list[ci];
+      if (si >= styles.length) { ci++; si = 0; return step(); }
+      var st = styles[si++];
+      BR.obj = c.obj; BR.name = c.name; BR.style = st;
+      return rawCall(st, 'echo __SI_BRIDGE_OK__', 6000).then(function (res) {
+        if (res && String(res.stdout || '').indexOf('__SI_BRIDGE_OK__') >= 0) {
+          BR.ok = true;
+          BR.note = c.name + ' · ' + STYLE_LABEL[st];
+          return true;
+        }
+        return step();
+      });
+    }
+    return step();
+  }
+
+  function run(cmd) {
+    if (!BR.ok) { return Promise.reject(new Error('未连接桥接')); }
+    var t0 = Date.now();
+    /* 桥接的执行接口可能是同步阻塞的：先让出一帧，把"执行中"画出来再调用 */
+    return new Promise(function (resolve, reject) {
+      setTimeout(function () { resolve(); }, 50);
+    }).then(function () {
+      return rawCall(BR.style, cmd, CMD_TIMEOUT);
+    }).then(function (res) {
+      BR.latency = Date.now() - t0;
+      if (!res) { throw new Error('命令无响应（' + Math.round(CMD_TIMEOUT / 1000) + ' 秒超时）'); }
+      if (res.errno !== 0 && !String(res.stdout || '').trim()) {
+        throw new Error(String(res.stderr || '').trim() || ('退出码 ' + res.errno));
+      }
+      return res;
+    });
+  }
+
+  /* ============================================================
+     状态
+     ============================================================ */
+  var state = {
+    status: null, alive: null, fetchedAt: 0, mode: 'live',
+    config: null, snapshot: null, snapshotTs: 0,
+    apps: null, log: null, busy: false
+  };
+
+  var STATUS_CMD = [
+    'cat ' + P.status + ' 2>/dev/null',
+    'echo',
+    'echo "@@PROBE@@"',
+    'p=$(sed -n \'s/.*"pid":\\([0-9]*\\).*/\\1/p\' ' + P.status + ' 2>/dev/null | head -1)',
+    'if [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && kill -0 "$p" 2>/dev/null; then echo ALIVE; else echo DEAD; fi'
+  ].join('\n');
+
+  function parseStatusOutput(text) {
+    var cut = String(text || '').indexOf('@@PROBE@@');
+    var head = cut >= 0 ? text.slice(0, cut) : text;
+    var tail = cut >= 0 ? text.slice(cut + 9) : '';
+    var alive = null;
+    if (/ALIVE/.test(tail)) { alive = true; }
+    else if (/DEAD/.test(tail)) { alive = false; }
+    var obj = null;
+    var raw = String(head || '').trim();
+    if (raw) {
+      try { obj = JSON.parse(raw.split('\n').filter(Boolean).pop()); } catch (e) { obj = null; }
+    }
+    return { obj: obj, alive: alive, raw: raw };
+  }
+
+  function reasonText(reason) {
+    var r = String(reason || '');
+    if (REASON_LABEL[r]) { return REASON_LABEL[r]; }
+    var head = r.split('+')[0];
+    if (REASON_LABEL[head]) { return REASON_LABEL[head]; }
+    if (r.indexOf('fix_error_') === 0) { return '修复失败：' + r.slice(10); }
+    if (r.indexOf('skipped_') === 0) { return '本轮跳过：' + r.slice(8); }
+    return r || '—';
+  }
+
+  function pillFor(s, alive) {
+    if (!s) { return { label: '未运行', tone: 'bad' }; }
+    /* status.json 是上一次写的，可能留着旧状态；PID 没了就按已停止显示 */
+    if (alive === false) { return { label: '已停止', tone: 'bad' }; }
+    return MODE_CHIP[s.mode] || { label: s.mode || '未知', tone: 'info' };
+  }
+
+  function renderStatus() {
+    var s = state.status;
+    var alive = state.alive;
+    var chip = pillFor(s, alive);
+
+    var pill = $('statePill');
+    pill.textContent = chip.label;
+    pill.className = 'pill ' + chip.tone;
+
+    var m = [];
+    var since = s ? toInt(s.since, 0) : 0;
+    var lastFix = s ? toInt(s.last_fix, 0) : 0;
+
+    m.push(metric('运行时长', (s && since && alive !== false) ? dur(nowSec() - since) : '—', ''));
+    m.push(metric('守护进程', s && toInt(s.pid, 0) ? ('PID ' + toInt(s.pid, 0)) : '—', alive === false ? 'bad' : ''));
+    m.push(metric('本次修复', s ? String(toInt(s.last_fixed, 0)) + ' 条' : '—', toInt(s && s.last_fixed, 0) > 0 ? 'good' : ''));
+    m.push(metric('累计修复', s ? String(toInt(s.total_fixed, 0)) + ' 次' : '—', toInt(s && s.total_fixed, 0) > 0 ? 'good' : ''));
+    m.push(metric('隔离进程', s ? String(toInt(s.procs, 0)) + ' 个' : '—', ''));
+    m.push(metric('最后事件', s && toInt(s.last_event, 0) ? rel(toInt(s.last_event, 0)) : '—', ''));
+
+    $('metrics').innerHTML = m.join('');
+
+    var kv = [];
+    kv.push(row('状态上报', s ? esc(reasonText(s.reason)) : '—'));
+    var lastCheck = s ? toInt(s.last_check, 0) : 0;
+    if (!lastCheck) { lastCheck = lastFix; }
+    kv.push(row('最后检查', lastCheck ? rel(lastCheck) + '（' + clock(lastCheck) + '）' : '—'));
+    kv.push(row('tracefs', s && s.tracefs ? esc(s.tracefs) : '—'));
+    if (s && s.mode === 'poll') {
+      kv.push(row('轮询间隔', toInt(s.interval, 0) ? toInt(s.interval, 0) + ' 秒' : '—'));
+    }
+    kv.push(row('最小进程年龄', s && toInt(s.min_age, 0) ? toInt(s.min_age, 0) + ' 秒' : '—'));
+    kv.push(row('版本', s && s.version ? 'v' + esc(s.version) : '—'));
+    $('kv').innerHTML = kv.join('');
+
+    $('stamp').textContent = state.fetchedAt ? ('更新于 ' + clock(Math.floor(state.fetchedAt / 1000))) : '—';
+
+    if (s && s.version) { $('ver').textContent = 'v' + s.version; }
+    else if (state.snapshot && state.snapshot.version) { $('ver').textContent = 'v' + state.snapshot.version; }
+
+    renderDiag();
+  }
+
+  function metric(label, value, tone) {
+    return '<div class="metric' + (tone ? ' ' + tone : '') + '"><div class="label">' + esc(label) +
+      '</div><div class="value' + (String(value).length > 7 ? ' small-v' : '') + '">' + esc(value) + '</div></div>';
+  }
+  function row(k, v) {
+    return '<div class="row"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
+  }
+
+  var statusLoading = false;
+
+  function refreshStatus() {
+    if (!BR.ok) { return Promise.resolve(false); }
+    if (statusLoading) { return Promise.resolve(false); }
+    statusLoading = true;
+    return run(STATUS_CMD).then(function (res) {
+      var p = parseStatusOutput(res.stdout);
+      state.status = p.obj;
+      state.alive = p.alive;
+      state.fetchedAt = Date.now();
+      state.mode = 'live';
+      renderStatus();
+      if (!p.obj) {
+        setBanner('<div class="b-title">状态文件读不到内容</div>status.json ' +
+          (p.raw ? '不是合法 JSON（可能被写坏了）' : '为空：守护进程可能还没开始运行'), 'warn');
+      } else if (p.alive === false) {
+        setBanner('<div class="b-title">守护进程没在运行</div>下面是上一次写下的状态；' +
+          '点「重启守护」可以重新拉起，或重启手机。', 'warn');
+      } else {
+        setBanner('', 'info');
+      }
+      return true;
+    }).catch(function (err) {
+      state.status = null;
+      state.alive = null;
+      state.fetchedAt = Date.now();
+      renderStatus();
+      setBanner('<div class="b-title">状态读取失败</div>' + esc(err.message || err), 'bad');
+      return false;
+    }).then(function (r) {
+      statusLoading = false;
+      return r;
+    });
+  }
+
+  /* ============================================================
+     只读快照（无桥接）
+     ============================================================ */
+  function snapshotMode() {
+    var snap = window.__SI_SNAPSHOT__;
+    state.mode = 'snapshot';
+    if (!snap || !snap.status) {
+      $('statePill').textContent = '未连接';
+      $('statePill').className = 'pill bad';
+      $('bridgeName').textContent = '无 WebUI 桥接';
+      $('metrics').innerHTML = metric('运行时长', '—', '') + metric('守护进程', '—', '') +
+        metric('本次修复', '—', '') + metric('累计修复', '—', '') +
+        metric('隔离进程', '—', '') + metric('最后事件', '—', '');
+      $('kv').innerHTML = row('提示', '请从模块「操作」按钮或 KsuWebUI 打开本页');
+      setBanner('<div class="b-title">只读模式</div>这里没有可用的 WebUI 桥接，也还没生成状态快照。' +
+        'Magisk 里点模块的「操作」按钮可以直接看到守护状态；装了 KsuWebUI 后可在其中打开本面板。', 'warn');
+      lockConfig('未连接桥接，配置只读。');
+      lockActions();
+      return;
+    }
+    state.snapshot = snap;
+    state.snapshotTs = toInt(snap.ts, 0);
+    state.status = snap.status || null;
+    var age = state.snapshotTs ? (nowSec() - state.snapshotTs) : -1;
+    /* 快照超过 10 分钟没更新，基本可以判定守护没在跑 */
+    state.alive = age >= 0 && age <= 600;
+    state.fetchedAt = state.snapshotTs * 1000;
+    renderStatus();
+
+    $('bridgeName').textContent = '只读快照';
+    if (state.alive) {
+      setBanner('<div class="b-title">只读快照</div>守护进程写的静态状态（' +
+        (age >= 0 ? rel(state.snapshotTs) : '未知') + '）。' +
+        '装 KsuWebUI Standalone 后打开本页即可修改配置、执行体检/修复。', 'info');
+    } else {
+      setBanner('<div class="b-title">快照很久没更新</div>最近一次状态是 ' +
+        (age >= 0 ? rel(state.snapshotTs) : '未知') + '，守护进程可能没在运行。' +
+        '到 Magisk 模块页点「操作」可以看当前状态。', 'warn');
+    }
+    if (snap.log && snap.log.length) { renderLog(snap.log, true); }
+    else { $('logBox').textContent = '（快照里没有日志）'; }
+    lockConfig('只读快照：修改配置需要 WebUI 桥接。');
+    lockActions();
+  }
+
+  function lockConfig(msg) {
+    $('cfgHint').textContent = msg;
+    $('cfgHint').hidden = false;
+    $('cfgEnabled').disabled = true;
+    var segs = $('cfgMode').getElementsByTagName('button');
+    for (var i = 0; i < segs.length; i++) { segs[i].disabled = true; }
+    $('cfgInterval').disabled = true;
+    $('cfgMinAge').disabled = true;
+    var btns = document.querySelectorAll('.stepper button');
+    for (var j = 0; j < btns.length; j++) { btns[j].disabled = true; }
+    $('cfgActions').hidden = true;
+  }
+  function unlockAll() {
+    ['btnCheck', 'btnFix', 'btnRestart', 'btnApps', 'btnLog'].forEach(function (id) {
+      var el = $(id);
+      if (!el) { return; }
+      el.disabled = false;
+      el.removeAttribute('data-busy');
+    });
+    $('cfgHint').hidden = true;
+  }
+
+  function lockActions() {
+    ['btnCheck', 'btnFix', 'btnRestart', 'btnApps', 'btnLog'].forEach(function (id) {
+      var el = $(id); if (el) { el.disabled = true; }
+    });
+  }
+
+  /* ============================================================
+     配置
+     ============================================================ */
+  var form = { enabled: false, mode: 'auto', interval: 60, minAge: 15, snap: null };
+
+  function parseConfig(raw) {
+    var cfg = {};
+    String(raw || '').split('\n').forEach(function (line) {
+      var m = /^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/.exec(line);
+      if (!m) { return; }
+      cfg[m[1]] = m[2].replace(/\s+#.*$/, '').replace(/\r/g, '');
+    });
+    return cfg;
+  }
+
+  function cfgEnabled(v) {
+    var t = String(v == null || v === '' ? '1' : v).trim().toLowerCase();
+    return !(t === '0' || t === 'false' || t === 'no' || t === 'off');
+  }
+
+  function applyConfig(cfg) {
+    form.enabled = cfgEnabled(cfg.ENABLED);
+    form.mode = (cfg.MODE === 'event' || cfg.MODE === 'poll') ? cfg.MODE : 'auto';
+    form.interval = Math.min(600, Math.max(10, toInt(cfg.POLL_INTERVAL, 60)));
+    form.minAge = Math.min(120, Math.max(5, toInt(cfg.MIN_AGE, 15)));
+    form.snap = {
+      enabled: form.enabled, mode: form.mode, interval: form.interval, minAge: form.minAge
+    };
+
+    $('cfgEnabled').checked = form.enabled;
+    $('cfgEnabled').disabled = false;
+    var segs = $('cfgMode').getElementsByTagName('button');
+    for (var i = 0; i < segs.length; i++) {
+      segs[i].disabled = false;
+      segs[i].setAttribute('aria-pressed', segs[i].getAttribute('data-mode') === form.mode ? 'true' : 'false');
+    }
+    $('cfgInterval').value = String(form.interval);
+    $('cfgMinAge').value = String(form.minAge);
+    $('cfgInterval').disabled = false;
+    $('cfgMinAge').disabled = false;
+    syncModeFields();
+    var btns = document.querySelectorAll('.stepper button');
+    for (var j = 0; j < btns.length; j++) { btns[j].disabled = false; }
+    $('cfgHint').hidden = true;
+    refreshDirty();
+  }
+
+  function syncModeFields() {
+    var m = null;
+    var segs = $('cfgMode').getElementsByTagName('button');
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i].getAttribute('aria-pressed') === 'true') { m = segs[i].getAttribute('data-mode'); break; }
+    }
+    $('cfgPollGroup').hidden = (m !== 'poll');
+  }
+
+  function readForm() {
+    var iv = parseInt($('cfgInterval').value, 10);
+    var ma = parseInt($('cfgMinAge').value, 10);
+    return {
+      enabled: $('cfgEnabled').checked,
+      mode: (function () {
+        var segs = $('cfgMode').getElementsByTagName('button');
+        for (var i = 0; i < segs.length; i++) {
+          if (segs[i].getAttribute('aria-pressed') === 'true') { return segs[i].getAttribute('data-mode'); }
+        }
+        return 'auto';
+      })(),
+      interval: isFinite(iv) ? iv : (form.snap ? form.snap.interval : 60),
+      minAge: isFinite(ma) ? ma : null
+    };
+  }
+
+  function validate(f) {
+    var ok = true;
+    var ivVisible = !$('cfgPollGroup').hidden;
+    var ivBad = ivVisible && (f.interval === null || f.interval < 10 || f.interval > 600);
+    var maBad = f.minAge === null || f.minAge < 5 || f.minAge > 120;
+    $('cfgInterval').classList.toggle('bad', ivBad);
+    $('cfgMinAge').classList.toggle('bad', maBad);
+    $('cfgIntervalErr').hidden = !ivBad;
+    $('cfgMinAgeErr').hidden = !maBad;
+    if (ivBad || maBad) { ok = false; }
+    return ok;
+  }
+
+  function refreshDirty() {
+    if (!form.snap) { $('cfgActions').hidden = true; return; }
+    var f = readForm();
+    var dirty = (f.enabled ? 1 : 0) !== (form.snap.enabled ? 1 : 0) ||
+      f.mode !== form.snap.mode ||
+      String(f.interval) !== String(form.snap.interval) ||
+      String(f.minAge) !== String(form.snap.minAge);
+    $('cfgActions').hidden = !dirty;
+    if (dirty) { validate(f); }
+    return dirty;
+  }
+
+  function loadConfig() {
+    if (!BR.ok) { return Promise.resolve(false); }
+    return run('cat ' + P.config).then(function (res) {
+      var cfg = parseConfig(res.stdout);
+      if (!cfg.ENABLED && !cfg.MODE) { throw new Error('config.conf 为空'); }
+      state.config = cfg;
+      applyConfig(cfg);
+      return true;
+    }).catch(function (err) {
+      $('cfgHint').textContent = '读取配置失败：' + (err.message || err);
+      $('cfgHint').hidden = false;
+      $('cfgEnabled').disabled = true;
+      $('cfgInterval').disabled = true;
+      $('cfgMinAge').disabled = true;
+      $('cfgActions').hidden = true;
+      return false;
+    });
+  }
+
+  function saveConfig() {
+    var f = readForm();
+    if (!validate(f)) { toast('配置数值不合法'); return; }
+    if (!form.snap) { toast('配置尚未读取成功'); return; }
+
+    var en = f.enabled ? '1' : '0';
+    var mode = (f.mode === 'event' || f.mode === 'poll') ? f.mode : 'auto';
+    /* 只用白名单值和整数拼接，避免注入 */
+    var cmd = "printf 'ENABLED=%s\\nMODE=%s\\nPOLL_INTERVAL=%s\\nMIN_AGE=%s\\n' " +
+      en + ' ' + mode + ' ' + f.interval + ' ' + f.minAge +
+      ' > ' + P.config + '.tmp && mv -f ' + P.config + '.tmp ' + P.config +
+      ' && chmod 600 ' + P.config;
+
+    setBusy(true);
+    $('cfgSave').disabled = true;
+    var written = false;
+
+    run(cmd).then(function () {
+      written = true;
+      return run('sh ' + P.restart);
+    }).then(function () {
+      state.config = { ENABLED: en, MODE: mode, POLL_INTERVAL: String(f.interval), MIN_AGE: String(f.minAge) };
+      form.snap = { enabled: f.enabled, mode: mode, interval: f.interval, minAge: f.minAge };
+      $('cfgActions').hidden = true;
+      toast('已保存，守护进程重启中');
+      setTimeout(function () { refreshStatus(); }, 3000);
+      setTimeout(function () { refreshStatus(); }, 7000);
+    }).catch(function (err) {
+      if (written) {
+        /* 文件已经落盘，只是重启失败：界面同步到新值，别让用户以为没保存 */
+        state.config = { ENABLED: en, MODE: mode, POLL_INTERVAL: String(f.interval), MIN_AGE: String(f.minAge) };
+        form.snap = { enabled: f.enabled, mode: mode, interval: f.interval, minAge: f.minAge };
+        $('cfgActions').hidden = true;
+        opResult('配置已写入，但重启守护失败', '守护进程可能还在用旧配置，点「重启守护」重试。', 'warn');
+      } else {
+        toast('保存失败：' + (err.message || err));
+      }
+    }).then(function () {
+      setBusy(false);
+      $('cfgSave').disabled = false;
+      refreshDirty();
+    });
+  }
+
+  /* ============================================================
+     操作
+     ============================================================ */
+  function setBusy(busy) {
+    state.busy = !!busy;
+    ['btnRefresh', 'btnCheck', 'btnFix', 'btnRestart'].forEach(function (id) {
+      var el = $(id);
+      if (!el) { return; }
+      if (busy) {
+        /* 只标记"本来可用"的按钮，避免把只读模式下的永久禁用作废 */
+        if (!el.disabled) { el.setAttribute('data-busy', '1'); el.disabled = true; }
+      } else if (el.getAttribute('data-busy') === '1') {
+        el.removeAttribute('data-busy');
+        el.disabled = false;
+      }
+    });
+  }
+
+  function opResult(title, body, tone) {
+    var el = $('opResult');
+    el.className = 'result ' + (tone || '');
+    el.innerHTML = '<div class="r-title">' + esc(title) + '</div><div class="r-body">' + esc(body) + '</div>';
+    el.hidden = false;
+    $('opStamp').textContent = clock(nowSec());
+  }
+
+  function parseResultLine(text) {
+    var m = /RESULT\b([^\n]*)/.exec(String(text || ''));
+    if (!m) { return null; }
+    var out = {};
+    var re = /([a-z_]+)=([A-Za-z0-9_+]+)/g;
+    var kv;
+    while ((kv = re.exec(m[1])) !== null) { out[kv[1]] = kv[2]; }
+    return out;
+  }
+
+  function runFix(dry) {
+    var started = Date.now();
+    setBusy(true);
+    opResult(dry ? '正在体检…' : '正在修复…', '请稍候', '');
+    return run('sh ' + P.fix + (dry ? ' -n' : ' -q')).then(function (res) {
+      var r = parseResultLine(res.stdout);
+      var ms = Date.now() - started;
+      if (!r) {
+        opResult('没有拿到结果行', String(res.stdout || '').slice(-400) || '（无输出）', 'warn');
+        return;
+      }
+      if (r.error) {
+        opResult('执行失败：' + r.error, '检查 ' + (r.checked || 0) + ' 个进程 · 耗时 ' + ms + 'ms', 'bad');
+        return;
+      }
+      if (r.defer === 'fuse') {
+        opResult('FUSE 层未就绪', '本轮没有动任何挂载；守护会在开机宽限期内退避重试。', 'warn');
+        return;
+      }
+      if (r.skipped && String(r.skipped).indexOf('locked') >= 0) {
+        opResult('另一轮修复正在进行', '这一轮没有执行（抢锁失败），几秒后重试即可。', 'warn');
+        return;
+      }
+      var fixed = toInt(r.fixed, 0);
+      var broken = toInt(r.broken, 0);
+      var checked = toInt(r.checked, 0);
+      var title = dry
+        ? (broken > 0 ? ('发现 ' + broken + ' 个进程需要修复') : '一切正常')
+        : (fixed > 0 ? ('已修复 ' + fixed + ' 条挂载')
+          : (broken > 0 ? ('发现 ' + broken + ' 个进程需要修复，但本轮未补上') : '没有需要修复的挂载'));
+      var body = '检查 ' + checked + ' 个已隔离进程' +
+        (broken ? ' · 缺失 ' + broken + ' 个' : '') +
+        (r.young && toInt(r.young, 0) ? ' · ' + r.young + ' 个太年轻已跳过' : '') +
+        (r.skipped ? ' · 跳过：' + r.skipped : '') +
+        ' · 耗时 ' + ms + 'ms';
+      var tone = '';
+      if (dry) { tone = broken > 0 ? 'warn' : ''; }
+      else if (fixed > 0) { tone = 'good'; }
+      else if (broken > 0) { tone = 'warn'; }
+      opResult(title, body, tone);
+      if (!dry && fixed > 0) { setTimeout(refreshStatus, 800); }
+    }).catch(function (err) {
+      opResult('执行失败', err.message || String(err), 'bad');
+    }).then(function () { setBusy(false); });
+  }
+
+  function restartDaemon() {
+    setBusy(true);
+    opResult('正在重启守护…', '旧进程退出后由 supervisor 拉起', '');
+    run('sh ' + P.restart).then(function () {
+      return new Promise(function (r) { setTimeout(r, 3500); });
+    }).then(function () {
+      return refreshStatus();
+    }).then(function () {
+      var ok = state.alive === true;
+      opResult(ok ? '守护已重启' : '重启中', ok ? '新进程已在运行' : '再等几秒点刷新确认', ok ? 'good' : 'warn');
+    }).catch(function (err) {
+      opResult('重启失败', err.message || String(err), 'bad');
+    }).then(function () { setBusy(false); });
+  }
+
+  /* ============================================================
+     应用目录
+     ============================================================ */
+  function appState(a) {
+    if (a === 1) { return { cls: 'done', text: '正常' }; }
+    if (a === 0) { return { cls: 'miss', text: '缺失' }; }
+    if (a === -2) { return { cls: 'off', text: '不适用' }; }
+    if (a === -1) { return { cls: 'off', text: '未运行' }; }
+    return { cls: 'off', text: '—' };
+  }
+
+  function renderApps(data) {
+    state.apps = data;
+    var sum = '共 ' + toInt(data.total, 0) + ' 个 · 运行中 ' + toInt(data.running, 0) +
+      ' · 有缺失 ' + toInt(data.missing, 0);
+    $('appsSum').textContent = sum;
+
+    var rows = [];
+    (data.apps || []).forEach(function (a) {
+      var st = appState(a.a);
+      var chips = (a.d || []).map(function (d) {
+        var ok = d[1] === 1;
+        return '<span class="chip ' + (ok ? 'ok' : (d[1] === 0 ? 'bad' : 'na')) + '">' + esc(d[0]) + '</span>';
+      }).join('');
+      rows.push('<tr><td class="app">' + esc(a.p) + '<div style="margin-top:4px">' + (chips || '<span class="chip na">无目录</span>') +
+        '</div></td><td class="st ' + st.cls + '">' + st.text + '</td></tr>');
+    });
+
+    if (!rows.length) {
+      $('appsBody').innerHTML = '<div class="empty">没有读到应用记录（SI 未启用或被隔离的应用为空）</div>';
+      return;
+    }
+    $('appsBody').innerHTML = '<table class="tbl"><thead><tr><th>应用 / 允许的目录</th><th class="st">挂载</th></tr></thead><tbody>' +
+      rows.join('') + '</tbody></table>';
+  }
+
+  function loadApps() {
+    var btn = $('btnApps');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>';
+    $('appsSum').textContent = '读取中…';
+    return run('sh ' + P.list).then(function (res) {
+      var raw = String(res.stdout || '').trim();
+      if (!raw) { throw new Error('没有输出'); }
+      var data = JSON.parse(raw);
+      renderApps(data);
+    }).catch(function (err) {
+      $('appsSum').textContent = '读取失败：' + (err.message || err);
+      $('appsBody').innerHTML = '';
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = '重新读取';
+    });
+  }
+
+  /* ============================================================
+     日志
+     ============================================================ */
+  function renderLog(lines, fromSnapshot) {
+    var box = $('logBox');
+    var arr = Array.isArray(lines) ? lines : String(lines || '').split('\n');
+    arr = arr.filter(function (l) { return String(l).length > 0; });
+    box.textContent = arr.length ? arr.join('\n') : '（日志为空）';
+    box.scrollTop = box.scrollHeight;
+    $('logStamp').textContent = arr.length
+      ? (arr.length + ' 行 · ' + (fromSnapshot ? '快照' : '已更新'))
+      : (fromSnapshot ? '快照里没有日志' : '日志为空');
+  }
+
+  function loadLog() {
+    if (!BR.ok) { return Promise.resolve(false); }
+    var btn = $('btnLog');
+    btn.disabled = true;
+    return run('tail -n 40 ' + P.log).then(function (res) {
+      renderLog(res.stdout, false);
+      $('logStamp').textContent = '最近 40 行 · ' + clock(nowSec());
+      return true;
+    }).catch(function (err) {
+      $('logBox').textContent = '日志读取失败：' + (err.message || err);
+      $('logStamp').textContent = '读取失败';
+      return false;
+    }).then(function () { btn.disabled = false; });
+  }
+
+  /* ============================================================
+     诊断
+     ============================================================ */
+  function renderDiag() {
+    var d = [];
+    d.push(row('桥接对象', esc(BR.ok ? (BR.name + ' · ' + BR.style) : (BR.name || '无'))));
+    d.push(row('调用方式', esc(BR.ok ? (STYLE_LABEL[BR.style] || BR.style) : BR.note || '—')));
+    d.push(row('最近耗时', esc(BR.latency ? (BR.latency + ' ms') : '—')));
+    d.push(row('模式', esc(state.mode === 'snapshot' ? '只读快照' : '实时')));
+    if (state.mode === 'snapshot' && state.snapshotTs) {
+      d.push(row('快照时间', esc(clock(state.snapshotTs) + '（' + rel(state.snapshotTs) + '）')));
+    }
+    d.push(row('配置文件', '<code>' + esc(P.config) + '</code>'));
+    d.push(row('状态文件', '<code>' + esc(P.status) + '</code>'));
+    d.push(row('轮询', esc(POLL_MS / 1000 + ' 秒（仅页面可见时）')));
+    if (BR.ok && BR.style === 'sync') {
+      d.push(row('注意', '同步桥接：执行命令时界面会短暂卡住'));
+    }
+    if (BR.error) { d.push(row('最近错误', esc(BR.error))); }
+    $('diag').innerHTML = d.join('');
+  }
+
+  /* ============================================================
+     杂项
+     ============================================================ */
+  var toastTimer = null;
+  function toast(msg) {
+    if (state.mode === 'snapshot' || !BR.ok) { return; }   /* 只读模式别盖掉常驻提示 */
+    setBanner(esc(msg), 'info');
+    if (toastTimer) { clearTimeout(toastTimer); }
+    toastTimer = setTimeout(function () {
+      if (state.mode === 'snapshot' || !BR.ok) { return; }
+      $('banner').hidden = true;
+    }, 3200);
+  }
+
+  function boot() {
+    /* 事件绑定 */
+    $('btnRefresh').addEventListener('click', function () {
+      if (!BR.ok) { location.reload(); return; }
+      var dirty = refreshDirty();
+      refreshStatus().then(function () {
+        return dirty ? true : loadConfig();
+      }).then(loadLog).then(function () { toast('已刷新'); });
+    });
+    $('btnCheck').addEventListener('click', function () { runFix(true); });
+    $('btnFix').addEventListener('click', function () { runFix(false); });
+    $('btnRestart').addEventListener('click', function () {
+      if (this.getAttribute('data-armed') === '1') {
+        this.removeAttribute('data-armed');
+        this.textContent = '重启守护';
+        restartDaemon();
+        return;
+      }
+      this.setAttribute('data-armed', '1');
+      this.textContent = '再点一次确认';
+      var self = this;
+      setTimeout(function () {
+        if (self.getAttribute('data-armed') === '1') {
+          self.removeAttribute('data-armed');
+          self.textContent = '重启守护';
+        }
+      }, 4000);
+    });
+    $('btnApps').addEventListener('click', loadApps);
+    $('btnLog').addEventListener('click', loadLog);
+    $('cfgSave').addEventListener('click', saveConfig);
+    $('cfgDiscard').addEventListener('click', function () {
+      if (state.config) { applyConfig(state.config); }
+    });
+    $('cfgEnabled').addEventListener('change', refreshDirty);
+    $('cfgInterval').addEventListener('input', refreshDirty);
+    $('cfgMinAge').addEventListener('input', refreshDirty);
+
+    var segs = $('cfgMode').getElementsByTagName('button');
+    for (var i = 0; i < segs.length; i++) {
+      segs[i].addEventListener('click', function () {
+        var all = $('cfgMode').getElementsByTagName('button');
+        for (var j = 0; j < all.length; j++) { all[j].setAttribute('aria-pressed', 'false'); }
+        this.setAttribute('aria-pressed', 'true');
+        syncModeFields();
+        refreshDirty();
+      });
+    }
+
+    var steps = document.querySelectorAll('.stepper button');
+    for (var k = 0; k < steps.length; k++) {
+      steps[k].addEventListener('click', function () {
+        var input = $(this.getAttribute('data-target'));
+        var delta = toInt(this.getAttribute('data-step'), 0);
+        var min = toInt(input.getAttribute('min'), 0);
+        var max = toInt(input.getAttribute('max'), 0);
+        var v = toInt(input.value, min) + delta;
+        if (v < min) { v = min; }
+        if (v > max) { v = max; }
+        input.value = String(v);
+        refreshDirty();
+      });
+    }
+
+    /* 先用手上的快照把界面填上，再去探测桥接（避免冷启动时白屏 7 秒） */
+    if (window.__SI_SNAPSHOT__) { snapshotMode(); }
+
+    probeBridge().then(function (ok) {
+      if (!ok) {
+        $('bridgeName').textContent = BR.note || '无桥接';
+        snapshotMode();
+        var b = $('banner');
+        b.innerHTML += '<div style="margin-top:8px"><button class="btn tiny ghost" onclick="location.reload()">重试连接</button></div>';
+        return;
+      }
+      unlockAll();
+      $('bridgeName').textContent = BR.note;
+      setBanner('', 'info');
+      refreshStatus().then(loadConfig).then(loadLog);
+    });
+
+    /* 轮询：只在页面可见时读状态 */
+    setInterval(function () {
+      if (document.visibilityState !== 'visible') { return; }
+      if (state.busy) { return; }
+      refreshStatus();
+    }, POLL_MS);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>

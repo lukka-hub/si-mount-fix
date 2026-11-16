@@ -1,0 +1,35 @@
+#!/sbin/sh
+# Magisk 模块安装入口（标准模板 + 安装器缺失保护）
+umask 022
+
+OUTFD=$2
+ZIPFILE=$3
+
+# Magisk App 从 $OUTFD 读 ui_print 协议；没有该 fd 时退回 stdout
+ui_print() {
+  if [ -n "$OUTFD" ] && [ "$OUTFD" -gt 0 ] 2>/dev/null; then
+    echo "ui_print $1" >&"$OUTFD"
+    echo "ui_print" >&"$OUTFD"
+  else
+    echo "$1"
+  fi
+}
+
+mount /data 2>/dev/null
+
+# 注意：abort 由 util_functions.sh 定义，这之前不能用它
+if [ ! -f /data/adb/magisk/util_functions.sh ]; then
+  ui_print "! 未检测到 Magisk：/data/adb/magisk/util_functions.sh 不存在"
+  ui_print "! 本模块需要 Magisk 24+（或用 KernelSU/APatch 的模块安装入口）"
+  exit 1
+fi
+
+. /data/adb/magisk/util_functions.sh
+
+if [ -n "$MAGISK_VER_CODE" ] && [ "$MAGISK_VER_CODE" -lt 20400 ] 2>/dev/null; then
+  ui_print "! 需要 Magisk v20.4 及以上，当前 $MAGISK_VER"
+  exit 1
+fi
+
+install_module || exit 1
+exit 0
