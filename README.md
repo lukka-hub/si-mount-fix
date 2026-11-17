@@ -15,9 +15,13 @@ SI 的增强模式会为每个被隔离应用准备独立的 mount namespace，�
 /storage/emulated/0/Android/data/<pkg>  → /mnt/user/0/emulated/0/Android/data/<pkg>
 ```
 
-第二组挂载（共享目录、应用 data/obb）在进程重建、SI 重新挂载、FUSE 层尚未就绪等时机会丢失。
-丢失后 namespace 里只剩沙箱，应用看到的是一个近乎空的目录：MediaStore 缩略图还在，
-按真实路径读原文件却失败，于是出现「视频已被删除」「图片发送失败」这类现象。
+两组挂载会以两种方式丢失：
+
+- **进程被杀**：进程一退出，它的 namespace 随之销毁，沙箱和共享目录一起消失；
+  没有 umount 事件，应用重启、SI 重新建好 namespace 后通常能恢复。
+- **FUSE 重挂**：ColorOS 等 ROM 清理后台时可能杀掉 MediaProvider，vold 会重挂用户存储，
+  FUSE 设备号变化，应用 namespace 里挂在这层 FUSE 上的沙箱和共享目录整棵失效；
+  进程还在，但应用看到的是真实存储（隔离失效），出现「视频已被删除」「图片发送失败」。
 
 ## 解决思路
 
