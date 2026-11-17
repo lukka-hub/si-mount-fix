@@ -99,7 +99,11 @@
   `Android/{data,media,obb}/<pkg>`；任何一步不满足就 `umount -l` 回滚。不杀进程、不改 SI 配置。
 - **报告**：RESULT 增加 `sandbox=N`；重建失败或 dry-run 报 `skipped=sandbox_gone`，
   从未见过沙箱的包保持静默。`.fuse_dev` 记录本轮 FUSE 设备号供排障。
-- **配套**：新增 `tools/sandbox.test.sh`；`action.sh` / WebUI 增加沙箱丢失标签与体检文案；
+- **僵死区分**：沙箱本身是 FUSE、设备号不等于宿主 FUSE、且旧设备已不在宿主 mountinfo 时判为
+  `sandbox_stale`，只提示重启应用，绝不 umount/bind；真正的层不同仍报 `skipped=layer`。
+  可重建时若应用 ns 看不到 `/mnt/user/0/emulated`，源回退到应用视图
+  `/storage/emulated/0/...`。
+- **配套**：新增 `tools/sandbox.test.sh`；`action.sh` / WebUI 增加沙箱丢失/僵死标签与体检文案；
   根因文档补充 vold 重挂 FUSE（MediaProvider 被杀）一节。
 
 ## 兼容与边界

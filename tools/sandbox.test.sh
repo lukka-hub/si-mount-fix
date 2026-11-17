@@ -13,6 +13,9 @@
 #   6) dry-run → 报 skipped=sandbox_gone，但绝不调用 mount/nsenter
 #   7) 同包多 PID：每个 namespace 都 bind，sandbox/fixed 只计一次
 #   8) bind 后 device 校验失败 → umount 回滚并报 sandbox_gone
+#   9) 旧 FUSE 僵死：沙箱设备已不在宿主 → skipped=sandbox_stale，不 mount/umount
+#  10) 旧设备在宿主仍存在（只是层不同）→ 保持 skipped=layer
+#  11) 应用 ns 看不到 /mnt/user/... 时，回退到应用视图 /storage/emulated/0 重建
 #
 # 用法：sh tools/sandbox.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
@@ -37,12 +40,15 @@ P=$T/proc; BIN=$T/bin; DATA=$T/data; SRC=$T/mnt/user/0/emulated
 MI=$P/123/mountinfo
 mkdir -p "$P/self" "$P/123" "$BIN" "$DATA" "$SRC" || exit 1
 
-# 本机 FUSE 设备号；fake 沙箱层也用它（0:50）。
-cat > "$P/self/mountinfo" <<'M'
+# 宿主 FUSE 设备号；默认 0:50，僵死用例临时换成新设备号。
+self_mi() {   # $1=FUSE 设备号
+  cat > "$P/self/mountinfo" <<M
 100 1 0:50 / / rw - ext4 /dev/root rw
-101 100 0:50 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
-102 100 0:50 / /storage/emulated rw - fuse /dev/fuse rw
+101 100 $1 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
+102 100 $1 / /storage/emulated rw - fuse /dev/fuse rw
 M
+}
+self_mi 0:50
 
 # 进程 uid 用当前用户：源目录由测试创建，属主校验走真实 stat（负例再用 SI_TEST_UID 覆盖）。
 TEST_UID=$(id -u 2>/dev/null)
@@ -73,7 +79,12 @@ done
 [ -n "$pid" ] && [ -n "$SI_TEST_NSENTER_LOG" ] && echo "pid=$pid $*" >> "$SI_TEST_NSENTER_LOG"
 export SI_TEST_PID=$pid
 case "$1" in
-  test) exit 0 ;;
+  test)
+    shift
+    [ "$1" = "-d" ] && shift
+    # 模拟“应用 ns 看不到这个源”：只命中测试指定的路径。
+    if [ -n "$SI_TEST_NS_HIDE" ] && [ "${1:-}" = "$SI_TEST_NS_HIDE" ]; then exit 1; fi
+    exit 0 ;;
   mount|umount) exec "$@" ;;
 esac
 exit 1
@@ -94,6 +105,7 @@ S
 # umount stub：按 target 删除 fake mountinfo 里的行（绑定失败回滚用）。
 cat > "$BIN/umount" <<'S'
 #!/bin/sh
+[ -n "$SI_TEST_UMOUNT_LOG" ] && echo "$*" >> "$SI_TEST_UMOUNT_LOG"
 [ "$1" = "-l" ] && shift
 tgt=${1:-}
 [ -n "$tgt" ] || exit 1
@@ -147,15 +159,18 @@ setup_src() {
 }
 
 UID_OVERRIDE=""; MI_DIR_OVERRIDE=""; PS_EXTRA=0; BIND_BAD=0
+ALT_ROOT=""; NS_HIDE=""
 run_fix() {   # $1=数据目录 $2=1 表示 dry-run
   _d=$1; _dry=$2
-  rm -f "$T/mount.log" "$T/nsenter.log"
+  rm -f "$T/mount.log" "$T/nsenter.log" "$T/umount.log"
   set -- env PATH="$BIN:$PATH" \
     SI_TEST=1 SI_PROC="$P" SI_CONF="$T/conf.json" SI_DATA="$_d" \
-    SI_TEST_DATA="$DATA" SI_TEST_SRC="$SRC" SI_MIN_AGE=5 \
+    SI_TEST_DATA="$DATA" SI_TEST_SRC="$SRC" SI_TEST_ALT="$ALT_ROOT" SI_MIN_AGE=5 \
     SI_TEST_FDEV=0:50 SI_TEST_MI="$MI" SI_TEST_MI_DIR="$MI_DIR_OVERRIDE" \
     SI_TEST_UID="$UID_OVERRIDE" SI_TEST_PS_EXTRA="$PS_EXTRA" SI_TEST_BIND_BAD="$BIND_BAD" \
+    SI_TEST_NS_HIDE="$NS_HIDE" \
     SI_TEST_MOUNT_LOG="$T/mount.log" SI_TEST_NSENTER_LOG="$T/nsenter.log" \
+    SI_TEST_UMOUNT_LOG="$T/umount.log" \
     "$TEST_SH" "$FIX"
   [ "$_dry" = 1 ] && set -- "$@" -n
   "$@" 2>&1
@@ -299,6 +314,62 @@ has "$out" '校验失败' && ok "日志说明校验失败并回滚" || bad "日�
 grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null \
   && bad "校验失败后沙箱行没有回滚：$(cat "$MI")" \
   || ok "校验失败后已 umount 回滚"
+
+# ---------- 9) 旧 FUSE 僵死：ST 行只提示，不 mount/umount ----------
+stale_app_mi() {
+  cat > "$MI" <<'M'
+101 100 0:286 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
+102 100 0:286 / /storage/emulated rw - fuse /dev/fuse rw
+200 1 0:286 /0/Android/data/com.victim/sdcard /storage/emulated/0 rw - fuse /dev/fuse rw
+201 200 0:286 /0/DCIM /storage/emulated/0/DCIM rw - fuse /dev/fuse rw
+M
+}
+D9=$T/data9; seed_seen "$D9" || exit 1
+self_mi 0:318; stale_app_mi
+out=$(run_fix "$D9" 0); r=$(result "$out")
+has "$r" 'sandbox_stale' && ok "旧 FUSE 设备不在宿主 → skipped=sandbox_stale" || bad "没有识别僵死：$r"
+has "$r" 'sandbox_gone' && bad "僵死被误报为可重建的 sandbox_gone：$r" || ok "僵死不报 sandbox_gone"
+has "$r" 'fixed=0' && ok "僵死不产生修复计数" || bad "僵死仍计 fixed：$r"
+has "$out" '需要重启应用' && ok "日志提示需要重启应用" || bad "日志没有提示重启：$out"
+[ ! -s "$T/mount.log" ] && ok "僵死时没有调用 mount" || bad "僵死仍 mount：$(cat "$T/mount.log")"
+[ ! -s "$T/umount.log" ] && ok "僵死时没有调用 umount" || bad "僵死仍 umount：$(cat "$T/umount.log")"
+[ ! -s "$T/nsenter.log" ] && ok "僵死时没有调用 nsenter" || bad "僵死仍 nsenter：$(cat "$T/nsenter.log")"
+
+# ---------- 10) 旧设备在宿主仍存在：保持 layer，不误判僵死 ----------
+D10=$T/data10; seed_seen "$D10" || exit 1
+self_mi 0:318
+printf '103 100 0:286 / /mnt/old-fuse rw - fuse /dev/fuse rw\n' >> "$P/self/mountinfo"
+stale_app_mi
+out=$(run_fix "$D10" 0); r=$(result "$out")
+has "$r" 'skipped=layer' && ok "宿主仍存在该设备时保持 skipped=layer" || bad "没有保持 layer：$r"
+has "$r" 'sandbox_stale' && bad "真正的 layer 被误判成僵死：$r" || ok "layer 不误报 sandbox_stale"
+has "$r" 'fixed=0' && ok "layer 不产生修复计数" || bad "layer 仍计 fixed：$r"
+    [ ! -s "$T/mount.log" ] && [ ! -s "$T/umount.log" ] && ok "layer 时没有 mount/umount" || bad "layer 仍动挂载"
+self_mi 0:50
+
+# ---------- 11) 源回退：应用 ns 看不到 /mnt/user/... ----------
+D11=$T/data11; seed_seen "$D11" || exit 1
+self_mi 0:50; base_mi; setup_src || exit 1
+ALT=$T/alt0; rm -rf "$ALT"
+mkdir -p "$ALT/Android/data/com.victim/sdcard/Android/data" \
+         "$ALT/Android/data/com.victim/sdcard/Android/media" \
+         "$ALT/Android/data/com.victim/sdcard/Android/obb" \
+         "$ALT/Android/data/com.victim/sdcard/DCIM" || exit 1
+ALT_ROOT=$ALT; NS_HIDE=$SRC/0/Android/data/com.victim/sdcard
+out=$(run_fix "$D11" 0); r=$(result "$out")
+ALT_ROOT=""; NS_HIDE=""
+has "$r" 'sandbox=1' && ok "宿主源在应用 ns 不可见时仍能重建（sandbox=1）" || bad "回退重建失败：$r"
+f=$(num "$r" fixed)
+[ "${f:-0}" -ge 2 ] && ok "回退重建后 fixed>=2（实际 $f）" || bad "回退后 fixed 不足：$r"
+has "$out" '沙箱源改用应用视图' && ok "日志说明使用了应用视图源" || bad "日志没有回退说明：$out"
+grep -qF -- "--bind $ALT/Android/data/com.victim/sdcard /storage/emulated/0" "$T/mount.log" 2>/dev/null \
+  && ok "bind 使用的是 /storage/emulated/0 应用视图源" \
+  || bad "没有用回退源 bind：$(cat "$T/mount.log" 2>/dev/null)"
+grep -qF -- "--bind $SRC/0/Android/data/com.victim/sdcard /storage/emulated/0" "$T/mount.log" 2>/dev/null \
+  && bad "仍在用应用 ns 看不到的宿主源" \
+  || ok "没有使用应用 ns 看不到的宿主源"
+grep -qF "$ALT/Android/data/com.victim/sdcard /storage/emulated/0" "$MI" 2>/dev/null \
+  && ok "fake mountinfo 记录了回退源" || bad "fake mountinfo 没有回退源：$(cat "$MI" 2>/dev/null)"
 
 echo
 [ "$fail" = 0 ] && { echo "sandbox.test: PASS"; exit 0; }

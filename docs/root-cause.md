@@ -143,6 +143,20 @@ peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和
 
 沙箱恢复后隔离重新生效，识别锚点也回来了，后续修复才有对象。
 
+两种故障态要分开看：
+
+- **可重建（`sandbox_gone`）**：应用 namespace 里已经没有沙箱挂载，但还能看到宿主
+  重挂后的新 FUSE（`/mnt/user/0/emulated` 或 `/storage/emulated` 的设备号等于宿主）。
+  模块按上面的步骤重新 bind 沙箱，再补共享目录；应用 ns 里没有
+  `/mnt/user/0/emulated` 时，回退用应用自己的 `/storage/emulated/0/...` 视图作源。
+- **僵死（`sandbox_stale`）**：应用 namespace 里的沙箱还是旧设备号（实测 `0:286`），
+  宿主已经是新设备号（`0:318`）；应用内读 `/storage/emulated/0/...` 报
+  `Transport endpoint is not connected`。旧 FUSE 会话已经不存在，跨 namespace bind
+  会 `EINVAL`，卸掉旧挂载也拿不到新 FUSE；模块只能报 `skipped=sandbox_stale`，
+  不碰挂载，需要重启该应用让 SI 重建 namespace。扫描时只有“沙箱本身是 FUSE 且
+  设备号在宿主 `/proc/self/mountinfo` 里查不到”才会判僵死，真正挂在别的层的沙箱
+  仍报 `skipped=layer`。
+
 ### 不是 ColorOS 专有
 
 这条链路是 AOSP 的机制：vold 在 FUSE 守护进程死亡后重挂用户存储。ColorOS 的差别

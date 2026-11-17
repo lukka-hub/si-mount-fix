@@ -42,9 +42,12 @@ fi
 # 自测用 SI_TEST=1 才换 /data 与 FUSE 源前缀。
 DATA_ROOT=/data
 SRC_ROOT=/mnt/user/0/emulated
+# 应用 namespace 自己的存储视图（FUSE 重挂后 /mnt/user/0/emulated 可能不在应用 ns 里）。
+ALT_ROOT=/storage/emulated/0
 if [ "$SI_TEST" = 1 ]; then
   [ -n "$SI_TEST_DATA" ] && DATA_ROOT=$SI_TEST_DATA
   [ -n "$SI_TEST_SRC" ] && SRC_ROOT=$SI_TEST_SRC
+  [ -n "$SI_TEST_ALT" ] && ALT_ROOT=$SI_TEST_ALT
 fi
 RC=${SI_DATA:-/data/adb/si-mount-fix}
 if [ ! -d "$RC" ]; then
@@ -360,12 +363,14 @@ fi
     if (n == 2) return d * 86400 + t[1] * 60 + t[2]
     return d * 86400 + t[1]
   }
-  function parse_mi(l,  f) {
+  function parse_mi(l,  f,n,i) {
     # 大多数 mountinfo 行无关，先用 C 级 substring 过滤再 split。
     if (index(l, "/storage/emulated/") == 0 && index(l, "/Android/data/") == 0) return
-    split(l, f, " ")
+    n = split(l, f, " ")
     if (f[4] ~ /^\/(media\/)?[0-9]+\/Android\/data\/.+\/(cache\/)?sdcard$/ && f[5] ~ /^\/storage\/emulated\/[0-9]+$/) {
-      SB = f[4]; SDEV = f[3]; MP = f[5]
+      SB = f[4]; SDEV = f[3]; MP = f[5]; SFT = ""
+      # fstype 在 " - " 分隔符之后；只有 fuse 沙箱才可能是“旧 FUSE 僵死”。
+      for (i = 7; i <= n; i++) if (f[i] == "-") { SFT = f[i + 1]; break }
     }
     if (f[5] ~ /^\/storage\/emulated\/[0-9]+\//) {
       TD[f[5]] = f[3]; TC[f[5]]++
@@ -412,9 +417,11 @@ fi
     checked = 0; young = 0; CHURN = 0; RETRY_IN = 0
     FUSE_BAD = 0; BAD_CFG = 0
     FDEV = ""
+    # 宿主当前还存在的设备号集合：用于区分“旧 FUSE 会话已死”和“只是层不同”。
     while ((getline l < (proc "/self/mountinfo")) > 0) {
       split(l, z, " ")
-      if (z[5] == "/mnt/user/0/emulated" || z[5] == "/storage/emulated") { FDEV = z[3]; break }
+      if (z[3] != "") HOSTDEV[z[3]] = 1
+      if (FDEV == "" && (z[5] == "/mnt/user/0/emulated" || z[5] == "/storage/emulated")) FDEV = z[3]
     }
     close(proc "/self/mountinfo")
     if (FDEV == "") { print "F|"; FUSE_BAD = 1; exit 9 }
@@ -478,7 +485,7 @@ fi
     if (verbose && allow != "") print "A|" pkg "|" allow
     if (r == 0) { close(mi); next }
 
-    SB = ""; SDEV = ""; MP = ""
+    SB = ""; SDEV = ""; MP = ""; SFT = ""
     split("", TD); split("", TC)
     parse_mi(first)
     while ((getline ml < mi) > 0) parse_mi(ml)
@@ -500,7 +507,10 @@ fi
       next
     }
     if (SDEV != FDEV) {
-      print "S|" pkg "|layer|" SDEV "|" FDEV
+      # 旧 FUSE 会话已从宿主消失、沙箱本身又是 fuse：僵死挂载，跨 namespace 无法修。
+      # 其它情况（宿主里仍有该设备，或根本不是 FUSE）保持原来的 layer 语义。
+      if (SFT == "fuse" && !(SDEV in HOSTDEV)) print "ST|" pid "|" uid "|" age "|" pkg "|" SDEV
+      else print "S|" pkg "|layer|" SDEV "|" FDEV
       next
     }
     if (SB ~ /^\/media\//) sbpath = dataroot "/media" substr(SB, 7)
@@ -683,22 +693,30 @@ rebuild_sandbox() {   # pid uid pkg
   rb_tgt=/storage/emulated/0
   rb_mi=$PROC/$rb_pid/mountinfo
 
-  # 1) 源必须是真实目录（不是符号链接），且属主就是该进程 uid。
+  # 1) 源必须是真实目录（不是符号链接）；先用宿主 FUSE 视图。
   if [ -L "$rb_src" ] || [ ! -d "$rb_src" ]; then
     say "  跳过沙箱 $rb_pkg（源不存在或不是目录）"
     return 1
   fi
+  # 2) 源必须在应用 namespace 里可见；A 态下应用 ns 可能没有
+  #    /mnt/user/0/emulated，此时回退到应用自己的 /storage/emulated/0 视图。
+  if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_src" </dev/null 2>/dev/null; then
+    rb_alt=$ALT_ROOT/Android/data/$rb_pkg/sdcard
+    if [ -L "$rb_alt" ] || [ ! -d "$rb_alt" ] || \
+       ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_alt" </dev/null 2>/dev/null; then
+      say "  跳过沙箱 $rb_pkg（应用 namespace 看不到源）"
+      return 1
+    fi
+    rb_src=$rb_alt
+    say "  沙箱源改用应用视图: $rb_src"
+  fi
+  # 3) 属主必须就是该进程 uid（回退源也按同一规则校验）。
   rb_owner=$(sandbox_owner "$rb_src")
   if [ "$rb_owner" != "$rb_uid" ]; then
     say "  跳过沙箱 $rb_pkg（属主 ${rb_owner:-?} ≠ 进程 uid $rb_uid）"
     return 1
   fi
-  # 2) 源必须在应用 namespace 里可见。
-  if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_src" </dev/null 2>/dev/null; then
-    say "  跳过沙箱 $rb_pkg（应用 namespace 看不到源）"
-    return 1
-  fi
-  # 3) 目标必须存在；已在同一目标上的沙箱是 SI 自愈，不重复 bind。
+  # 4) 目标必须存在；已在同一目标上的沙箱是 SI 自愈，不重复 bind。
   if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_tgt" </dev/null 2>/dev/null; then
     say "  跳过沙箱 $rb_pkg（目标不存在）"
     return 1
@@ -740,7 +758,7 @@ rebuild_sandbox() {   # pid uid pkg
   fi
   say "重建沙箱: $rb_pkg (pid $rb_pid)"
 
-  # 4) 复用现有 repair_one：先 allow 目录，再 Android/{data,media,obb}/<pkg>。
+  # 5) 复用现有 repair_one：先 allow 目录，再 Android/{data,media,obb}/<pkg>。
   pid=$rb_pid; pkg=$rb_pkg; mp=$rb_tgt; sbpath=$rb_src; mi=$rb_mi
   rb_allow=$(allow_of "$rb_pkg")
   for rb_d in $rb_allow; do
@@ -818,6 +836,13 @@ while IFS='|' read -r tag f1 f2 f3 f4 f5; do
           say "  跳过 $f1（沙箱层 $f3 ≠ FUSE 层 $f4）"
           ;;
       esac
+      ;;
+    ST)
+      # 旧 FUSE 设备已不在宿主：应用 namespace 里的沙箱是僵死挂载。
+      # 跨 namespace bind 做不到，卸掉旧挂载也拿不到新 FUSE，只能提示重启应用。
+      flush_proc
+      skipped="$skipped sandbox_stale"
+      say "  跳过 $f4（沙箱僵死：旧 FUSE 设备 ${f5:-?} 已失效，需要重启应用）"
       ;;
     I)
       flush_proc

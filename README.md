@@ -170,6 +170,9 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
   vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮自动重建沙箱并补回挂载，
   不需要重启应用；若这个标记持续出现，说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上
   `daemon.log`、`status.json` 反馈。
+- 出现 `skipped=*sandbox_stale*`：应用 namespace 里还是旧 FUSE 的僵死挂载（宿主设备号已变、旧会话不存在，
+  应用内读目录会报 `Transport endpoint is not connected`）。跨 namespace 无法修复，模块不会动挂载；
+  重启该应用，让 SI 重建 namespace 即可。`sandbox_gone` 可以自动重建，两者不要混为一谈。
 - 面板打不开：Magisk 需 KsuWebUI Standalone；没有桥接时面板会显示只读快照。也可直接用模块「操作」按钮。
 - `blind=1`：重启手机恢复事件投递；重启后仍是 `blind`，把 `daemon.log` 和 `status.json` 一起反馈。
 - `churn>0`：等 10 分钟自动重试，或点「重启守护」清除熔断状态；仍反复出现说明 SI 在持续重挂，

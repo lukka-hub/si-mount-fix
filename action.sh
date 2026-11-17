@@ -79,7 +79,8 @@ skip_label() {
     source)    echo "源目录不存在" ;;
     source_ns) echo "应用内看不到源" ;;
     bindfail)  echo "绑定挂载失败" ;;
-    sandbox_gone) echo "沙箱丢失（模块会尝试重建）" ;;
+    sandbox_gone)  echo "沙箱丢失（可重建）" ;;
+    sandbox_stale) echo "沙箱僵死（需重启应用）" ;;
     churn)     echo "频繁被拆已熔断" ;;
     template)  echo "未知模板 id" ;;
     dir_space) echo "目录名无法安全表示" ;;
