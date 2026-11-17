@@ -50,7 +50,8 @@ cat > "$T/conf.json" <<'J'
 {"package_name":"com.nosandbox","enabled":true,"mount_dirs":true,"template_ids":["t1"]},
 {"package_name":"com.sub","enabled":true,"mount_dirs":true,"template_ids":["t1"]},
 {"package_name":"com.empty","enabled":true,"mount_dirs":true,"template_ids":["t1"]},
-{"package_name":"com.noroot","enabled":true,"mount_dirs":true,"template_ids":["t1"]}
+{"package_name":"com.noroot","enabled":true,"mount_dirs":true,"template_ids":["t1"]},
+{"package_name":"com.lostsandbox","enabled":true,"mount_dirs":true,"template_ids":["t1"]}
 ]}
 J
 
@@ -65,10 +66,11 @@ cat <<'P'
   105     0    10:00 com.layer
   106     0    10:00 com.shared
   107     0    10:00 com.nosandbox
-  108     0    10:00 com.sub:remote
+  108     0    10:00 com.sub
   109     0    10:00 com.empty
   110     0    10:00 com.noroot
   111     0    10:00 com.old
+  113     0    10:00 com.lostsandbox
   112 101234    10:00 com.enabled
 P
 S
@@ -91,7 +93,7 @@ exit 1
 S
 chmod 755 "$T/failbin/cp"
 
-mkdir -p "$P/101" "$P/102" "$P/103" "$P/104" "$P/105" "$P/106" "$P/107" "$P/108" "$P/109" "$P/111"
+mkdir -p "$P/101" "$P/102" "$P/103" "$P/104" "$P/105" "$P/106" "$P/107" "$P/108" "$P/109" "$P/111" "$P/113"
 
 # 101 com.enabled：DCIM 叠两层、Pictures 正常、Download 别的层、
 #     Music/Documents 缺失、Android data 正常、media/obb 缺失。
@@ -127,7 +129,7 @@ M
 cat > "$P/107/mountinfo" <<'M'
 201 1 0:50 /0/DCIM /storage/emulated/0/DCIM rw - fuse /dev/fuse rw
 M
-# 108 子进程名 com.sub:remote
+# 108 普通包（子进程 pkg:push 由 sandbox.test 覆盖）
 cat > "$P/108/mountinfo" <<'M'
 200 1 0:50 /0/Android/data/com.sub/sdcard /storage/emulated/0 rw - fuse /dev/fuse rw
 M
@@ -136,6 +138,12 @@ M
 # 111 配置里没有的包：只算 checked
 cat > "$P/111/mountinfo" <<'M'
 200 1 0:50 /0/Android/data/com.old/sdcard /storage/emulated/0 rw - fuse /dev/fuse rw
+M
+# 113 沙箱丢失但源目录不存在：1.3.4 与新版都应保持静默（新版走 G 后资格不通过）。
+# 这条让 equiv 覆盖沙箱分支：把 sandbox_eligible 改坏成恒真会多出日志/RESULT 差异。
+cat > "$P/113/mountinfo" <<'M'
+101 100 0:50 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
+102 100 0:50 / /storage/emulated rw - fuse /dev/fuse rw
 M
 
 # 假源目录：$DATA/media/0/... 与 $SRC/0/...

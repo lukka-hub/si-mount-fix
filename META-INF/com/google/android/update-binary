@@ -9,6 +9,7 @@
 umask 022
 
 OUTFD=$2
+# shellcheck disable=SC2034  # ZIPFILE 是 Magisk 安装器的约定变量，本模块不直接读
 ZIPFILE=$3
 
 # Magisk App 从 $OUTFD 读 ui_print 协议；没有该 fd 时退回 stdout

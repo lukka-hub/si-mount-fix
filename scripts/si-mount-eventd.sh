@@ -138,7 +138,7 @@ LAST_MODE_FILE=$DATA/.last_mode
 FIX_ERR_LOGGED=""
 PUB_KEY=""; PUB_AT=0
 CHURN=0; BLIND=0; BLIND_SINCE=0
-LAST_SANDBOX=0; SAND_GONE=0; SAND_STALE=0; SAND_REPORT_LAST=""
+LAST_SANDBOX=0; SAND_GONE=0; SAND_STALE=0; SAND_ROLLBACK=0; SAND_SKIP=0; SAND_REPORT_LAST=""
 LAST_FIX_MS=0
 DEFER_COUNT=0; FUSE_GRACE=180; FUSE_BACKOFF_MAX=30; FUSE_RETRY=60
 EVENT_RETRY_AT=0          # kprobe/selftest 失败后，多久再尝试切回事件模式（秒）
@@ -207,7 +207,7 @@ _reason_base() {
 write_status() {
   tmp="$STATUS.$$.tmp"
   cat > "$tmp" <<EOF
-{"mode":"$MODE","reason":"$REASON","reason_text":"$(reason_label)","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"sandbox":$LAST_SANDBOX,"last_sandbox":$LAST_SANDBOX,"total_sandbox":$TOTAL_SANDBOX,"sandbox_gone":$SAND_GONE,"sandbox_stale":$SAND_STALE,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
+{"mode":"$MODE","reason":"$REASON","reason_text":"$(reason_label)","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"sandbox":$LAST_SANDBOX,"last_sandbox":$LAST_SANDBOX,"total_sandbox":$TOTAL_SANDBOX,"sandbox_gone":$SAND_GONE,"sandbox_stale":$SAND_STALE,"sandbox_rollback":$SAND_ROLLBACK,"sandbox_skip":$SAND_SKIP,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
 EOF
   mv -f "$tmp" "$STATUS" 2>/dev/null
   old=$(cat "$LAST_MODE_FILE" 2>/dev/null)
@@ -450,6 +450,8 @@ run_fix() {
     LAST_SANDBOX=$sbx
     case "+$skip+" in *"+sandbox_gone"*) SAND_GONE=1 ;; *) SAND_GONE=0 ;; esac
     case "+$skip+" in *"+sandbox_stale"*) SAND_STALE=1 ;; *) SAND_STALE=0 ;; esac
+    case "+$skip+" in *"+rollback"*) SAND_ROLLBACK=1 ;; *) SAND_ROLLBACK=0 ;; esac
+    case "+$skip+" in *"+sandbox_skip"*) SAND_SKIP=1 ;; *) SAND_SKIP=0 ;; esac
     if [ "$sbx" -gt 0 ]; then
       TOTAL_SANDBOX=$((TOTAL_SANDBOX + sbx))
       echo "$TOTAL_SANDBOX" > "$DATA/.total_sandbox" 2>/dev/null
@@ -459,14 +461,19 @@ run_fix() {
     if [ -z "$_srep" ]; then
       SAND_REPORT_LAST=""
     elif [ "$_srep" != "$SAND_REPORT_LAST" ]; then
-      printf '%s\n' "$_srep" | while IFS=' ' read -r _skind _spkg; do
+      # 用 here-doc 让 while 在当前 shell 跑：赋值不能被管道子 shell 吞掉，
+      # 否则 SAND_REPORT_LAST 永远是空，同一份报告会每轮重复记日志。
+      while IFS=' ' read -r _skind _spkg; do
         [ -n "$_spkg" ] || continue
         case "$_skind" in
           rebuilt) log "沙箱重建: $_spkg" ;;
           gone)    log "沙箱丢失: $_spkg（下一轮重试）" ;;
           stale)   log "沙箱僵死: $_spkg（需重启应用）" ;;
+          skip)    log "沙箱未重建: $_spkg（安全拒绝，需重启应用）" ;;
         esac
-      done
+      done <<EOF
+$_srep
+EOF
       SAND_REPORT_LAST=$_srep
     fi
   fi
@@ -914,7 +921,7 @@ if [ "$MODE" = "event" ]; then
       exit 1
     fi
 
-    _nowm=$(mono); now=$(now_s)
+    _nowm=$(mono)
     if [ "$NEXT_BLIND" -gt 0 ] && [ "$_nowm" -ge "$NEXT_BLIND" ]; then
       sample_blind
       NEXT_BLIND=$(( _nowm + BLIND_EVERY ))

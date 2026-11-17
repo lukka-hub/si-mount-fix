@@ -82,21 +82,48 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 打 tag 的 commit 必须是 main 上已有的提交：本地修复分支上的提交不能直接发版。
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: tag must match module.prop version
+      - name: tag must match module.prop version and be on main
         run: |
           v=$(sed -n 's/^version=//p' module.prop | head -1)
           if [ "$GITHUB_REF" != "refs/tags/$v" ]; then
             echo "tag $GITHUB_REF 与 module.prop $v 不一致" >&2
             exit 1
           fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "tag 指向的提交 $GITHUB_SHA 不在 main 上，拒绝发版" >&2
+            exit 1
+          fi
 
-      - name: build zip
-        env:
-          SKIP_TESTS: '1'
-        run: sh tools/build.sh
+      # 发布前确认 main 已经包含本版本的 update.json（tag 本身不一定带 update.json 的改动）。
+      - name: main must already contain this version's update.json
+        run: |
+          v=$(sed -n 's/^version=//p' module.prop | head -1)
+          git show refs/remotes/origin/main:update.json > "$RUNNER_TEMP/update-main.json"
+          python3 - "$v" "$RUNNER_TEMP/update-main.json" <<'PY'
+          import json, sys
+          want, path = sys.argv[1], sys.argv[2]
+          with open(path, encoding='utf-8') as f:
+              d = json.load(f)
+          if d.get('version') != want:
+              raise SystemExit('main 的 update.json 版本是 %r，应为 %r' % (d.get('version'), want))
+          print('main 的 update.json 已是 %s' % want)
+          PY
+
+      # 复用 lint-test-build 里构建并上传的同一个 zip，不再在 release job 重新构建。
+      - name: download verified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: si-mount-fix-${{ github.sha }}
+
+      - name: record build sha256
+        run: sha256sum si-mount-fix.zip | tee sha256.txt
 
       # 不硬编码 token：GITHUB_TOKEN 由 Actions 注入，权限来自上面的 contents: write。
       - name: publish release asset
@@ -105,3 +132,19 @@ jobs:
           files: si-mount-fix.zip
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      # 发布后重新下载资产并比对 sha256：确认线上资产就是这次构建产物。
+      - name: verify published asset sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p verify
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            -p si-mount-fix.zip -D verify --clobber
+          a=$(sha256sum si-mount-fix.zip | awk '{print $1}')
+          b=$(sha256sum verify/si-mount-fix.zip | awk '{print $1}')
+          if [ "$a" != "$b" ]; then
+            echo "线上资产 sha256 与本次构建不一致：$a != $b" >&2
+            exit 1
+          fi
+          echo "线上资产 sha256 一致：$a"

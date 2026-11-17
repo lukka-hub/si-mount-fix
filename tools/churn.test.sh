@@ -145,7 +145,7 @@ case "$r" in *"churn=1"*"skipped=churn"*|*"skipped=churn"*"churn=1"*) ok "A4 第
 case "$r" in *"fixed=0"*) ok "A4 熔断时不修复" ;; *) bad "A4 熔断时仍修复：$r" ;; esac
 grep -q '^com.churn|DCIM|1700000630|wait$' "$DATA/.churn" 2>/dev/null \
   && ok "A4 .churn 记录 wait 到 +600s" || bad "A4 .churn 状态不对：$(cat "$DATA/.churn" 2>/dev/null)"
-n_fixed=$(grep -c ' fixed$' "$DATA/.repairs" 2>/dev/null)
+n_fixed=$(grep -c ' fixed' "$DATA/.repairs" 2>/dev/null)
 [ "$n_fixed" = 3 ] && ok "A4 .repairs 只有 3 次成功记录" || bad "A4 .repairs fixed 记录=$n_fixed"
 
 # ---------- B) until 前不动，到点重试成功 ----------
@@ -259,7 +259,7 @@ multi_broken_mi
 out=$(run_multi 1700007000 "$DATA_M"); r=$(result "$out")
 case "$r" in *"checked=2"*) ok "G1 同包 2 个 PID 都被扫描" ;; *) bad "G1 没有扫描到 2 个 PID：$r" ;; esac
 case "$r" in *"fixed=1"*) ok "G1 两个 PID 同目标都坏，fixed=1" ;; *) bad "G1 fixed 重复计数：$r" ;; esac
-n_fixed=$(grep -c ' fixed$' "$DATA_M/.repairs" 2>/dev/null)
+n_fixed=$(grep -c ' fixed' "$DATA_M/.repairs" 2>/dev/null)
 [ "$n_fixed" = 1 ] && ok "G1 .repairs 只有 1 条 fixed" || bad "G1 .repairs fixed 记录=$n_fixed"
 grep -q ' /storage/emulated/0/DCIM ' "$P/101/mountinfo" 2>/dev/null \
   && grep -q ' /storage/emulated/0/DCIM ' "$P/102/mountinfo" 2>/dev/null \

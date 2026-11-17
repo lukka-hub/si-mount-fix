@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.4.1）
+# 演化过程（1.0 → 1.4.2）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成独立发布 tag，1.3.4 接续。
@@ -109,6 +109,41 @@
   回滚刚 bind 的沙箱，不留下空沙箱。dry-run 不写任何状态文件。
 - **配套**：新增 `tools/sandbox.test.sh`；`action.sh` / WebUI 增加沙箱丢失/僵死标签与体检文案；
   根因文档补充 vold 重挂 FUSE（MediaProvider 被杀）一节。
+
+## 1.4.2 沙箱重建的安全边界与可观测性
+
+- **回滚不叠父根**：只有沙箱 `umount` 确实卸干净才恢复被临时卸下的普通 FUSE 根；卸不干净时
+  保留现状并报 `skipped=rollback`，不再把父根叠在残留沙箱上（避免应用看到整块存储）。
+  回滚失败/原根恢复失败归为 `sandbox_stale`，不再混报可重试的 `sandbox_gone`。
+  目标被别的挂载层占用时报 `sandbox_skip`（需重启应用），不再每 180 秒无效重试。
+- **子进程名**：`ps args` 为 `pkg:push` 时按基础包名 `pkg` 查配置、身份和 seen；
+  `checked` 只统计配置里真实启用的包；同包不同 namespace 的修复分别计数。
+- **dry-run 只读**：`-n` 不再清理/改写已有 `.sandbox_seen`（旧格式与空 ns 行只在非 `-n`
+  持锁运行中清理）；沙箱退避键改用 `@sandbox`，避免和名为 sandbox 的自定义共享目录撞键。
+- **daemon 报告去重**：`.sandbox_report` 的逐行日志改在当前 shell 读取，
+  同一份报告连续多轮只记一次日志。
+- **主扫描校验挂载栈**：`/storage/emulated/0` 必须“栈顶是本包沙箱且只有一层”才算健康；
+  叠层/被其他层盖住时按 `rollback` / `sandbox_stale` 上报并提示重启应用，残留非本包沙箱
+  不再登记为健康证据（K）。
+- **失败退避**：复用 `.repairs` 的 failed 行做每包退避（180 秒，key 含 FUSE 设备号、boot、
+  namespace），dev/boot/ns 任一变化立即失效；重建沙箱与 `repair_one` 的
+  `source`/`source_ns`/`bindfail` 都不再每轮重试，RESULT 带 `retry=N`。
+- **普通根 fail-closed**：没有本 boot、同 namespace 的 seen 证据时，普通 FUSE 根
+  （root=`/` 或 `/0`）一律不卸不 bind，报 `sandbox_skip`（与可重试的 `sandbox_gone` 区分）；
+  目标没有挂载（n=0）时仍可凭“源存在+属主匹配”重建。同 boot 异 namespace 回落同一条兜底规则，
+  只有目标 n=0 才动手；本 boot 有任意 namespace 的行即可回落，只有该包只剩旧 boot 行时才拒绝。
+  K 时读不到 namespace 不写空行。
+- **删除应用视图回退（ALT）**：真机隔离应用的应用内视图都能看到 `/mnt`，ALT 分支在源不可见时
+  只会静默禁用预检；`sb_to_alt`/`sp_alt` 及相关测试一并移除。
+- **状态与文案**：`status.json` 增加 `sandbox_rollback`/`sandbox_skip`，WebUI 主状态卡/banner、
+  「操作」按钮直接显示这四项沙箱状态（最近一轮 fix 报错时标注为上次记录）；`rollback`、
+  `sandbox_skip`、identity 残留补齐 action/WebUI 词表与 README，并加真实 daemon 链路测试。
+- **action 健壮性**：体检加 `timeout 40`；拿不到 `RESULT` 行（空输出/前缀不对/超时/被 OOM）
+  报“执行失败（无结果行）”，不再显示“没有需要修复”；fix 建锁失败改报 `error=datadir`。
+- **发布链路**：CI 只构建一次并上传 artifact，release 下载同一个 zip 发布；删除 tag-SHA 自证，
+  改为“tag 提交必须是 main 祖先 + 发布后重新下载资产校验 sha256”，发布前确认 main 已含本版
+  `update.json`。
+- **版本**：`v1.4.2` / `versionCode 142`。
 
 ## 兼容与边界
 

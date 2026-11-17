@@ -315,13 +315,15 @@ details.card[open] summary{margin-bottom:8px}
   var SKIP_LABEL = {
     locked: '另一轮修复进行中',
     disabled: '应用未启用',
-    identity: '沙箱身份不符',
+    identity: '沙箱身份不符（需重启应用）',
     layer: '挂载层级不符',
     source: '源目录不存在',
     source_ns: '应用内看不到源',
     bindfail: '绑定挂载失败',
     sandbox_gone: '沙箱丢失（会尝试重建）',
     sandbox_stale: '沙箱僵死（需重启应用）',
+    sandbox_skip: '沙箱未重建（安全拒绝，需重启应用）',
+    rollback: '回滚未卸干净（需重启应用）',
     churn: '频繁被拆已熔断',
     template: '未知模板 id',
     dir_space: '目录名无法安全表示',
@@ -718,6 +720,22 @@ details.card[open] summary{margin-bottom:8px}
     if (churn > 0) {
       kv.push(row('熔断目标', churn + ' 个（暂停自动修复，等待重试）'));
     }
+    /* 沙箱状态在 status.json 的 sandbox_stale/gone/rollback/skip 里；它们只在
+       fix 成功分支更新，最近一轮 fix_error_* 时只能标成上次记录。 */
+    var sandStale = s ? toInt(s.sandbox_stale, 0) : 0;
+    var sandGone = s ? toInt(s.sandbox_gone, 0) : 0;
+    var sandRollback = s ? toInt(s.sandbox_rollback, 0) : 0;
+    var sandSkip = s ? toInt(s.sandbox_skip, 0) : 0;
+    var fixErr = s && String(s.reason || '').indexOf('fix_error_') === 0;
+    var sandBits = [];
+    if (sandStale) { sandBits.push('僵死（需重启应用）'); }
+    if (sandRollback) { sandBits.push('回滚未卸干净（需重启应用）'); }
+    if (sandSkip) { sandBits.push('未重建（安全拒绝，需重启应用）'); }
+    if (sandGone) { sandBits.push('丢失（会尝试重建）'); }
+    if (sandBits.length) {
+      kv.push(row('沙箱', (fixErr ? '上次记录：' : '') + sandBits.join('、') +
+        (fixErr ? '（最近一轮修复失败）' : '')));
+    }
     if (s && isBlindStatus(s)) {
       var blindSince = toInt(s.blind_since, 0);
       kv.push(row('事件通道', '异常' + (blindSince ? ' · 自 ' + rel(blindSince) : '')));
@@ -797,6 +815,28 @@ details.card[open] summary{margin-bottom:8px}
       if (churn > 0) {
         items.push({ tone: 'warn', title: '熔断保护生效',
           body: churn + ' 个目标因频繁被拆已暂停自动修复；重试仍失败会锁定至多 1 小时（重启守护可提前解除）。' });
+      }
+      var sandStale = toInt(s.sandbox_stale, 0);
+      var sandGone = toInt(s.sandbox_gone, 0);
+      var sandRollback = toInt(s.sandbox_rollback, 0);
+      var sandSkip = toInt(s.sandbox_skip, 0);
+      var sandFixErr = String(s.reason || '').indexOf('fix_error_') === 0;
+      var staleHead = sandFixErr ? '最近一轮修复失败，下面是上次记录；' : '';
+      if (sandStale) {
+        items.push({ tone: 'bad', title: '沙箱僵死',
+          body: staleHead + '应用里还是旧 FUSE 的僵死挂载，模块不能原地修；重启该应用即可，不必反复点修复。' });
+      }
+      if (sandRollback) {
+        items.push({ tone: 'bad', title: '沙箱回滚未卸干净',
+          body: staleHead + '残留挂载没有卸干净，模块不会再把父根叠回去；重启该应用即可收敛。' });
+      }
+      if (sandSkip) {
+        items.push({ tone: 'warn', title: '沙箱未重建（安全拒绝）',
+          body: staleHead + '可能是缺少本 boot 同 namespace 的重建证据，或目标被其他挂载层占用；模块不会硬拆，重启该应用后由 SI 重建。' });
+      }
+      if (sandGone) {
+        items.push({ tone: 'warn', title: '沙箱丢失',
+          body: staleHead + '模块会尝试重建；若持续出现，说明应用后台被杀或存储服务在反复重挂 FUSE。' });
       }
       var reason = String(s.reason || '');
       if (reason === 'fuse_missing') {

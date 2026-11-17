@@ -35,7 +35,14 @@ SI 的增强模式会为每个被隔离应用准备独立的 mount namespace，�
 - **身份与层保护**：沙箱根必须属于该包；沙箱所在设备号必须等于 FUSE 层设备号；
   源目录在宿主机和应用 namespace 里都必须可见。任何一条不满足就跳过，不猜着挂。
 - **先验后拆、失败回滚**：修复前确认目标现状，bind 后校验设备号与挂载条数；
-  校验不通过立即 umount 回滚，不留下“看起来挂上了”的坏状态。
+  校验不通过立即 umount 回滚，不留下“看起来挂上了”的坏状态。只有沙箱确实卸干净
+  才会恢复临时卸下的普通 FUSE 根，卸不干净就保留现状并报 `rollback`。
+- **重建沙箱的边界**：拆普通 FUSE 根只认本 boot、同 namespace 的 `.sandbox_seen` 证据；
+  没有同 ns 证据时（升级后首次、同 boot 换了 namespace、只有旧 boot 记录）普通根一律
+  不卸不 bind，报 `sandbox_skip`，只补目标本来没有挂载（n=0）的包。n=0 时按“源存在+属主
+  匹配”回落；只有该包**只剩别的 boot 的旧行、本 boot 一行都没有**才拒绝回落。
+- **失败退避**：同一 (包, 目标) 修复失败后 180 秒内不再重试；FUSE 设备号、boot 或
+  namespace 变化会立即失效退避，不会因为一次坏包每轮重复 bind/回滚。
 - **fail-closed**：配置读不出、FUSE 未就绪、目标在其他层时一律不动挂载；
   宁可这轮不修，也不把错误目录挂进应用。
 - **FUSE 晚到 defer**：修复脚本取不到 FUSE 设备号时立即返回 `defer=fuse`，
@@ -75,7 +82,7 @@ Magisk 管理器会按 `update.json` 提示新版本。
 
 ### 版本与更新检查
 
-- 版本只有一个来源：`module.prop` 的 `version=v1.4.0` 与 `versionCode=140`
+- 版本只有一个来源：`module.prop` 的 `version=v1.4.2` 与 `versionCode=142`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -168,16 +175,31 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
   FUSE 存储、SI 增强模式已启用、应用在主用户下；再跑 `fix-si-mounts.sh -n -v` 看允许目录是否解析正确。
 - 视频/图片突然读不到，且体检出现 `skipped=*sandbox_gone*`：ColorOS 上 MediaProvider 被杀后
   vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮**尝试**重建沙箱并补回挂载
-  （源目录存在且属主匹配才动手）；重建成功后 WebUI 的修复结果会显示“重建沙箱 N 个”。升级到 1.4.1 后首次扫描
-  不需要等 `.sandbox_seen`，凭沙箱目录和属主就会补。若这个标记持续出现，说明 MediaProvider 被反复杀，
-  检查系统的省电/后台策略，并附上 `daemon.log`、`status.json` 反馈。
+  （源目录存在且属主匹配才动手）；重建成功后 WebUI 的修复结果会显示“重建沙箱 N 个”。失败后 180 秒内
+  不再重试，RESULT 会带 `retry=`，所以短时间反复体检看到同一个包是正常的。若这个标记持续出现，
+  说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上 `daemon.log`、`status.json` 反馈。
+- 出现 `skipped=*sandbox_skip*`：包在跑、沙箱却丢了，但本 boot 没有该包同 namespace 的
+  `.sandbox_seen` 证据，而 `/storage/emulated/0` 还是普通 FUSE 根；或者目标被别的挂载层
+  占用（例如残留的 f2fs bind）。这时拆根/重建可能挂错目录，模块会 fail-closed：不卸不 bind，
+  也不会按 180 秒重试。**重启该应用**让 SI 重建 namespace；下一次健康扫描登记证据后再丢沙箱
+  才会自动重建。它和 `sandbox_gone`（可尝试重建）不是一回事。
+- 出现 `skipped=*rollback*`：沙箱 `umount` 没卸干净（或回滚后校验失败），模块保留了残留挂载，
+  不会为了“看起来修好了”把父根叠回去。**重启该应用**即可收敛；不要反复点修复。
 - 出现 `skipped=*sandbox_stale*`：应用 namespace 里还是旧 FUSE 的僵死挂载（宿主设备号已变、旧会话不存在，
-  应用内读目录会报 `Transport endpoint is not connected`）。跨 namespace 无法修复，模块不会动挂载；
-  重启该应用，让 SI 重建 namespace 即可。`sandbox_gone` 会尝试重建，`sandbox_stale` 只能重启应用，
-  两者不要混为一谈。
-- 排查沙箱问题以模块「操作」按钮/体检输出为准（含包名和跳过原因）；`status.json` 只提供
-  `last_sandbox`/`total_sandbox`/`sandbox_gone`/`sandbox_stale` 等计数与最近状态。
-- `-n` 是只读体检：不写 `.sandbox_seen`/`.fuse_dev`，不改挂载；升级/重启后的第一次自动扫描才会登记身份。
+  应用内读目录会报 `Transport endpoint is not connected`），或 target 被别的层盖住。跨 namespace 无法修复，
+  模块不会动挂载；重启该应用，让 SI 重建 namespace 即可。`sandbox_gone` 会尝试重建，`sandbox_stale`
+  只能重启应用，两者不要混为一谈。
+- 排查沙箱问题以模块「操作」按钮/体检输出为准（含包名和跳过原因）；`status.json` 另提供
+  `last_sandbox`/`total_sandbox` 等计数（面板不单独展示）。其中
+  `sandbox_gone`/`sandbox_stale`/`sandbox_rollback`/`sandbox_skip` 会显示在「操作」按钮和
+  WebUI 主状态卡/banner（最近一轮 fix 报错时会标成“上次记录”）；`rollback`/`sandbox_skip`
+  都表示需要重启应用，不能只靠反复修复。
+- **只有旧 boot 记录时才不兜底**：如果某个包在 `.sandbox_seen` 里只剩别的 boot 的行、本 boot
+  一行都没有（真机有 3 个包），模块不会拿它当重建资格；本 boot 只要有任意 namespace 的行，
+  就允许 n=0 的“源+属主”回落（同 namespace 仍优先）。要等该包下一次被识别为健康沙箱（K）
+  并登记本 boot 的同 namespace 证据后才恢复自愈。这是有意的 fail-closed，不是丢状态。
+- `-n` 是只读体检：不写 `.sandbox_seen`/`.fuse_dev`，不改挂载；已有 `.sandbox_seen` 里的
+  旧格式/空 ns 行也只在非 `-n` 运行（持锁）时清理。升级/重启后的第一次自动扫描才会登记身份。
 - 面板打不开：Magisk 需 KsuWebUI Standalone；没有桥接时面板会显示只读快照。也可直接用模块「操作」按钮。
 - `blind=1`：重启手机恢复事件投递；重启后仍是 `blind`，把 `daemon.log` 和 `status.json` 一起反馈。
 - `churn>0`：等 10 分钟自动重试，或点「重启守护」清除熔断状态；仍反复出现说明 SI 在持续重挂，

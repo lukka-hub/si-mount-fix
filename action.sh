@@ -4,6 +4,8 @@ case "$0" in */*) D=${0%/*};; *) D=.;; esac
 # Magisk action 的 busybox ps 可能顶掉 toybox，固定 PATH 以免误报 error=ps。
 PATH=/system/bin:/system/xbin:/product/bin:${PATH:-}
 export PATH
+# 体检用的 shell（真机 /system/bin/sh）；测试时可用 SI_SH_BIN 指定。
+SH_BIN=${SI_SH_BIN:-/system/bin/sh}
 DATA=${SI_DATA:-/data/adb/si-mount-fix}
 MOD=${SI_MOD:-$D}
 CONF=$DATA/config.conf
@@ -17,6 +19,7 @@ st=$(cat "$DATA/status.json" 2>/dev/null)
 # （字段级 sed 每项 3~4 个 fork，12 个字段在低端机上有可感知的延迟。）
 mode=""; reason=""; reason_text=""; pid=""; since=""; total=""
 last_fixed=""; age_min=""; interval=""; tracefs=""; churn=""; blind=""
+sand_gone=""; sand_stale=""; sand_rollback=""; sand_skip=""
 if [ -n "$st" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
@@ -32,6 +35,10 @@ if [ -n "$st" ]; then
       tracefs) tracefs=$_v ;;
       churn) churn=$_v ;;
       blind) blind=$_v ;;
+      sandbox_gone) sand_gone=$_v ;;
+      sandbox_stale) sand_stale=$_v ;;
+      sandbox_rollback) sand_rollback=$_v ;;
+      sandbox_skip) sand_skip=$_v ;;
     esac
   done <<EOF
 $(printf '%s' "$st" | awk '{
@@ -74,13 +81,15 @@ skip_label() {
   case "$1" in
     locked)    echo "另一轮修复进行中" ;;
     disabled)  echo "应用未启用" ;;
-    identity)  echo "沙箱身份不符" ;;
+    identity)  echo "沙箱身份不符（需重启应用）" ;;
     layer)     echo "挂载层级不符" ;;
     source)    echo "源目录不存在" ;;
     source_ns) echo "应用内看不到源" ;;
     bindfail)  echo "绑定挂载失败" ;;
     sandbox_gone)  echo "沙箱丢失（会尝试重建）" ;;
     sandbox_stale) echo "沙箱僵死（需重启应用）" ;;
+    sandbox_skip)  echo "沙箱未重建（安全拒绝，需重启应用）" ;;
+    rollback)      echo "回滚未卸干净（需重启应用）" ;;
     churn)     echo "频繁被拆已熔断" ;;
     template)  echo "未知模板 id" ;;
     dir_space) echo "目录名无法安全表示" ;;
@@ -217,8 +226,28 @@ printf ' 配置   模式 %s · 最小年龄 %ss\n' "${cfg_mode:-auto}" "${cfg_ag
 [ "$mode" = "poll" ] && printf ' 轮询   间隔 %ss\n' "${cfg_interval:-?}"
 printf ' trace  %s\n' "${tracefs:-（不可用）}"
 case "$churn" in ''|*[!0-9]*) ;; *) [ "$churn" -gt 0 ] && printf ' 熔断   跳过 %s 个目标（等待期 10 分钟后重试；重试失败锁定至多 1 小时（重启守护/模块也会提前解除））\n' "$churn" ;; esac
+# 沙箱状态来自 status.json；SAND_STALE/SAND_GONE 只在 fix 成功分支更新，
+# 最近一轮 error 时只能当“上次记录”，不能当成当前状态。
+sand_txt=""
+add_sand() { [ -n "$sand_txt" ] && sand_txt="$sand_txt、"; sand_txt="$sand_txt$1"; }
+[ "$sand_stale" = 1 ] && add_sand "僵死（需重启应用）"
+[ "$sand_rollback" = 1 ] && add_sand "回滚未卸干净（需重启应用）"
+[ "$sand_skip" = 1 ] && add_sand "未重建（安全拒绝，需重启应用）"
+[ "$sand_gone" = 1 ] && add_sand "丢失（会尝试重建）"
+if [ -n "$sand_txt" ]; then
+  case "$reason" in
+    fix_error_*) sand_txt="上次记录：$sand_txt（最近一轮修复失败，状态可能过期）" ;;
+  esac
+  printf ' 沙箱   %s\n' "$sand_txt"
+fi
 
-raw=$(/system/bin/sh "$MOD/scripts/fix-si-mounts.sh" -n 2>/dev/null | tail -1)
+raw=$(timeout 40 "$SH_BIN" "$MOD/scripts/fix-si-mounts.sh" -n 2>/dev/null | tail -1)
+# 取不到 RESULT 行（fix 被 OOM/timeout/缺失，或锁目录建不出来）必须报失败，
+# 不能把空输出当成“0 个进程 · 没有需要修复”。
+case "$raw" in
+  RESULT\ *) ;;
+  *) raw="" ;;
+esac
 chk=$(printf '%s' "$raw" | sed -n 's/.*checked=\([0-9]*\).*/\1/p')
 brk=$(printf '%s' "$raw" | sed -n 's/.*broken=\([0-9]*\).*/\1/p')
 fixn=$(printf '%s' "$raw" | sed -n 's/.*fixed=\([0-9]*\).*/\1/p')
@@ -232,7 +261,9 @@ rretry=$(printf '%s' "$raw" | sed -n 's/.*retry=\([0-9]*\).*/\1/p')
 [ -n "$rchurn" ] || rchurn=0
 [ -n "$rretry" ] || rretry=0
 printf ' ─────────────────────────────\n'
-if printf '%s' "$raw" | grep -q 'defer=fuse'; then
+if [ -z "$raw" ]; then
+  printf ' 体检   执行失败（无结果行）\n'
+elif printf '%s' "$raw" | grep -q 'defer=fuse'; then
   printf ' 体检   FUSE 未就绪，本轮未动挂载；守护会在开机宽限期内退避重试\n'
 elif printf '%s' "$raw" | grep -q 'error='; then
   _err=$(printf '%s' "$raw" | sed -n 's/.*error=\([A-Za-z0-9_.-]*\).*/\1/p')

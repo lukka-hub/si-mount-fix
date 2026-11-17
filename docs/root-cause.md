@@ -120,7 +120,7 @@ cat trace_pipe
 **对比设备号。** 重挂前后分别读宿主和应用的挂载表：
 
 ```sh
-grep ' /mnt/user/0/emulated ' /proc/self/mountinfo
+grep ' /mnt/user/0/emulated ' /proc/1/mountinfo
 grep ' /storage/emulated/0 ' /proc/<pid>/mountinfo
 ```
 
@@ -139,28 +139,36 @@ peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和
    到 `/storage/emulated/0`；
 2. 再复用原来的共享目录修复逻辑，从 FUSE 层补 DCIM、Download 等目录；
 3. 重建失败（bind 失败或校验不通过）只报 `skipped=sandbox_gone`，不杀进程，
-   不动其它挂载，下一次扫描再试。
+   不动其它挂载，失败后 180 秒内不再重试。
 
 沙箱恢复后隔离重新生效，识别锚点也回来了，后续修复才有对象。
+
+1.4.2 起收紧了这条路径：没有本 boot 同 namespace 的 `.sandbox_seen` 证据时，普通
+FUSE 根不卸不 bind（报 `sandbox_skip`）；沙箱 `umount` 没卸干净或原 FUSE 根恢复失败时
+按 `rollback`/`sandbox_stale` 上报并等应用重启，不谎报已回滚，避免应用看到整块存储。
+目标被别的挂载层占用（例如残留的 f2fs bind）同样报 `sandbox_skip`，不进入 180 秒重试。
 
 两种故障态要分开看：
 
 - **可重建（`sandbox_gone`）**：应用 namespace 里已经没有沙箱挂载，但还能看到宿主
   重挂后的新 FUSE（`/mnt/user/0/emulated` 或 `/storage/emulated` 的设备号等于宿主）。
-  模块按上面的步骤重新 bind 沙箱，再补共享目录；应用 ns 里没有
-  `/mnt/user/0/emulated` 时，回退用应用自己的 `/storage/emulated/0/...` 视图作源。
+  模块按上面的步骤重新 bind 沙箱，再补共享目录。源只从宿主
+  `/mnt/user/0/emulated/0/...` 取；应用 ns 看不到该源时直接失败，不再回退到应用视图
+  （1.4.2 删除了 ALT 回退，避免在 `/mnt` 不可见时静默禁用预检）。
   升级/首次扫描没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，
-  也会按“曾经隔离过”重建。`.sandbox_seen` 记录 `pkg|boot|ns|SB`；换 boot 后旧证据
-  不再作为资格，避免用户关掉 SI 后把真实存储换成旧沙箱。
-  注意：回退源只能安全恢复沙箱根；如果连共享目录源在应用 ns 里也不可见，模块会把
-  刚 bind 的沙箱回滚并报 `sandbox_gone`，不会留下一个空沙箱。
+  也会按“曾经隔离过”重建，但只限目标本来没有挂载（n=0）；普通 FUSE 根不拆（`sandbox_skip`）。
+  `.sandbox_seen` 记录 `pkg|boot|ns|SB`：同 boot 同 ns 直接通过；只有该包只剩别的 boot
+  的旧行、本 boot 一行都没有时才拒绝兜底；本 boot 有任意 ns 行（应用重启换了 ns）时
+  允许 n=0 的“源+属主”回落。
+  注意：如果共享目录源在应用 ns 里不可见，模块会把刚 bind 的沙箱回滚，不会留下空沙箱。
 - **僵死（`sandbox_stale`）**：应用 namespace 里的沙箱还是旧设备号（实测 `0:286`），
   宿主已经是新设备号（`0:318`）；应用内读 `/storage/emulated/0/...` 报
   `Transport endpoint is not connected`。旧 FUSE 会话已经不存在，跨 namespace bind
   会 `EINVAL`，卸掉旧挂载也拿不到新 FUSE；模块只能报 `skipped=sandbox_stale`，
   不碰挂载，需要重启该应用让 SI 重建 namespace。扫描时只有“沙箱本身是 FUSE 且
-  设备号在宿主 `/proc/self/mountinfo` 里查不到”才会判僵死，真正挂在别的层的沙箱
-  仍报 `skipped=layer`。
+  设备号在宿主 `/proc/1/mountinfo` 里查不到”才会判僵死，真正挂在别的层的沙箱
+  仍报 `skipped=layer`。回滚失败/原根恢复失败也归到这里（`sandbox_stale`/`rollback`），
+  不再混报可重试的 `sandbox_gone`。
 
 ### 不是 ColorOS 专有
 

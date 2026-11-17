@@ -148,6 +148,19 @@ done
 [ -z "$leak" ] && ok "3 套 daemon 测试 stub 都走 scripts/result.sh" \
   || bad "stub 仍手写 RESULT 或未 source：$leak"
 
+# ---------- 9) fix 可能输出的 skipped token 必须有中文标签 ----------
+# 漏一个标签，action/WebUI 就会把英文 token 原样显示给用户；rollback 是新加的，
+# 但这里把所有 token 一起锁住，避免以后再漏。
+missing=""
+for tok in locked disabled identity layer source source_ns bindfail \
+           sandbox_gone sandbox_stale sandbox_skip rollback churn \
+           template dir_space dir_invalid; do
+  grep -q "^[[:space:]]*$tok)" action.sh 2>/dev/null || missing="$missing action:$tok"
+  grep -q "^[[:space:]]*$tok:" webroot/index.html 2>/dev/null || missing="$missing webui:$tok"
+done
+[ -z "$missing" ] && ok "skipped 的每个 token 在 action/WebUI 都有标签" \
+  || bad "缺少标签：$missing"
+
 echo
 [ "$fail" = 0 ] && { echo "result.test: PASS"; exit 0; }
 echo "result.test: FAIL"; exit 1

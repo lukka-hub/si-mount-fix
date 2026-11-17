@@ -4,9 +4,8 @@
 #
 # 输出（每行一个字段，| 分隔）：
 #   Q|pkg              所有 app 记录（apps/packages 数组）的 package_name（供进程匹配；含未启用项）
-#   P|pkg|en|why       带 mount_dirs 的 app；en=1 表示启用（缺省启用，与旧实现一致，
+#   P|pkg|en          带 mount_dirs 的 app；en=1 表示启用（缺省启用，与旧实现一致，
 #                      只有显式 "enabled":false 或非布尔值才判停用）
-#                      why=ok/default/false/format
 #   D|pkg|dir          该 app 允许的目录（模板 + 自定义目录，已去重）
 #   X|pkg|tag|dir      被跳过的目录；tag=dir_space/dir_invalid
 #   U|pkg|id           未知模板 id（配置里没有；不猜内置目录，fail-closed）
@@ -243,7 +242,7 @@ function parse_mount_dirs(start,  i, c, ke, key, ve, k) {
   return -1
 }
 
-function parse_apps(start,  i, c, ke, key, ve, pkg, en, why, dseen, tids, cdirs, k) {
+function parse_apps(start,  i, c, ke, key, ve, pkg, en, dseen, tids, cdirs, k) {
   i = start + 1
   while (i <= L) {
     i = ws(i)
@@ -253,7 +252,6 @@ function parse_apps(start,  i, c, ke, key, ve, pkg, en, why, dseen, tids, cdirs,
     if (c != "{") return -1
     pkg = ""
     en = 1
-    why = "default"
     dseen = 0
     tids = ""
     cdirs = ""
@@ -280,9 +278,8 @@ function parse_apps(start,  i, c, ke, key, ve, pkg, en, why, dseen, tids, cdirs,
       } else if (key == "enabled") {
         ve = pval(i)
         if (ve < 0) return -1
-        if (substr(buf, i, ve - i) == "true") { en = 1; why = "ok" }
-        else if (substr(buf, i, ve - i) == "false") { en = 0; why = "false" }
-        else { en = 0; why = "format" }
+        if (substr(buf, i, ve - i) == "true") en = 1
+        else en = 0
         i = ve
       } else if (key == "mount_dirs") {
         dseen = 1
@@ -307,7 +304,6 @@ function parse_apps(start,  i, c, ke, key, ve, pkg, en, why, dseen, tids, cdirs,
       NAPP++
       APKG[NAPP] = pkg
       AEN[NAPP] = en
-      AWHY[NAPP] = why
       AD[NAPP] = dseen
       ATIDS[NAPP] = tids
       ACUS[NAPP] = cdirs
@@ -365,7 +361,7 @@ function emit(  a, pkg, i, j, n, id, dirs, arr, cds, nd) {
     if (!valid_pkg(pkg)) continue
     print "Q|" pkg
     if (!AD[a]) continue
-    print "P|" pkg "|" AEN[a] "|" AWHY[a]
+    print "P|" pkg "|" AEN[a]
     if (AEN[a] != 1) continue
     n = split(ATIDS[a], arr, SUBSEP)
     for (i = 1; i <= n; i++) {
