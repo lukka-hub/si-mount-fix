@@ -100,7 +100,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.1` 与 `versionCode=151`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.2` 与 `versionCode=152`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -157,9 +157,19 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
 为控制体积，重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号）；
 因此体积 325,984 B，与原版 331,520 B 接近。
 
+**自动重启 SI server**：apply/restore 成功后会查找映射 `server-v355.dex` 的进程，只结束这些
+进程（先 TERM 再 KILL），SI daemon 会在约 3 秒内用新 dex 重启 server；不会杀 daemon 或应用。
+最多等 5 秒，失败只提示重开 SI/重启手机，不回滚已经写好的 dex。
+
+**面板显示**：Android SDK 不是 37、或没有安装 SI 时，整张补丁卡片隐藏；SDK 37 但 SI 版本/哈希
+不在支持范围时显示卡片但按钮置灰；当前不是原版且存在有效原版备份时，可用「强制恢复」；
+只有版本匹配且状态为 `original` 才启用「应用补丁」，`patched` 才启用「恢复原版」。
+首次提示也只在 SDK 37 且版本匹配时出现。
+
 **在 WebUI 里操作**：
 
-1. 首次打开面板且状态为 `original` 时，顶部会提示「Android 17 应用列表可能为空」。
+1. 首次打开面板、SDK 为 37 且状态为 `original`（版本匹配）时，顶部会提示
+   「Android 17 应用列表可能为空」。
    点「应用补丁」先进入确认（按钮需再点一次「确认应用」），确认框会显示目标 SI 版本和
    「仅适用于 8.8.1.r3684（server-v355）」；点「暂不」不会改动任何文件。首次提示后会写
    `/data/adb/si-mount-fix/.patch_prompted`，之后不再自动弹，手动入口在
@@ -169,7 +179,8 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
    `/data/adb/si-mount-fix/patch-backup/server-v355.dex.<时间戳>`（权限 600），
    再把模块 `assets/server-v355.dex` 复制到目标，`chown root:root`、`chmod 600`，
    校验 sha256 后原子替换；替换后会再校验一次，不符就用备份覆盖回去。
-4. 完成后**重新打开 SI**（不用重启手机）。已应用状态会显示「已应用，可恢复原版」。
+4. 应用/恢复成功后会自动重启 SI server，通常不用手动重开；若列表没有刷新，再重开 SI 或
+   重启手机。已应用状态会显示「已应用，可恢复原版」。
 5. 恢复：在卡片里点「恢复原版」，或运行 `restore`。恢复会按时间从新到旧扫描备份，
    选第一份 sha256 等于原版的；当前是 `unknown` 但存在有效原版备份时，卡片会提供
    「强制恢复」（命令行 `restore --force`），需要显式确认。

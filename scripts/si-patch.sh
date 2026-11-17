@@ -15,7 +15,8 @@
 #   restore        当前为补丁版时，从新到旧找第一份 sha==原版的备份恢复
 #   restore --force 当前不是补丁版（如 unknown）但存在有效原版备份时，显式覆盖恢复
 #
-# 只碰 server-v355.dex：不改 main.dex、不改 SI 配置、不动 SI 的其它文件，也不自动重启 SI。
+# 只碰 server-v355.dex：不改 main.dex、不改 SI 配置、不动 SI 的其它文件；
+# apply/restore 成功只重启映射该 dex 的 server 进程，不杀 daemon/app。
 LC_ALL=C
 export LC_ALL
 
@@ -29,6 +30,10 @@ DATA=${SI_DATA:-/data/adb/si-mount-fix}
 BIN=/data/adb/storage-isolation/bin
 ASSET=$MODDIR/assets/$SERVER
 CP=cp
+PROC=/proc
+KILL=kill
+RESTART_WAIT=5
+TERM_WAIT=1
 
 # 测试钩子只在 SI_TEST=1 时生效，生产环境忽略残留变量。
 # SI_PATCH_ORIGINAL_SHA 让测试用小样本扮演“原版”；补丁哈希始终用真实值。
@@ -38,7 +43,13 @@ if [ "$SI_TEST" = 1 ]; then
   [ -n "${SI_PATCH_ASSET:-}" ] && ASSET=$SI_PATCH_ASSET
   [ -n "${SI_PATCH_ORIGINAL_SHA:-}" ] && ORIGINAL_SHA=$SI_PATCH_ORIGINAL_SHA
   [ -n "${SI_PATCH_CP:-}" ] && CP=$SI_PATCH_CP
+  [ -n "${SI_PATCH_PROC:-}" ] && PROC=$SI_PATCH_PROC
+  [ -n "${SI_PATCH_KILL:-}" ] && KILL=$SI_PATCH_KILL
+  [ -n "${SI_PATCH_RESTART_WAIT:-}" ] && RESTART_WAIT=$SI_PATCH_RESTART_WAIT
+  [ -n "${SI_PATCH_TERM_WAIT:-}" ] && TERM_WAIT=$SI_PATCH_TERM_WAIT
 fi
+case "$RESTART_WAIT" in ''|*[!0-9]*) RESTART_WAIT=5 ;; esac
+case "$TERM_WAIT" in ''|*[!0-9]*) TERM_WAIT=1 ;; esac
 DEX=$BIN/$SERVER
 BACKUP_DIR=$DATA/patch-backup
 LOCK=$DATA/.si-patch.lock
@@ -109,6 +120,68 @@ find_original_backup() {
       break
     fi
   done
+}
+
+# 只结束映射了目标 dex 的 server 进程；daemon 由 PPID 1 拉起，不会映射这个 dex，不碰。
+restart_si_server() {
+  _old=
+  for _maps in "$PROC"/[0-9]*/maps; do
+    [ -r "$_maps" ] || continue
+    grep -q -F "$DEX" "$_maps" 2>/dev/null || continue
+    _p=${_maps%/maps}
+    _p=${_p##*/}
+    case " $_old " in
+      *" $_p "*) continue ;;
+    esac
+    _old="$_old $_p"
+  done
+  if [ -z "$_old" ]; then
+    log_action "SERVER-RESTART skip"
+    return 2
+  fi
+
+  for _p in $_old; do
+    "$KILL" -TERM "$_p" 2>/dev/null
+  done
+  sleep "$TERM_WAIT"
+  for _p in $_old; do
+    if [ -r "$PROC/$_p/maps" ] && grep -q -F "$DEX" "$PROC/$_p/maps" 2>/dev/null; then
+      "$KILL" -KILL "$_p" 2>/dev/null
+    fi
+  done
+
+  _new=
+  _i=0
+  while [ "$_i" -lt $((RESTART_WAIT * 10)) ]; do
+    for _maps in "$PROC"/[0-9]*/maps; do
+      [ -r "$_maps" ] || continue
+      grep -q -F "$DEX" "$_maps" 2>/dev/null || continue
+      _p=${_maps%/maps}
+      _p=${_p##*/}
+      case " $_old " in
+        *" $_p "*) continue ;;
+      esac
+      _new=$_p
+      break 2
+    done
+    sleep 0.1
+    _i=$((_i + 1))
+  done
+
+  if [ -n "$_new" ]; then
+    log_action "SERVER-RESTART ok pid=$_new"
+    return 0
+  fi
+  log_action "SERVER-RESTART fail"
+  return 1
+}
+
+restart_note() {   # $1=应用|恢复 $2=restart_si_server 的返回码
+  case "$2" in
+    0) printf '已%s，SI server 已自动重启；若列表未刷新请重开 SI。\n' "$1" ;;
+    2) printf '已%s；当前没有运行中的 SI server，打开 SI 后生效。\n' "$1" ;;
+    *) printf '已%s；SI server 自动重启失败，请重开 SI 或重启手机。\n' "$1" ;;
+  esac
 }
 
 si_version_ok() {
@@ -412,7 +485,9 @@ do_apply() {
   fi
   log_action "APPLY si=${SI_VERSION:-?} original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
   printf '已应用补丁：%s\n' "$DEX"
-  printf '请重新打开存储空间隔离（SI）生效。\n'
+  _restart=0
+  restart_si_server || _restart=$?
+  restart_note 应用 "$_restart"
 }
 
 do_restore() {
@@ -485,7 +560,9 @@ do_restore() {
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"
   fi
   printf '已恢复原版：%s\n' "$DEX"
-  printf '请重新打开存储空间隔离（SI）生效。\n'
+  _restart=0
+  restart_si_server || _restart=$?
+  restart_note 恢复 "$_restart"
 }
 
 case "${1:-}" in

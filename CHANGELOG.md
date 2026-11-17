@@ -1,13 +1,11 @@
 # 更新日志
 
-## 1.5.1
+## 1.5.2
 
-- 补丁 dex 改为对官方 SI v355 的 `server-v355.dex` 自行反编译重打（325,984 B）。
-- 只改 4 条指令：`IPackageManager.getInstalledPackages(JI)` 和 `getInstalledPackages(II)`
-  的返回类型由 `ParceledListSlice` 改为 `PackageInfoList`；两处 `ParceledListSlice.getList()`
-  改为 `PackageInfoList.getList()`。
-- 其余 386 类、1635 方法（1634 个方法体完全一致）、806 字段不变；新增字符串只有
-  `Landroid/content/pm/PackageInfoList;`。
-- 重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号），所以体积更接近原版。
-- 仍仅适用于 SI 8.8.1 r3684 / server-v355；应用、恢复、强制恢复都需要二次确认。
+- apply/restore 成功后会找到映射 `server-v355.dex` 的 SI server 进程，只结束这些进程；
+  SI daemon 会在约 3 秒内用新 dex 重启 server，不再需要手动杀进程或重开 SI。
+- 不会杀 daemon 或应用；5 秒内没有看到新 server 时只提示重开 SI/重启手机，不回滚已写入的 dex。
+- 面板分级显示：非 Android 17 或未装 SI 时隐藏补丁卡片；SI 版本/哈希不匹配时显示卡片但按钮置灰，
+  当前不是原版且存在有效原版备份时可用「强制恢复」；只有匹配的原版才启用「应用补丁」。
+- 版本 v1.5.2 / 152。
 - 思路由酷安用户「无所事事」提供。

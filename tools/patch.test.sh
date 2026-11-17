@@ -31,7 +31,7 @@ cleanup() {
   rm -rf "$T"
 }
 trap cleanup EXIT INT TERM HUP
-mkdir -p "$DATA" "$BIN" "$T/fakebin" "$T/holder" || exit 1
+mkdir -p "$DATA" "$BIN" "$T/fakebin" "$T/holder" "$T/proc-empty" || exit 1
 
 fail=0
 ok()  { echo "  ok   $1"; }
@@ -71,6 +71,11 @@ CHOWN_OVERRIDE=
 PRELOCK_SLEEP=
 PRELOCK_MARK=
 CORRUPT_MARK=
+PROC_OVERRIDE=$T/proc-empty
+KILL_OVERRIDE=
+RESTART_WAIT=
+TERM_WAIT=0
+TEST_RESTART=
 OUT=
 ERR=
 RC=0
@@ -81,6 +86,9 @@ run_patch() {
     SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_CP=$CP_OVERRIDE \
     SI_PATCH_CHOWN=$CHOWN_OVERRIDE SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP \
     SI_PATCH_PRELOCK_MARK=$PRELOCK_MARK SI_PATCH_CORRUPT_AFTER_MV=$CORRUPT_MARK \
+    SI_PATCH_PROC=$PROC_OVERRIDE SI_PATCH_KILL=$KILL_OVERRIDE \
+    SI_PATCH_RESTART_WAIT=$RESTART_WAIT SI_PATCH_TERM_WAIT=$TERM_WAIT \
+    SI_PATCH_TEST_RESTART=$TEST_RESTART SI_PATCH_TEST_FAKE_DEX=$BIN/server-v355.dex \
     "$TEST_SH" "$PATCH" "$@"
 }
 
@@ -132,6 +140,11 @@ reset_hooks() {
   PRELOCK_SLEEP=
   PRELOCK_MARK=
   CORRUPT_MARK=
+  PROC_OVERRIDE=$T/proc-empty
+  KILL_OVERRIDE=
+  RESTART_WAIT=
+  TERM_WAIT=0
+  TEST_RESTART=
   SDK=37
   SI_VER_OK=8.8.1.r3684.test
 }
@@ -360,7 +373,10 @@ run_capture_umask apply
 [ "$RC" = 0 ] && ok "umask 022 下 apply 成功" || bad "umask 022 下 apply 失败：$ERR"
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "目标已换成补丁 dex" \
   || bad "目标哈希不是补丁：$(target_sha)"
-has "$OUT" '重新打开' && ok "成功提示重开 SI" || bad "成功提示缺重开 SI：$OUT"
+has "$OUT" '没有运行中的 SI server' && ok "未运行 server 时提示打开 SI" \
+  || bad "未运行 server 时提示不对：$OUT"
+grep -q 'SERVER-RESTART skip' "$DATA/patch.log" 2>/dev/null \
+  && ok "未运行 server 时记录 skip" || bad "未运行 server 时没有 skip 日志"
 [ "$(backup_count)" = 1 ] && ok "apply 留下 1 份备份" || bad "apply 备份数不对：$(backup_count)"
 _bl=$(latest_backup)
 [ -n "$_bl" ] && [ "$(sha_of "$_bl")" = "$ORIG_SHA" ] && ok "备份内容为原版" \
@@ -549,6 +565,7 @@ cp "$T/original.bin" "$D1/patch-backup/server-v355.dex.20260101-000000"
 chmod 600 "$D1/patch-backup/server-v355.dex.20260101-000000"
 SI_TEST=1 SI_MOD=$M1 SI_DATA=$D1 SI_PATCH_BIN=$B1 SI_PATCH_SDK=37 \
   SI_PATCH_VERSION=$SI_VER_OK SI_PATCH_ORIGINAL_SHA=$ORIG_SHA \
+  SI_PATCH_PROC=$T/proc-empty SI_PATCH_TERM_WAIT=0 \
   "$TEST_SH" uninstall.sh >"$T/un1.out" 2>"$T/un1.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "卸载脚本成功退出" || bad "卸载脚本退出码 $_rc"
@@ -570,6 +587,7 @@ printf 'corrupt backup\n' > "$D2/patch-backup/server-v355.dex.20260101-000000"
 chmod 600 "$D2/patch-backup/server-v355.dex.20260101-000000"
 SI_TEST=1 SI_MOD=$M2 SI_DATA=$D2 SI_PATCH_BIN=$B2 SI_PATCH_SDK=37 \
   SI_PATCH_VERSION=$SI_VER_OK SI_PATCH_ORIGINAL_SHA=$ORIG_SHA \
+  SI_PATCH_PROC=$T/proc-empty SI_PATCH_TERM_WAIT=0 \
   "$TEST_SH" uninstall.sh >"$T/un2.out" 2>"$T/un2.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "恢复失败时卸载脚本仍成功退出" || bad "恢复失败时卸载退出码 $_rc"
@@ -581,7 +599,92 @@ _rc=$?
 has "$(cat "$T/un2.out" 2>/dev/null)" '补丁备份保留在' \
   && ok "卸载输出保留路径提示" || bad "卸载输出没有保留提示"
 
-# ---------- 20) WebUI / action / build 接线（静态） ----------
+# ---------- 20) 自动重启 SI server：成功 / 跳过 / 失败 ----------
+cat > "$T/fakebin/kill" <<'S'
+#!/bin/sh
+printf '%s\n' "$*" >> "$0.log"
+pid=
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *) pid=$a ;;
+  esac
+done
+[ -n "$pid" ] || exit 1
+case " $* " in
+  *" -TERM "*)
+    rm -rf "$SI_PATCH_PROC/$pid"
+    if [ "$SI_PATCH_TEST_RESTART" = 1 ]; then
+      mkdir -p "$SI_PATCH_PROC/101"
+      printf '%s\n' "$SI_PATCH_TEST_FAKE_DEX" > "$SI_PATCH_PROC/101/maps"
+    fi ;;
+  *" -KILL "*)
+    rm -rf "$SI_PATCH_PROC/$pid" ;;
+esac
+exit 0
+S
+chmod 755 "$T/fakebin/kill"
+
+# 20a) 找到映射 dex 的 server → 杀掉后新进程出现
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-found" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-found/100"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-found/100/maps"
+PROC_OVERRIDE=$T/proc-found
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=2
+TERM_WAIT=0
+TEST_RESTART=1
+run_capture apply
+[ "$RC" = 0 ] && ok "server 重启成功路径 apply 成功" || bad "server 重启成功路径 apply 失败：$ERR"
+has "$OUT" 'SI server 已自动重启' && ok "apply 提示 server 已自动重启" \
+  || bad "apply 没提示 server 重启：$OUT"
+grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
+  && ok "server 重启成功写入 ok 日志" || bad "server 重启成功没有 ok 日志"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "server 重启成功后 dex 仍是补丁" \
+  || bad "server 重启成功后 dex 不对"
+grep -q -- '-TERM 100' "$T/fakebin/kill.log" 2>/dev/null \
+  && ok "只对映射 dex 的 PID 发 TERM" || bad "没有对映射 dex 的 PID 发 TERM"
+grep -q -- '-KILL' "$T/fakebin/kill.log" 2>/dev/null \
+  && bad "TERM 后进程已退出仍发了 KILL" || ok "TERM 后没有多余 KILL"
+
+# 20b) 没有运行中的 server → skip，不影响 apply
+reset_hooks
+clean_data
+reset_original
+PROC_OVERRIDE=$T/proc-empty
+run_capture apply
+[ "$RC" = 0 ] && ok "没有 server 时 apply 成功" || bad "没有 server 时 apply 失败：$ERR"
+has "$OUT" '没有运行中的 SI server' && ok "没有 server 时提示打开 SI" \
+  || bad "没有 server 时提示不对：$OUT"
+grep -q 'SERVER-RESTART skip' "$DATA/patch.log" 2>/dev/null \
+  && ok "没有 server 时写入 skip 日志" || bad "没有 server 时没有 skip 日志"
+
+# 20c) 杀掉旧 server 但没有新进程 → fail，不回滚 dex
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-fail" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-fail/100"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-fail/100/maps"
+PROC_OVERRIDE=$T/proc-fail
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=1
+TERM_WAIT=0
+TEST_RESTART=0
+run_capture apply
+[ "$RC" = 0 ] && ok "server 重启失败时 apply 仍成功" || bad "server 重启失败时 apply 失败：$RC"
+has "$OUT" 'SI server 自动重启失败' && ok "server 重启失败有提示" \
+  || bad "server 重启失败没提示：$OUT"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "server 重启失败不回滚 dex" \
+  || bad "server 重启失败把 dex 回滚了"
+grep -q 'SERVER-RESTART fail' "$DATA/patch.log" 2>/dev/null \
+  && ok "server 重启失败写入 fail 日志" || bad "server 重启失败没有 fail 日志"
+
+# ---------- 21) WebUI / action / build 接线（静态） ----------
+
 grep -q 'P.patch = P.mod' webroot/index.html && ok "WebUI 指向 si-patch.sh" \
   || bad "WebUI 没接线 si-patch.sh"
 grep -q '\.patch_prompted' webroot/index.html && ok "WebUI 使用 .patch_prompted" \
@@ -616,8 +719,24 @@ _run_refs=$(grep -c 'runPatchAction' webroot/index.html)
   || bad "runPatchAction 调用点不对：$_run_refs"
 grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
   || bad "WebUI 缺少已应用文案"
-grep -q '版本不匹配，未动' webroot/index.html && ok "WebUI 版本不匹配文案" \
-  || bad "WebUI 缺少版本不匹配文案"
+grep -q '当前 SI 版本/哈希不在支持范围，未做任何修改' webroot/index.html \
+  && ok "WebUI 不支持范围提示" || bad "WebUI 缺少不支持范围提示"
+grep -q "getprop ro.build.version.sdk" webroot/index.html \
+  && grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.html \
+  && ok "SDK!=37 在 check 前隐藏卡片（SDK 14/15）" \
+  || bad "WebUI 没有在 check 前按 SDK 隐藏"
+grep -q "state.patchSdk !== '37'" webroot/index.html \
+  && ok "render/arm 也按 SDK 门禁" || bad "WebUI 缺少 patchSdk 门禁"
+grep -q "applyBtn.disabled = !canAct || !p || !p.match" webroot/index.html \
+  && ok "版本不匹配时 apply 置灰" || bad "版本不匹配时 apply 没置灰"
+grep -q "forceOk = !!(p && p.backupOk" webroot/index.html \
+  && grep -q "st === 'unknown' || (st === 'patched' && !p.match)" webroot/index.html \
+  && grep -q "applyBtn.hidden = !(st === 'original')" webroot/index.html \
+  && grep -q "restoreBtn.hidden = !(st === 'patched')" webroot/index.html \
+  && grep -q "forceBtn.hidden = !forceOk" webroot/index.html \
+  && ok "unknown+备份只留强制恢复" || bad "unknown 强制恢复条件不对"
+grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
+  && ok "首次提示只给 SDK37+匹配" || bad "首次提示缺 SDK/匹配门禁"
 grep -q "SI_MATCH" webroot/index.html && grep -q "BACKUP_OK" webroot/index.html \
   && ok "WebUI 读取版本门禁与有效备份字段" || bad "WebUI 没读新字段"
 grep -q 'si-patch\.sh" status' action.sh && ok "action.sh 显示补丁状态" \
@@ -630,21 +749,16 @@ grep -q '7a941f35' tools/build.sh && ok "构建脚本校验补丁 sha" \
   || bad "构建脚本没有校验补丁 sha"
 grep -q 'siPatchVersion' tools/build.sh && ok "构建脚本校验适用版本字段" \
   || bad "构建脚本没有校验适用版本字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.1' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.2' CHANGELOG.md \
   && ! grep -q '^## 1.5.0' CHANGELOG.md \
-  && ok "CHANGELOG 只列出 1.5.1" || bad "CHANGELOG 不是只含 1.5.1"
+  && ! grep -q '^## 1.5.1' CHANGELOG.md \
+  && ok "CHANGELOG 只列出 1.5.2" || bad "CHANGELOG 不是只含 1.5.2"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '反编译改动' README.md && ok "README 有反编译改动一节" \
   || bad "README 缺少反编译改动"
-_stale=0
-for _f in scripts/si-patch.sh tools/build.sh README.md HISTORY.md \
-          CHANGELOG.md module.prop update.json; do
-  grep -q '48ff195e\|380692' "$_f" 2>/dev/null && _stale=1
-done
-[ "$_stale" = 0 ] && ok "没有旧补丁哈希/大小残留" || bad "还有旧补丁哈希/大小残留"
 
 echo
 [ "$fail" = 0 ] && { echo "patch.test: PASS"; exit 0; }

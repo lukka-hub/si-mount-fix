@@ -607,7 +607,7 @@ details.card[open] summary{margin-bottom:8px}
     config: null, configRaw: null, snapshot: null, snapshotTs: 0,
     uid: null, noRoot: false, statusExist: null, statusSize: null,
     apps: null, log: null, busy: false,
-    patch: null, patchError: '', patchBusy: false, patchDismissed: false,
+    patch: null, patchError: '', patchSdk: null, patchBusy: false, patchDismissed: false,
     patchMarked: false, patchConfirm: null, patchConfirmTimer: null
   };
 
@@ -931,7 +931,12 @@ details.card[open] summary{margin-bottom:8px}
     state.alive = null;
     state.fetchedAt = Date.now();
     state.mode = 'live';
-    state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
+    if (state.patchSdk && state.patchSdk !== '37') {
+      state.patch = null;
+      state.patchError = '';
+    } else {
+      state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
+    }
     renderPatch();
     renderStatus();
     lockConfig(msg || '没有 root 权限，配置只读。');
@@ -1015,7 +1020,8 @@ details.card[open] summary{margin-bottom:8px}
     }).then(function () {
       return state.noRoot ? false : loadLog();
     }).then(function () {
-      return state.noRoot ? false : loadPatch();
+      /* 即使没有 root 也先读 SDK：非 Android 17 直接隐藏卡片；37 再显示权限错误。 */
+      return loadPatch();
     });
   }
 
@@ -1035,35 +1041,64 @@ details.card[open] summary{margin-bottom:8px}
     return out;
   }
 
+  /* SDK != 37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
+     SDK=37 才继续检查 SI 状态。 */
+  function ensurePatchSdk() {
+    if (state.patchSdk !== null && state.patchSdk !== undefined) {
+      return Promise.resolve(state.patchSdk);
+    }
+    return run('getprop ro.build.version.sdk').then(function (res) {
+      var sdk = String(res.stdout || '').replace(/\s+$/, '').replace(/^\s+/, '');
+      if (!sdk) { throw new Error('无法读取 Android SDK'); }
+      state.patchSdk = sdk;
+      return sdk;
+    });
+  }
+
+  function hidePatchCard() {
+    state.patch = null;
+    state.patchError = '';
+    renderPatch();
+    renderStateBanner();
+  }
+
   function loadPatch() {
     clearPatchConfirmState();
-    if (!BR.ok || state.noRoot) {
-      state.patchError = BR.ok
-        ? '没有 root 权限，无法读取或执行补丁操作。'
-        : '未连接 WebUI 桥接，暂时无法读取补丁状态。';
+    if (!BR.ok) {
+      if (state.patchSdk && state.patchSdk !== '37') { hidePatchCard(); return Promise.resolve(false); }
+      state.patchError = '未连接 WebUI 桥接，暂时无法读取补丁状态。';
       renderPatch();
       renderStateBanner();
       return Promise.resolve(false);
     }
-    return run('sh ' + P.patch + ' check').then(function (res) {
-      var p = parseKv(res.stdout);
-      if (!p.STATE) { throw new Error('补丁检查没有返回 STATE'); }
-      p.state = String(p.STATE);
-      p.sdk = String(p.SDK || '');
-      p.si = String(p.SI_VERSION || '');
-      p.targetVersion = String(p.SI_TARGET_VERSION || '');
-      p.targetServer = String(p.SI_TARGET_SERVER || '');
-      p.match = toInt(p.SI_MATCH, 0) === 1;
-      p.size = toInt(p.SIZE, 0);
-      p.sha = String(p.SHA || '');
-      p.backup = toInt(p.BACKUP_COUNT, 0);
-      p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
-      p.prompted = toInt(p.PROMPTED, 0) === 1;
-      state.patch = p;
-      state.patchError = '';
-      renderPatch();
-      renderStateBanner();
-      return true;
+    return ensurePatchSdk().then(function (sdk) {
+      if (sdk !== '37') { hidePatchCard(); return false; }
+      if (state.noRoot) {
+        state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
+        renderPatch();
+        renderStateBanner();
+        return false;
+      }
+      return run('sh ' + P.patch + ' check').then(function (res) {
+        var p = parseKv(res.stdout);
+        if (!p.STATE) { throw new Error('补丁检查没有返回 STATE'); }
+        p.state = String(p.STATE);
+        p.sdk = String(p.SDK || '');
+        p.si = String(p.SI_VERSION || '');
+        p.targetVersion = String(p.SI_TARGET_VERSION || '');
+        p.targetServer = String(p.SI_TARGET_SERVER || '');
+        p.match = toInt(p.SI_MATCH, 0) === 1;
+        p.size = toInt(p.SIZE, 0);
+        p.sha = String(p.SHA || '');
+        p.backup = toInt(p.BACKUP_COUNT, 0);
+        p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
+        p.prompted = toInt(p.PROMPTED, 0) === 1;
+        state.patch = p;
+        state.patchError = '';
+        renderPatch();
+        renderStateBanner();
+        return true;
+      });
     }).catch(function (err) {
       state.patchError = '补丁状态读取失败：' + String(err && err.message ? err.message : err);
       renderPatch();
@@ -1075,7 +1110,8 @@ details.card[open] summary{margin-bottom:8px}
   function patchPromptable() {
     var p = state.patch;
     return !!(BR.ok && !state.noRoot && !state.patchError && !state.patchConfirm && p &&
-      p.state === 'original' && p.sdk === '37' && p.match &&
+      state.patchSdk === '37' && p.sdk === '37' &&
+      p.state === 'original' && p.match &&
       !p.prompted && !state.patchDismissed);
   }
 
@@ -1142,11 +1178,13 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function armPatchAction(action) {
-    if (state.patchBusy || !BR.ok || state.noRoot || state.patchError || !state.patch) { return; }
+    if (state.patchBusy || !BR.ok || state.noRoot || state.patchError ||
+        state.patchSdk !== '37' || !state.patch) { return; }
     var p = state.patch;
     var ok = (action === 'apply' && p.state === 'original' && p.match) ||
-      (action === 'restore' && p.state === 'patched' && p.backupOk) ||
-      (action === 'force' && p.state === 'unknown' && p.backupOk);
+      (action === 'restore' && p.state === 'patched' && p.match && p.backupOk) ||
+      (action === 'force' && p.backupOk &&
+        (p.state === 'unknown' || (p.state === 'patched' && !p.match)));
     if (!ok) { return; }
     clearPatchConfirmTimer();
     state.patchConfirm = action;
@@ -1172,6 +1210,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function renderPatch() {
     var card = $('patchCard');
+    if (state.patchSdk && state.patchSdk !== '37') { card.hidden = true; return; }
     var p = state.patch;
     var err = state.patchError;
     if (!p && !err) { card.hidden = true; return; }
@@ -1202,22 +1241,29 @@ details.card[open] summary{margin-bottom:8px}
         hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用自建补丁修复。' +
           '补丁只替换 server-v355.dex，确认后才会执行。';
       } else {
-        badge = '版本不匹配';
-        hint.textContent = '当前 SI ' + (p.si || '版本未知') + '，补丁仅适用于 ' +
-          (p.targetVersion || '未知版本') + '（' + (p.targetServer || 'server-v355') + '），未动。';
+        badge = '不支持';
+        hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。补丁仅适用于 ' +
+          (p.targetVersion || '未知版本') + '（' + (p.targetServer || 'server-v355') + '）。';
       }
       hint.hidden = false;
     } else if (st === 'patched') {
-      badge = '已应用';
-      hint.textContent = '';
-      hint.hidden = true;
       bits.push('SI ' + (p.si || '版本未知'));
-      bits.push('已应用，可恢复原版');
+      bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
+      if (p.match) {
+        badge = '已应用';
+        hint.textContent = '';
+        hint.hidden = true;
+      } else {
+        badge = '不支持';
+        hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。' +
+          (p.backupOk ? ' 可用原版备份强制恢复。' : ' 没有可用的原版备份。');
+        hint.hidden = false;
+      }
     } else if (st === 'unknown') {
-      badge = '版本不匹配';
-      hint.textContent = '版本不匹配，未动：server-v355.dex 的 sha256 既不是原版也不是补丁版。' +
-        (p.backupOk ? ' 检测到有效原版备份，可强制恢复。' : ' 也没有可用的原版备份。');
+      badge = '不支持';
+      hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。' +
+        (p.backupOk ? ' 检测到有效原版备份，仅可强制恢复。' : ' 也没有可用的原版备份。');
       hint.hidden = false;
       bits.push('SI ' + (p.si || '版本未知'));
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
@@ -1229,24 +1275,26 @@ details.card[open] summary{margin-bottom:8px}
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
 
-    var canAct = !state.patchBusy && !err && BR.ok && !state.noRoot;
+    var canAct = !state.patchBusy && !err && BR.ok && !state.noRoot && state.patchSdk === '37';
+    var forceOk = !!(p && p.backupOk &&
+      (st === 'unknown' || (st === 'patched' && !p.match)));
     if (err) {
       applyBtn.hidden = true;
       restoreBtn.hidden = true;
       forceBtn.hidden = true;
     } else {
-      applyBtn.hidden = !(st === 'original' && p.match);
+      applyBtn.hidden = !(st === 'original');
       restoreBtn.hidden = !(st === 'patched');
-      forceBtn.hidden = !(st === 'unknown' && p.backupOk);
+      forceBtn.hidden = !forceOk;
     }
-    applyBtn.disabled = !canAct;
-    restoreBtn.disabled = !canAct || !p || !p.backupOk;
+    applyBtn.disabled = !canAct || !p || !p.match;
+    restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk;
     forceBtn.disabled = !canAct;
     $('patchActions').hidden = !!(state.patchConfirm) ||
       (applyBtn.hidden && restoreBtn.hidden && forceBtn.hidden);
 
     var panel = $('patchConfirm');
-    if (state.patchConfirm && !state.patchBusy && !err) {
+    if (state.patchConfirm && !state.patchBusy && !err && state.patchSdk === '37') {
       panel.hidden = false;
       $('patchConfirmTitle').textContent = patchConfirmTitle(state.patchConfirm);
       $('patchConfirmBody').textContent = patchConfirmBody(state.patchConfirm);
@@ -1267,7 +1315,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function runPatchAction(action) {
     if (state.patchBusy) { return; }
-    if (!BR.ok || !state.patch) {
+    if (!BR.ok || !state.patch || state.patchSdk !== '37') {
       showPatchResult('无法执行', '未连接 WebUI 桥接，补丁操作需要 root 权限。', 'bad');
       return;
     }
@@ -1286,7 +1334,7 @@ details.card[open] summary{margin-bottom:8px}
       if (res.errno !== 0) {
         showPatchResult(isApply ? '补丁应用失败' : '恢复失败', text || ('退出码 ' + res.errno), 'bad');
       } else {
-        showPatchResult(title + '，请重开 SI 生效', text, 'good');
+        showPatchResult(title, text, 'good');
       }
     }).catch(function (err) {
       showPatchResult(isApply ? '补丁应用失败' : '恢复失败',
