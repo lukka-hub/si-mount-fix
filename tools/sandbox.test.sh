@@ -16,6 +16,11 @@
 #   9) 旧 FUSE 僵死：沙箱设备已不在宿主 → skipped=sandbox_stale，不 mount/umount
 #  10) 旧设备在宿主仍存在（只是层不同）→ 保持 skipped=layer
 #  11) 应用 ns 看不到 /mnt/user/... 时，回退到应用视图 /storage/emulated/0 重建
+#  25) init /storage 旧、/mnt 新：按 /mnt 基准判 stale（不能被 /storage 带偏）
+#  26) 旧格式 seen 行被忽略，已丢沙箱仍能凭源+属主重建
+#  27) 无 SB 且 pkg/shared 两个变体都在 → fail-closed，不 bind
+#  28) umount 失败：不谎报“已回滚”，打 rollback tag 并保留现状
+#  29) 普通 FUSE 根被临时卸下后，bind 校验失败会把它挂回去
 #
 # 用法：sh tools/sandbox.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
@@ -98,14 +103,15 @@ export SI_TEST_PID=$pid
 case "$1" in
   test)
     shift
-    [ "$1" = "-d" ] && shift
+    _op=""
+    case "$1" in -d|-r) _op=$1; shift ;; esac
     _p=${1:-}
     # 模拟“应用 ns 看不到这个源”：精确路径或整棵前缀。
     [ -n "$SI_TEST_NS_HIDE" ] && [ "$_p" = "$SI_TEST_NS_HIDE" ] && exit 1
     if [ -n "$SI_TEST_NS_HIDE_PREFIX" ]; then
       case "$_p" in "$SI_TEST_NS_HIDE_PREFIX"*) exit 1 ;; esac
     fi
-    if [ "$SI_TEST_NS_TARGET_UNREADABLE" = 1 ] && [ "$_p" = "/storage/emulated/0" ]; then exit 1; fi
+    if [ "$SI_TEST_NS_TARGET_UNREADABLE" = 1 ] && [ "$_op" = "-r" ] && [ "$_p" = "/storage/emulated/0" ]; then exit 1; fi
     exit 0 ;;
   stat) echo "${SI_TEST_UID:-${SI_TEST_APP_UID:-0}}"; exit 0 ;;
   mount|umount) exec "$@" ;;
@@ -123,13 +129,17 @@ mi=$SI_TEST_MI
 [ -n "$mi" ] || exit 1
 dev=${SI_TEST_FDEV:-0:50}
 [ "$SI_TEST_BIND_BAD" = 1 ] && dev=0:99
-[ "$SI_TEST_BIND_WRONG_SRC" = 1 ] && src=/0/Android/data/com.other/sdcard
-printf '300 1 %s %s %s rw - fuse /dev/fuse rw\n' "$dev" "$src" "$tgt" >> "$mi"
+[ "$SI_TEST_BIND_WRONG_SRC" = 1 ] && [ "$src" != "/storage/emulated" ] && src=/0/Android/data/com.other/sdcard
+[ -n "$SI_TEST_BIND_FAIL_TGT" ] && [ "$SI_TEST_BIND_FAIL_TGT" = "$tgt" ] && { echo "mount: simulated failure" >&2; exit 1; }
+root=$src
+[ "$src" = "/storage/emulated" ] && root=/
+printf '300 1 %s %s %s rw - fuse /dev/fuse rw\n' "$dev" "$root" "$tgt" >> "$mi"
 S
 # umount stub：按 target 删除 fake mountinfo 里的行（绑定失败回滚用）。
 cat > "$BIN/umount" <<'S'
 #!/bin/sh
 [ -n "$SI_TEST_UMOUNT_LOG" ] && echo "$*" >> "$SI_TEST_UMOUNT_LOG"
+[ "$SI_TEST_UMOUNT_FAIL" = 1 ] && exit 1
 [ "$1" = "-l" ] && shift
 tgt=${1:-}
 [ -n "$tgt" ] || exit 1
@@ -184,7 +194,7 @@ setup_src() {
 
 UID_OVERRIDE=""; MI_DIR_OVERRIDE=""; PS_EXTRA=0; BIND_BAD=0
 ALT_ROOT=""; NS_HIDE=""; NS_HIDE_PREFIX=""; NS_TARGET_UNREADABLE=0
-PS_PKG=""; PS_TWO=0; BIND_WRONG_SRC=0; RUN_FIX=$FIX
+PS_PKG=""; PS_TWO=0; BIND_WRONG_SRC=0; UMOUNT_FAIL=0; BIND_FAIL_TGT=""; RUN_FIX=$FIX
 run_fix() {   # $1=数据目录 $2=1 表示 dry-run
   _d=$1; _dry=$2
   rm -f "$T/mount.log" "$T/nsenter.log" "$T/umount.log"
@@ -193,8 +203,8 @@ run_fix() {   # $1=数据目录 $2=1 表示 dry-run
     SI_TEST_DATA="$DATA" SI_TEST_SRC="$SRC" SI_TEST_ALT="$ALT_ROOT" SI_MIN_AGE=5 \
     SI_TEST_FDEV=0:50 SI_TEST_MI="$MI" SI_TEST_MI_DIR="$MI_DIR_OVERRIDE" \
     SI_TEST_UID="$UID_OVERRIDE" SI_TEST_PS_EXTRA="$PS_EXTRA" SI_TEST_PS_PKG="$PS_PKG" SI_TEST_PS_TWO="$PS_TWO" \
-    SI_TEST_BIND_BAD="$BIND_BAD" SI_TEST_BIND_WRONG_SRC="$BIND_WRONG_SRC" \
-    SI_TEST_NS_HIDE="$NS_HIDE" SI_TEST_NS_HIDE_PREFIX="$NS_HIDE_PREFIX" \
+    SI_TEST_BIND_BAD="$BIND_BAD" SI_TEST_BIND_WRONG_SRC="$BIND_WRONG_SRC" SI_TEST_BIND_FAIL_TGT="$BIND_FAIL_TGT" \
+    SI_TEST_NS_HIDE="$NS_HIDE" SI_TEST_NS_HIDE_PREFIX="$NS_HIDE_PREFIX" SI_TEST_UMOUNT_FAIL="$UMOUNT_FAIL" \
     SI_TEST_NS_TARGET_UNREADABLE="$NS_TARGET_UNREADABLE" \
     SI_TEST_APP_UID="$TEST_UID" SI_TEST_BOOT="$TEST_BOOT" \
     SI_TEST_MOUNT_LOG="$T/mount.log" SI_TEST_NSENTER_LOG="$T/nsenter.log" \
@@ -495,7 +505,11 @@ grep -q '/Android/data/com.victim/cache/sdcard /storage/emulated/0 ' "$MI" 2>/de
 # ---------- 18) 回退只恢复沙箱：共享源不可见 → 回滚并报 gone ----------
 D18=$T/data18; seed_seen "$D18" || exit 1
 base_mi; setup_src || exit 1
-ALT=$T/alt0
+ALT=$T/alt18; rm -rf "$ALT"
+mkdir -p "$ALT/Android/data/com.victim/sdcard/DCIM" \
+         "$ALT/Android/data/com.victim/sdcard/Android/data" \
+         "$ALT/Android/data/com.victim/sdcard/Android/media" \
+         "$ALT/Android/data/com.victim/sdcard/Android/obb" || exit 1
 ALT_ROOT=$ALT; NS_HIDE_PREFIX="$SRC/0"
 out=$(run_fix "$D18" 0); r=$(result "$out")
 ALT_ROOT=""; NS_HIDE_PREFIX=""
@@ -507,6 +521,8 @@ grep -q '/storage/emulated/0' "$T/umount.log" 2>/dev/null && ok "回滚调用 um
 # ---------- 19) 回退源属主不符：不能借回退绕过属主 ----------
 D19=$T/data19; seed_seen "$D19" || exit 1
 base_mi; setup_src || exit 1
+ALT=$T/alt19; rm -rf "$ALT"
+mkdir -p "$ALT/Android/data/com.victim/sdcard" || exit 1
 ALT_ROOT=$ALT; NS_HIDE=$SRC/0/Android/data/com.victim/sdcard; UID_OVERRIDE=123456
 out=$(run_fix "$D19" 0); r=$(result "$out")
 ALT_ROOT=""; NS_HIDE=""; UID_OVERRIDE=""
@@ -524,6 +540,7 @@ has "$r" 'sandbox_gone' && ok "source 错（dev 对）→ sandbox_gone" || bad "
 has "$r" 'fixed=0' && ok "source 错不计 fixed" || bad "source 错仍计 fixed：$r"
 grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null && bad "source 错后沙箱行还在" || ok "source 错已回滚"
 
+cp scripts/si-config.awk "$T/si-config.awk" || exit 1
 sed 's/sandbox_src_match "$rb_s" "$rb_id" || rb_ok=1/:/' "$FIX" > "$T/fix-broken.sh" || exit 1
 D21=$T/data21; seed_seen "$D21" || exit 1
 base_mi; setup_src || exit 1
@@ -567,6 +584,112 @@ f=$(num "$r" fixed)
 has "$out" '重建沙箱: com.victim' && ok "日志出现坏包重建行" || bad "缺少坏包重建日志：$out"
 grep -qxF "com.good|$TEST_BOOT|$TEST_NS|/0/Android/data/com.good/sdcard" "$D24/.sandbox_seen" 2>/dev/null \
   && ok "健康包 K 已登记本 boot/ns 证据" || bad "健康包没有登记：$(cat "$D24/.sandbox_seen" 2>/dev/null)"
+
+# ---------- 25) init /storage 旧、/mnt 新：按 /mnt 判 stale ----------
+D25=$T/data25; seed_seen "$D25" || exit 1
+self_mi 0:318
+cat > "$P/1/mountinfo" <<'M'
+100 1 0:50 / / rw - ext4 /dev/root rw
+101 100 0:382 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
+102 100 0:318 / /storage/emulated rw - fuse /dev/fuse rw
+M
+cat > "$MI" <<'M'
+101 100 0:318 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
+102 100 0:318 / /storage/emulated rw - fuse /dev/fuse rw
+200 1 0:318 /0/Android/data/com.victim/sdcard /storage/emulated/0 rw - fuse /dev/fuse rw
+M
+out=$(run_fix "$D25" 0); r=$(result "$out")
+has "$r" 'sandbox_stale' && ok "init /storage 旧、/mnt 新 → 判 stale" || bad "/storage 基准把旧 FUSE 判健康：$r"
+[ ! -s "$T/mount.log" ] && ok "基准分叉时不 bind" || bad "基准分叉仍 bind"
+rm -f "$P/1/mountinfo"; self_mi 0:50
+
+# ---------- 26) 旧格式 seen 被忽略：仍可凭源+属主重建 ----------
+D26=$T/data26; mkdir -p "$D26"
+printf 'com.victim\n' > "$D26/.sandbox_seen"
+base_mi; setup_src || exit 1
+out=$(run_fix "$D26" 0); r=$(result "$out")
+has "$r" 'sandbox=1' && ok "旧格式 seen 行被忽略，升级兜底仍重建" || bad "旧格式 seen 挡住了兜底：$r"
+{ [ ! -e "$D26/.sandbox_seen" ] || ! grep -qxF 'com.victim' "$D26/.sandbox_seen"; } 2>/dev/null \
+  && ok "旧格式行已被丢弃（不再作为证据）" || bad "旧格式行还在：$(cat "$D26/.sandbox_seen" 2>/dev/null)"
+
+# ---------- 27) 无 SB + 两个变体都在 → ambiguous，不 bind ----------
+D27=$T/data27; mkdir -p "$D27"
+base_mi; setup_src || exit 1
+mkdir -p "$SRC/0/Android/data/shared-com.victim/sdcard" || exit 1
+out=$(run_fix "$D27" 0); r=$(result "$out")
+has "$r" 'sandbox_gone' && ok "多源变体无 SB → sandbox_gone" || bad "变体歧义没有 fail-closed：$r"
+has "$out" '拒绝猜测' && ok "日志说明拒绝猜测" || bad "日志没有歧义说明：$out"
+[ ! -s "$T/mount.log" ] && ok "变体歧义时不 bind" || bad "变体歧义仍 bind：$(cat "$T/mount.log")"
+
+# ---------- 28) umount 失败：不谎报已回滚 ----------
+D28=$T/data28; seed_seen "$D28" || exit 1
+base_mi; setup_src || exit 1
+ALT_ROOT=$T/alt0; NS_HIDE_PREFIX="$SRC/0"; UMOUNT_FAIL=1
+out=$(run_fix "$D28" 0); r=$(result "$out")
+ALT_ROOT=""; NS_HIDE_PREFIX=""; UMOUNT_FAIL=0
+has "$r" 'rollback' && ok "umount 失败打 rollback tag" || bad "umount 失败没有 rollback tag：$r"
+has "$out" '回滚未卸干净' && ok "日志明确说明未卸干净" || bad "日志谎报已回滚：$out"
+grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null && ok "回滚失败时保留现状" || bad "回滚失败却删了 target"
+
+# ---------- 29) 普通 FUSE 根先卸后 bind 失败：挂回原根 ----------
+D29=$T/data29; seed_seen "$D29" || exit 1
+base_mi
+printf '103 100 0:50 / /storage/emulated/0 rw - fuse /dev/fuse rw\n' >> "$MI"
+setup_src || exit 1
+BIND_WRONG_SRC=1
+out=$(run_fix "$D29" 0); r=$(result "$out")
+BIND_WRONG_SRC=0
+has "$r" 'sandbox_gone' && ok "原根恢复用例仍报 gone" || bad "没有报 gone：$r"
+has "$out" '已把原 FUSE 根挂回' && ok "失败后把原 FUSE 根挂回" || bad "原 FUSE 根没有恢复：$out"
+grep -q ' / /storage/emulated/0 ' "$MI" 2>/dev/null \
+  && ok "target 上恢复为普通 FUSE 根" || bad "target 没有恢复：$(cat "$MI" 2>/dev/null)"
+
+# ---------- 30) 普通 FUSE 根 root=/0 也能先卸再挂 ----------
+D30=$T/data30; seed_seen "$D30" || exit 1
+base_mi
+printf '103 100 0:50 /0 /storage/emulated/0 rw - fuse /dev/fuse rw\n' >> "$MI"
+setup_src || exit 1
+out=$(run_fix "$D30" 0); r=$(result "$out")
+has "$r" 'sandbox=1' && ok "target root=/0 时仍重建" || bad "root=/0 被当成别的层：$r"
+grep -q '/Android/data/com.victim/sdcard /storage/emulated/0 ' "$MI" 2>/dev/null \
+  && ok "root=/0 卸下后挂上沙箱" || bad "root=/0 没有挂上沙箱"
+
+# ---------- 31) 共享源缺失 → 回滚沙箱 ----------
+D31=$T/data31; seed_seen "$D31" || exit 1
+base_mi; setup_src || exit 1
+rm -rf "$SRC/0/DCIM"
+out=$(run_fix "$D31" 0); r=$(result "$out")
+has "$r" 'sandbox_gone' && ok "共享源缺失 → sandbox_gone" || bad "共享源缺失没有回滚：$r"
+has "$r" 'fixed=0' && ok "共享源缺失不计 fixed" || bad "共享源缺失仍计 fixed：$r"
+grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null && bad "共享源缺失留了空沙箱" || ok "共享源缺失已回滚沙箱"
+
+# ---------- 32) 共享 bindfail → 回滚沙箱 ----------
+D32=$T/data32; seed_seen "$D32" || exit 1
+base_mi; setup_src || exit 1
+BIND_FAIL_TGT=/storage/emulated/0/DCIM
+out=$(run_fix "$D32" 0); r=$(result "$out")
+BIND_FAIL_TGT=""
+has "$r" 'sandbox_gone' && ok "共享 bindfail → sandbox_gone" || bad "bindfail 没有回滚：$r"
+grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null && bad "bindfail 留了空沙箱" || ok "bindfail 已回滚沙箱"
+
+# ---------- 33) bind 后应用内不可读 → 回滚 ----------
+D33=$T/data33; seed_seen "$D33" || exit 1
+base_mi; setup_src || exit 1
+NS_TARGET_UNREADABLE=1
+out=$(run_fix "$D33" 0); r=$(result "$out")
+NS_TARGET_UNREADABLE=0
+has "$r" 'sandbox_gone' && ok "target 不可读 → sandbox_gone" || bad "不可读没有回滚：$r"
+has "$out" '不可读' && ok "日志说明不可读回滚" || bad "日志没有不可读：$out"
+grep -q ' /storage/emulated/0 ' "$MI" 2>/dev/null && bad "不可读后沙箱还在" || ok "不可读后已回滚"
+
+# ---------- 34) sdcard 与 cache/sdcard 同时存在 → ambiguous ----------
+D34=$T/data34; mkdir -p "$D34"
+base_mi; setup_src || exit 1
+mkdir -p "$SRC/0/Android/data/com.victim/cache/sdcard" || exit 1
+out=$(run_fix "$D34" 0); r=$(result "$out")
+has "$r" 'sandbox_gone' && ok "sdcard/cache 双变体无 SB → sandbox_gone" || bad "cache 歧义没有 fail-closed：$r"
+has "$out" '拒绝猜测' && ok "cache 歧义日志说明拒绝猜测" || bad "cache 歧义日志不对：$out"
+[ ! -s "$T/mount.log" ] && ok "cache 歧义不 bind" || bad "cache 歧义仍 bind"
 
 echo
 [ "$fail" = 0 ] && { echo "sandbox.test: PASS"; exit 0; }

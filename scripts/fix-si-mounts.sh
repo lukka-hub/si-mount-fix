@@ -135,7 +135,7 @@ cleanup() {
     rm -rf "$CLEAN_LOCK" 2>/dev/null
   fi
   # 固定输出文件保留（下一轮覆盖），只清带 PID 的临时文件；dry-run 也带 PID 以免并发覆盖。
-  rm -f "$PARSED" "$SRC" "$FIXED_LIST" "$FIXED_LIST.tmp" "$SEEN_TMP" "$CACHE.tmp.$$" "$REP.tmp.$$" "$CH.tmp.$$" 2>/dev/null
+  rm -f "$PARSED" "$SRC" "$FIXED_LIST" "$FIXED_LIST.tmp" "$FIXED_LIST.bak.$$" "$SEEN_TMP" "$CACHE.tmp.$$" "$REP.tmp.$$" "$REP.bak.$$" "$CH.tmp.$$" 2>/dev/null
   [ "$DRY" = 1 ] && [ -e "$OUTF" ] && rm -f "$OUTF" 2>/dev/null
 }
 trap cleanup EXIT
@@ -206,13 +206,21 @@ case "$BOOT_ID" in ''|*[!A-Za-z0-9_.-]*) BOOT_ID=0 ;; esac
 load_seen() {
   SEEN_LIST=""; SEEN_N=0; SEEN_CUR=0
   [ -r "$SANDBOX_SEEN" ] || return 0
+  # 旧版本（13a092a/45f2585）留下的是 pkg / pkg|ns|SB 格式：不是四段就忽略，
+  # 不能让它们计入“任何 boot 有记录”的历史资格。
+  awk -F'|' 'NF == 4' "$SANDBOX_SEEN" > "$SEEN_TMP" 2>/dev/null || return 0
   while IFS= read -r _sl; do
     [ -n "$_sl" ] || continue
     SEEN_LIST="$SEEN_LIST $_sl"
     SEEN_N=$((SEEN_N + 1))
     _oldifs=$IFS; IFS='|'; set -- $_sl; IFS=$_oldifs
     [ "${2:-}" = "$BOOT_ID" ] && SEEN_CUR=$((SEEN_CUR + 1))
-  done 2>/dev/null < "$SANDBOX_SEEN"
+  done 2>/dev/null < "$SEEN_TMP"
+  # 文件里有旧格式行时顺手清掉，后续 append 不会把它们带到 200 行窗口里。
+  _so=$(wc -l < "$SANDBOX_SEEN" 2>/dev/null)
+  _sv=$(wc -l < "$SEEN_TMP" 2>/dev/null)
+  case "$_so$_sv" in *[!0-9]*) : ;; *) [ "$_so" != "$_sv" ] && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null ;; esac
+  rm -f "$SEEN_TMP" 2>/dev/null
 }
 seen_match() {   # pkg ns（只看本 boot）
   _sm_pfx=" $1|$BOOT_ID|$2|"
@@ -230,23 +238,35 @@ seen_sb() {      # pkg ns -> 本 boot 记录的 SB
   done
   return 1
 }
-seen_add() {     # pkg ns sb
+seen_add() {     # pkg ns sb；正常情况下只 append，不整文件重写
   _sa=$1; _sn=$2; _ss=$3
   case "$_sa" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
   case "$_ss" in ''|*[!A-Za-z0-9_./-]*) return 0 ;; esac
-  _old=$(seen_sb "$_sa" "$_sn" 2>/dev/null)
-  [ "$_old" = "$_ss" ] && return 0
-  _list=""; _n=0; _cur=0
+  _pfx="$_sa|$BOOT_ID|$_sn|"
+  _old=""; _found=0
   for _se in $SEEN_LIST; do
-    case "$_se" in "$_sa|$BOOT_ID|$_sn|"*) continue ;; esac
-    _list="$_list $_se"; _n=$((_n + 1))
-    case "$_se" in *"|$BOOT_ID|"*) _cur=$((_cur + 1)) ;; esac
+    case "$_se" in "$_pfx"*) _old=${_se#"$_pfx"}; _found=1 ;; esac
   done
-  _list="$_list $_sa|$BOOT_ID|$_sn|$_ss"; _n=$((_n + 1)); _cur=$((_cur + 1))
-  SEEN_LIST=$_list; SEEN_N=$_n; SEEN_CUR=$_cur
-  { for _se in $SEEN_LIST; do printf '%s\n' "$_se"; done; } > "$SEEN_TMP" 2>/dev/null \
-    && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null || return 0
-  if [ "$_n" -gt 200 ]; then
+  [ "$_found" = 1 ] && [ "$_old" = "$_ss" ] && return 0
+  _new="$_sa|$BOOT_ID|$_sn|$_ss"
+  if [ "$_found" = 0 ]; then
+    printf '%s\n' "$_new" >> "$SANDBOX_SEEN" 2>/dev/null || return 0
+    SEEN_LIST="$SEEN_LIST $_new"
+    SEEN_N=$((SEEN_N + 1))
+    SEEN_CUR=$((SEEN_CUR + 1))
+  else
+    # 同 pkg/boot/ns 的 SB 变了：少见，重建一次列表和文件。
+    _list=""; _n=0; _cur=0
+    for _se in $SEEN_LIST; do
+      case "$_se" in "$_pfx"*) _list="$_list $_new" ;; *) _list="$_list $_se" ;; esac
+      _n=$((_n + 1))
+      case "$_se" in *"|$BOOT_ID|"*) _cur=$((_cur + 1)) ;; esac
+    done
+    SEEN_LIST=$_list; SEEN_N=$_n; SEEN_CUR=$_cur
+    { for _se in $SEEN_LIST; do printf '%s\n' "$_se"; done; } > "$SEEN_TMP" 2>/dev/null \
+      && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null || return 0
+  fi
+  if [ "$SEEN_N" -gt 200 ]; then
     tail -n 200 "$SANDBOX_SEEN" > "$SEEN_TMP" 2>/dev/null \
       && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null
     load_seen
@@ -255,11 +275,18 @@ seen_add() {     # pkg ns sb
 load_seen
 [ "$DRY" = 0 ] && : > "$SAND_REPORT" 2>/dev/null
 ns_of() { readlink "$PROC/$1/ns/mnt" 2>/dev/null; }
-# 重建资格：本 boot 同 pkg 同 ns 的 seen，或（没有 cross-boot 旧证据时）源存在且属主匹配。
+seen_any_boot() {   # pkg 在任何 boot 有过有效 seen（四段格式）
+  case " $SEEN_LIST " in *" $1|"*) return 0 ;; esac
+  return 1
+}
+# 重建资格：本 boot 同 pkg 同 ns 的 seen；或该 pkg 从未有过有效 seen（升级场景）
+# 且源存在+属主匹配。该 pkg 有旧 boot 但本 boot 无记录时不兜底，等本 boot K。
 sandbox_eligible() {   # pid uid pkg ns
   seen_match "$3" "$4" && return 0
-  { [ "$SEEN_N" -eq 0 ] || [ "$SEEN_CUR" -gt 0 ]; } || return 1
+  seen_any_boot "$3" && return 1
   sandbox_pick "$1" "$2" "$3" "$4" 0 >/dev/null 2>&1
+  _se_rc=$?
+  [ "$_se_rc" -eq 0 ] || [ "$_se_rc" -eq 2 ]
 }
 
 bind_mount() {   # pid src tgt（</dev/null：别吃掉调用方 while read 的 stdin）
@@ -511,12 +538,13 @@ fi
     checked = 0; young = 0; CHURN = 0; RETRY_IN = 0
     FUSE_BAD = 0; BAD_CFG = 0
     FDEV = ""; HOSTM = ""
-    # 宿主基准取 init 的 mount ns；同时收全部设备号，区分旧 FUSE 会话/别的层。
+    # 宿主基准只认 init 的 /mnt/user/0/emulated：vold 重挂的是它，init 的
+    # /storage/emulated 往往只是旧 FUSE 的 bind，不能当基准；其设备号也排除在
+    # HOSTDEV 外，否则旧沙箱会被误判成“还在宿主里”（layer 而不是 stale）。
     while ((getline l < hostmi) > 0) {
       split(l, z, " ")
-      if (z[3] != "") HOSTDEV[z[3]] = 1
-      if (z[5] == "/storage/emulated" && FDEV == "") FDEV = z[3]
-      if (z[5] == "/mnt/user/0/emulated" && HOSTM == "") HOSTM = z[3]
+      if (z[3] != "" && z[5] != "/storage/emulated" && index(z[5], "/storage/emulated/") != 1) HOSTDEV[z[3]] = 1
+      if (z[5] == "/mnt/user/0/emulated" && HOSTM == "") { HOSTM = z[3]; FDEV = z[3] }
     }
     close(hostmi)
     if (FDEV == "") { print "F|"; FUSE_BAD = 1; exit 9 }
@@ -583,7 +611,7 @@ fi
     close(mi)
     if (SB == "") {
       # 应用 /storage（或 /mnt）还是旧 FUSE（分叉）：跨 ns 修不了，只报僵死。
-      if (APP_S != "" && APP_S != FDEV && APP_SFT == "fuse") print "ST|" pid "|" uid "|" age "|" pkg "|" APP_S
+      if (APP_S != "" && APP_S != HOSTM && APP_SFT == "fuse") print "ST|" pid "|" uid "|" age "|" pkg "|" APP_S
       else if (APP_S == "" && APP_M != "" && APP_M != HOSTM && APP_MFT == "fuse") print "ST|" pid "|" uid "|" age "|" pkg "|" APP_M
       else print "G|" pid "|" uid "|" age "|" pkg
       next
@@ -599,11 +627,11 @@ fi
       print "S|" pkg "|identity|" rid2
       next
     }
-    if (!(SDEV == FDEV && (APP_S == "" || APP_S == FDEV))) {
+    if (!(SDEV == HOSTM && (APP_S == "" || APP_S == HOSTM))) {
       # 旧 FUSE 会话已从宿主消失、沙箱本身又是 fuse：僵死挂载，跨 namespace 无法修。
       # 其它情况（宿主里仍有该设备，或根本不是 FUSE）保持原来的 layer 语义。
       if (SFT == "fuse" && !(SDEV in HOSTDEV)) print "ST|" pid "|" uid "|" age "|" pkg "|" SDEV
-      else print "S|" pkg "|layer|" SDEV "|" FDEV
+      else print "S|" pkg "|layer|" SDEV "|" HOSTM
       next
     }
     if (SB ~ /^\/media\//) sbpath = dataroot "/media" substr(SB, 7)
@@ -779,49 +807,117 @@ repair_one() {   # $1=target $2=action
   fi
 }
 
-# 选一个可用的沙箱源：先 K 记录的 SB 推导路径，再 pkg/shared-pkg 的
-# sdcard/cache 变体（宿主 FUSE 视图 → 应用 /storage 视图）。
-# mode=0 只查宿主侧存在/属主（给 dry-run 判定资格）；mode=1 还要求应用 ns 可见、
-# 并在应用 ns 里统计属主。成功输出 "<sandbox-id>|<path>"，失败输出原因。
+seen_sb_any() {  # pkg -> 本 boot 任意 ns 记录的 SB
+  _sba_pkg=$1
+  for _se in $SEEN_LIST; do
+    _eifs=$IFS; IFS='|'; set -- $_se; IFS=$_eifs
+    if [ "${1:-}" = "$_sba_pkg" ] && [ "${2:-}" = "$BOOT_ID" ] && [ -n "${4:-}" ]; then
+      printf '%s\n' "${4}"
+      return 0
+    fi
+  done
+  return 1
+}
+sb_to_alt() {  # SB -> 应用 /storage/emulated/0 视图的源
+  case "$1" in
+    /0/*)       printf '%s/%s\n' "$ALT_ROOT" "${1#/0/}" ;;
+    /media/0/*) printf '%s/%s\n' "$ALT_ROOT" "${1#/media/0/}" ;;
+    *) return 1 ;;
+  esac
+}
+sandbox_probe() {  # pid uid path mode；设置 SP_EXISTS/SP_OWNER_BAD/SP_HIDDEN
+  _sbp_pid=$1; _sbp_uid=$2; _sbp_path=$3; _sbp_mode=$4
+  if [ -L "$_sbp_path" ] || [ ! -d "$_sbp_path" ]; then return 1; fi
+  SP_EXISTS=1
+  if [ "$_sbp_mode" = 1 ]; then
+    if ! timeout 2 nsenter -t "$_sbp_pid" -m -- test -d "$_sbp_path" </dev/null 2>/dev/null; then
+      SP_HIDDEN=1
+      return 1
+    fi
+    _sbp_owner=$(sandbox_owner_ns "$_sbp_pid" "$_sbp_path")
+  else
+    _sbp_owner=$(sandbox_owner "$_sbp_path")
+  fi
+  if [ "$_sbp_owner" != "$_sbp_uid" ]; then SP_OWNER_BAD=1; return 1; fi
+  return 0
+}
+sandbox_unmount() {  # pid tgt -> 0 已卸干净
+  umount_one "$1" "$2" >/dev/null 2>&1
+  _su_mi=$mi
+  mi=$PROC/$1/mountinfo
+  set -- $(stat_src_of "$2"); _su_n=${2:-0}
+  mi=$_su_mi
+  [ "$_su_n" -eq 0 ]
+}
+sandbox_restore_root() {  # 把被临时卸下的普通 FUSE 根挂回去
+  [ "${rb_root_removed:-0}" = 1 ] || return 0
+  bind_mount "$rb_pid" "/storage/emulated" "$rb_tgt" >/dev/null 2>&1
+  say "  已把原 FUSE 根挂回 $rb_tgt"
+  rb_root_removed=0
+}
+
+# 选一个可用的沙箱源：优先本 boot 该包（同 ns 优先）的 SB，再 pkg/shared-pkg 的
+# sdcard/cache 变体；没有 SB 且多个变体都可用时 fail-closed，拒绝猜。
+# mode=0 只查宿主存在/属主（dry-run 资格）；mode=1 还要求应用 ns 可见+属主。
+# 成功输出 "<sandbox-id>|<path>"；失败输出原因（missing/owner/hidden/ambiguous）。
 sandbox_pick() {   # pid uid pkg ns mode
   sp_pid=$1; sp_uid=$2; sp_pkg=$3; sp_ns=$4; sp_mode=$5
-  sp_exists=0; sp_owner_bad=0; sp_hidden=0; sp_seen_paths=""
-  sp_list=""
+  SP_EXISTS=0; SP_OWNER_BAD=0; SP_HIDDEN=0
+  sp_seen_paths=""
   sp_sb=$(seen_sb "$sp_pkg" "$sp_ns" 2>/dev/null)
-  if [ -n "$sp_sb" ]; then sp_list=$(sb_to_src "$sp_sb"); fi
+  [ -n "$sp_sb" ] || sp_sb=$(seen_sb_any "$sp_pkg" 2>/dev/null)
+  if [ -n "$sp_sb" ]; then
+    sp_src=$(sb_to_src "$sp_sb")
+    sp_alt=$(sb_to_alt "$sp_sb" 2>/dev/null)
+    for sp_path in "$sp_src" "$sp_alt"; do
+      [ -n "$sp_path" ] || continue
+      case " $sp_seen_paths " in *" $sp_path "*) continue ;; esac
+      sp_seen_paths="$sp_seen_paths $sp_path"
+      sandbox_probe "$sp_pid" "$sp_uid" "$sp_path" "$sp_mode" || continue
+      sp_id2=${sp_path#*/Android/data/}
+      sp_id2=${sp_id2%%/*}
+      printf '%s|%s\n' "$sp_id2" "$sp_path"
+      return 0
+    done
+    # SB 记录的路径存在但不可用（属主/可见性）：不猜别的变体。
+    if [ "$SP_EXISTS" = 1 ]; then
+      if [ "$SP_OWNER_BAD" = 1 ]; then printf 'owner\n'
+      else printf 'hidden\n'
+      fi
+      return 1
+    fi
+    # SB 路径不存在：继续按 pkg/shared/cache 变体找。
+  fi
+  sp_vars=""
   for sp_id in "$sp_pkg" "shared-$sp_pkg"; do
-    for sp_root in "$SRC_ROOT/0" "$ALT_ROOT"; do
-      sp_list="$sp_list
-$sp_root/Android/data/$sp_id/sdcard
-$sp_root/Android/data/$sp_id/cache/sdcard"
+    for sp_sub in "sdcard" "cache/sdcard"; do
+      sp_vars="$sp_vars
+$sp_id $SRC_ROOT/0/Android/data/$sp_id/$sp_sub $ALT_ROOT/Android/data/$sp_id/$sp_sub"
     done
   done
-  while IFS= read -r sp_src; do
-    [ -n "$sp_src" ] || continue
-    case " $sp_seen_paths " in *" $sp_src "*) continue ;; esac
-    sp_seen_paths="$sp_seen_paths $sp_src"
-    if [ -L "$sp_src" ] || [ ! -d "$sp_src" ]; then continue; fi
-    sp_exists=1
-    sp_id2=${sp_src#*/Android/data/}
-    sp_id2=${sp_id2%%/*}
-    [ -n "$sp_id2" ] || continue
-    if [ "$sp_mode" = 1 ]; then
-      if ! timeout 2 nsenter -t "$sp_pid" -m -- test -d "$sp_src" </dev/null 2>/dev/null; then
-        sp_hidden=1
-        continue
-      fi
-      sp_owner=$(sandbox_owner_ns "$sp_pid" "$sp_src")
-    else
-      sp_owner=$(sandbox_owner "$sp_src")
+  sp_hits=0; sp_hit=""
+  while read -r sp_id sp_src sp_alt; do
+    [ -n "$sp_id" ] || continue
+    sp_use=""
+    for sp_path in "$sp_src" "$sp_alt"; do
+      [ -n "$sp_path" ] || continue
+      case " $sp_seen_paths " in *" $sp_path "*) continue ;; esac
+      sp_seen_paths="$sp_seen_paths $sp_path"
+      sandbox_probe "$sp_pid" "$sp_uid" "$sp_path" "$sp_mode" || continue
+      sp_use=$sp_path
+      break
+    done
+    if [ -n "$sp_use" ]; then
+      sp_hits=$((sp_hits + 1))
+      sp_hit="$sp_id|$sp_use"
     fi
-    if [ "$sp_owner" != "$sp_uid" ]; then sp_owner_bad=1; continue; fi
-    printf '%s|%s\n' "$sp_id2" "$sp_src"
-    return 0
   done <<EOF
-$sp_list
+$sp_vars
 EOF
-  if [ "$sp_exists" = 0 ]; then printf 'missing\n'
-  elif [ "$sp_owner_bad" = 1 ]; then printf 'owner\n'
+  if [ "$sp_hits" -gt 1 ]; then printf 'ambiguous\n'; return 2; fi
+  if [ "$sp_hits" -eq 1 ]; then printf '%s\n' "$sp_hit"; return 0; fi
+  if [ "$SP_EXISTS" = 0 ]; then printf 'missing\n'
+  elif [ "$SP_OWNER_BAD" = 1 ]; then printf 'owner\n'
   else printf 'hidden\n'
   fi
   return 1
@@ -846,6 +942,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       missing) say "  跳过沙箱 $rb_pkg（源不存在或不是目录）" ;;
       owner)   say "  跳过沙箱 $rb_pkg（属主与进程 uid $rb_uid 不符）" ;;
       hidden)  say "  跳过沙箱 $rb_pkg（应用 namespace 看不到源）" ;;
+      ambiguous) say "  跳过沙箱 $rb_pkg（多个源变体且无 SB，拒绝猜测）" ;;
       *)       say "  跳过沙箱 $rb_pkg（源不可用）" ;;
     esac
     sand_report gone "$rb_pkg"
@@ -864,6 +961,7 @@ rebuild_sandbox() {   # pid uid pkg ns
     return 1
   fi
   mi=$rb_mi
+  rb_root_removed=0
   set -- $(stat_src_of "$rb_tgt"); rb_dev=${1:-}; rb_n=${2:-0}; rb_s=${3:-}
   if [ "$rb_n" -gt 0 ]; then
     if sandbox_src_match "$rb_s" "$rb_id" \
@@ -872,9 +970,10 @@ rebuild_sandbox() {   # pid uid pkg ns
       say "  跳过沙箱 $rb_pkg（目标已是沙箱，无需重建）"
       return 2
     fi
-    if [ "$rb_n" = 1 ] && [ "$rb_s" = "/" ] && [ "$rb_dev" = "$FUSEDEV" ]; then
+    if [ "$rb_n" = 1 ] && { [ "$rb_s" = "/" ] || [ "$rb_s" = "/0" ]; } && [ "$rb_dev" = "$FUSEDEV" ]; then
       umount_one "$rb_pid" "$rb_tgt" >/dev/null 2>&1
       set -- $(stat_src_of "$rb_tgt"); rb_dev=${1:-}; rb_n=${2:-0}; rb_s=${3:-}
+      rb_root_removed=1
       say "  目标 /storage/emulated/0 是普通 FUSE 根，已卸下后重挂沙箱"
     fi
     if [ "$rb_n" -gt 0 ]; then
@@ -899,8 +998,17 @@ rebuild_sandbox() {   # pid uid pkg ns
   [ "$rb_n" = "1" ] || [ "$rb_n" -gt 1 ] || rb_ok=1
   if [ "$rb_ok" -ne 0 ]; then
     [ -n "$err" ] && say "  沙箱 bind 输出: $err"
-    say "  跳过沙箱 $rb_pkg（bind 后校验失败 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}，已回滚）"
-    if [ "$rb_n" -le 1 ]; then umount_one "$rb_pid" "$rb_tgt" >/dev/null 2>&1; fi
+    if [ "$rb_n" -le 1 ]; then
+      if sandbox_unmount "$rb_pid" "$rb_tgt"; then
+        say "  跳过沙箱 $rb_pkg（bind 后校验失败 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}，已回滚）"
+      else
+        say "  跳过沙箱 $rb_pkg（校验失败且回滚未卸干净，保留现状）"
+        skipped="$skipped rollback"
+      fi
+    else
+      say "  跳过沙箱 $rb_pkg（并发挂载 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}，不 umount）"
+    fi
+    sandbox_restore_root
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -910,8 +1018,13 @@ rebuild_sandbox() {   # pid uid pkg ns
   [ -n "$err" ] && say "  警告 沙箱 $rb_pkg: 命令有输出但挂载校验通过（$err）"
   # bind 后必须在应用 ns 里确认 target 可读，防“挂上了但一读就 EIO”。
   if ! timeout 2 nsenter -t "$rb_pid" -m -- test -r "$rb_tgt" </dev/null 2>/dev/null; then
-    say "  跳过沙箱 $rb_pkg（bind 后在应用内不可读，已回滚）"
-    umount_one "$rb_pid" "$rb_tgt" >/dev/null 2>&1
+    if sandbox_unmount "$rb_pid" "$rb_tgt"; then
+      say "  跳过沙箱 $rb_pkg（bind 后在应用内不可读，已回滚）"
+    else
+      say "  跳过沙箱 $rb_pkg（应用内不可读且回滚未卸干净，保留现状）"
+      skipped="$skipped rollback"
+    fi
+    sandbox_restore_root
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -920,12 +1033,9 @@ rebuild_sandbox() {   # pid uid pkg ns
   #    共享目录源不可见时不能留下“空沙箱”，回滚刚 bind 的沙箱。
   pid=$rb_pid; pkg=$rb_pkg; mp=$rb_tgt; sbpath=$rb_src; mi=$rb_mi
   rb_fixed0=$fixed
-  rb_repn=0
-  [ -f "$REP" ] && rb_repn=$(wc -l < "$REP" 2>/dev/null)
-  case "$rb_repn" in ''|*[!0-9]*) rb_repn=0 ;; esac
-  rb_listn=0
-  [ -f "$FIXED_LIST" ] && rb_listn=$(wc -l < "$FIXED_LIST" 2>/dev/null)
-  case "$rb_listn" in ''|*[!0-9]*) rb_listn=0 ;; esac
+  rb_repbak=""; rb_listbak=""
+  [ -f "$REP" ] && { rb_repbak="$REP.bak.$$"; cp -f "$REP" "$rb_repbak" 2>/dev/null; }
+  [ -f "$FIXED_LIST" ] && { rb_listbak="$FIXED_LIST.bak.$$"; cp -f "$FIXED_LIST" "$rb_listbak" 2>/dev/null; }
   rb_skip0=$skipped
   rb_allow=$(allow_of "$rb_id")
   [ -n "$rb_allow" ] || rb_allow=$(allow_of "$rb_pkg")
@@ -951,24 +1061,23 @@ rebuild_sandbox() {   # pid uid pkg ns
   done
   rb_added=${skipped#"$rb_skip0"}
   case " $rb_added " in
-    *" source_ns "*)
-      say "  共享目录源不可见，回滚沙箱 bind（重启应用后由 SI 重建共享目录）"
-      umount_one "$rb_pid" "$rb_tgt" >/dev/null 2>&1
-      fixed=$rb_fixed0
-      if [ "$rb_repn" -gt 0 ]; then
-        head -n "$rb_repn" "$REP" > "$REP.tmp.$$" 2>/dev/null && mv -f "$REP.tmp.$$" "$REP" 2>/dev/null
+    *" source "*|*" source_ns "*|*" bindfail "*)
+      if sandbox_unmount "$rb_pid" "$rb_tgt"; then
+        say "  共享目录源不可见，回滚沙箱 bind（重启应用后由 SI 重建共享目录）"
+        fixed=$rb_fixed0
+        if [ -n "$rb_repbak" ]; then mv -f "$rb_repbak" "$REP" 2>/dev/null; else rm -f "$REP" 2>/dev/null; fi
+        if [ -n "$rb_listbak" ]; then mv -f "$rb_listbak" "$FIXED_LIST" 2>/dev/null; else rm -f "$FIXED_LIST" 2>/dev/null; fi
+        sandbox_restore_root
       else
-        : > "$REP" 2>/dev/null
-      fi
-      if [ "$rb_listn" -gt 0 ]; then
-        head -n "$rb_listn" "$FIXED_LIST" > "$FIXED_LIST.tmp" 2>/dev/null && mv -f "$FIXED_LIST.tmp" "$FIXED_LIST" 2>/dev/null
-      else
-        : > "$FIXED_LIST" 2>/dev/null
+        say "  共享目录源不可见，但回滚未卸干净（target 仍有挂载），保留现状"
+        skipped="$skipped rollback"
+        rm -f "$rb_repbak" "$rb_listbak" 2>/dev/null
       fi
       sand_report gone "$rb_pkg"
       return 1
       ;;
   esac
+  rm -f "$rb_repbak" "$rb_listbak" 2>/dev/null
 
   # 沙箱本身算一条 fixed；同包多 PID 每个 namespace 都要 bind，但只计一次。
   if ! grep -qxF "$rb_pkg|sandbox" "$FIXED_LIST" 2>/dev/null; then
