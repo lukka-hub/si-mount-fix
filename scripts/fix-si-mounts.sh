@@ -236,13 +236,14 @@ seen_add() {     # pkg ns sb
   case "$_ss" in ''|*[!A-Za-z0-9_./-]*) return 0 ;; esac
   _old=$(seen_sb "$_sa" "$_sn" 2>/dev/null)
   [ "$_old" = "$_ss" ] && return 0
-  _list=""; _n=0
+  _list=""; _n=0; _cur=0
   for _se in $SEEN_LIST; do
     case "$_se" in "$_sa|$BOOT_ID|$_sn|"*) continue ;; esac
     _list="$_list $_se"; _n=$((_n + 1))
+    case "$_se" in *"|$BOOT_ID|"*) _cur=$((_cur + 1)) ;; esac
   done
-  _list="$_list $_sa|$BOOT_ID|$_sn|$_ss"; _n=$((_n + 1))
-  SEEN_LIST=$_list; SEEN_N=$_n
+  _list="$_list $_sa|$BOOT_ID|$_sn|$_ss"; _n=$((_n + 1)); _cur=$((_cur + 1))
+  SEEN_LIST=$_list; SEEN_N=$_n; SEEN_CUR=$_cur
   { for _se in $SEEN_LIST; do printf '%s\n' "$_se"; done; } > "$SEEN_TMP" 2>/dev/null \
     && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null || return 0
   if [ "$_n" -gt 200 ]; then

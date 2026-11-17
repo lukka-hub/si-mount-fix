@@ -67,12 +67,17 @@ mkdir -p "$P/123/ns" || exit 1
 ln -sf "$TEST_NS" "$P/123/ns/mnt"
 
 cat > "$T/conf.json" <<'J'
-{"mount_dirs_templates":[{"id":"t1","list":["DCIM"]}],"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":true,"template_ids":["t1"]},{"package_name":"shared-com.shared","enabled":true,"mount_dirs":true,"template_ids":["t1"]}]}
+{"mount_dirs_templates":[{"id":"t1","list":["DCIM"]}],"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":true,"template_ids":["t1"]},{"package_name":"shared-com.shared","enabled":true,"mount_dirs":true,"template_ids":["t1"]},{"package_name":"com.good","enabled":true,"mount_dirs":true,"template_ids":["t1"]}]}
 J
 
 cat > "$BIN/ps" <<S
 #!/bin/sh
 echo "  PID   UID     ELAPSED ARGS"
+if [ "\$SI_TEST_PS_TWO" = 1 ]; then
+  echo "  122     $TEST_UID    10:00 com.good"
+  echo "  123     $TEST_UID    10:00 com.victim"
+  exit 0
+fi
 echo "  123     $TEST_UID    10:00 \${SI_TEST_PS_PKG:-com.victim}"
 [ "\$SI_TEST_PS_EXTRA" = 1 ] && echo "  124     $TEST_UID    10:00 com.victim"
 S
@@ -179,7 +184,7 @@ setup_src() {
 
 UID_OVERRIDE=""; MI_DIR_OVERRIDE=""; PS_EXTRA=0; BIND_BAD=0
 ALT_ROOT=""; NS_HIDE=""; NS_HIDE_PREFIX=""; NS_TARGET_UNREADABLE=0
-PS_PKG=""; BIND_WRONG_SRC=0; RUN_FIX=$FIX
+PS_PKG=""; PS_TWO=0; BIND_WRONG_SRC=0; RUN_FIX=$FIX
 run_fix() {   # $1=数据目录 $2=1 表示 dry-run
   _d=$1; _dry=$2
   rm -f "$T/mount.log" "$T/nsenter.log" "$T/umount.log"
@@ -187,7 +192,7 @@ run_fix() {   # $1=数据目录 $2=1 表示 dry-run
     SI_TEST=1 SI_PROC="$P" SI_CONF="$T/conf.json" SI_DATA="$_d" \
     SI_TEST_DATA="$DATA" SI_TEST_SRC="$SRC" SI_TEST_ALT="$ALT_ROOT" SI_MIN_AGE=5 \
     SI_TEST_FDEV=0:50 SI_TEST_MI="$MI" SI_TEST_MI_DIR="$MI_DIR_OVERRIDE" \
-    SI_TEST_UID="$UID_OVERRIDE" SI_TEST_PS_EXTRA="$PS_EXTRA" SI_TEST_PS_PKG="$PS_PKG" \
+    SI_TEST_UID="$UID_OVERRIDE" SI_TEST_PS_EXTRA="$PS_EXTRA" SI_TEST_PS_PKG="$PS_PKG" SI_TEST_PS_TWO="$PS_TWO" \
     SI_TEST_BIND_BAD="$BIND_BAD" SI_TEST_BIND_WRONG_SRC="$BIND_WRONG_SRC" \
     SI_TEST_NS_HIDE="$NS_HIDE" SI_TEST_NS_HIDE_PREFIX="$NS_HIDE_PREFIX" \
     SI_TEST_NS_TARGET_UNREADABLE="$NS_TARGET_UNREADABLE" \
@@ -543,6 +548,25 @@ base_mi; setup_src || exit 1
 out=$(run_fix "$D23" 0); r=$(result "$out")
 has "$r" 'sandbox=1' && ok "升级后首次扫描（无 seen）凭源目录重建" || bad "升级缺口没有补上：$r"
 has "$r" 'broken=1' && ok "升级重建计入 broken" || bad "升级重建 broken 不对：$r"
+
+# ---------- 24) 同一轮先 K 后 G：seen 初始为空也要重建坏包 ----------
+D24=$T/data24; mkdir -p "$D24"
+mkdir -p "$P/122/ns" || exit 1
+ln -sf "$TEST_NS" "$P/122/ns/mnt"
+base_mi; setup_src || exit 1
+cat > "$P/122/mountinfo" <<'M'
+101 100 0:50 / /storage/emulated rw - fuse /dev/fuse rw
+200 1 0:50 /0/Android/data/com.good/sdcard /storage/emulated/0 rw - fuse /dev/fuse rw
+M
+PS_TWO=1
+out=$(run_fix "$D24" 0); r=$(result "$out")
+PS_TWO=0
+has "$r" 'sandbox=1' && ok "同轮 K 先于 G：坏包仍被重建（sandbox=1）" || bad "同轮 K 后 G 被静默：$r"
+f=$(num "$r" fixed)
+[ "${f:-0}" -gt 0 ] && ok "同轮 K 后 G 的 fixed>0（实际 $f）" || bad "同轮 K 后 G 没有修复：$r"
+has "$out" '重建沙箱: com.victim' && ok "日志出现坏包重建行" || bad "缺少坏包重建日志：$out"
+grep -qxF "com.good|$TEST_BOOT|$TEST_NS|/0/Android/data/com.good/sdcard" "$D24/.sandbox_seen" 2>/dev/null \
+  && ok "健康包 K 已登记本 boot/ns 证据" || bad "健康包没有登记：$(cat "$D24/.sandbox_seen" 2>/dev/null)"
 
 echo
 [ "$fail" = 0 ] && { echo "sandbox.test: PASS"; exit 0; }
