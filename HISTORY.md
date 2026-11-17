@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.3.9）
+# 演化过程（1.0 → 1.4.0）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成独立发布 tag，1.3.4 接续。
@@ -18,7 +18,7 @@
 
 - `si-mount-eventd.sh`：kprobe(path_mount/path_umount) + 独立 trace 实例 +
   `trace_pipe` 阻塞读；
-- 内核 filter 排除 mount/umount/nsenter/magiskd，防止自触发；
+- 内核 filter 排除 nsenter/magiskd，防止部分自触发；mount/umount 自身的事件靠事件 drain 吸收（1.4.0 起 filter 再补这两类）；
 - 先按授权包名筛候选进程，扫描从 7.5s 降到约 0.23s；
 - 保留 watchdog 轮询作为备选。
 
@@ -67,6 +67,28 @@
 - 发布文档、注释精简、作者署名；
 - 同包多 PID churn 修复（CAND/BADK + fixed 去重）；
 - 体检文案、reason 标签、FUSE/失败提示修正。
+
+## 1.4.0 工程化收口
+
+- **配置解析统一**：新增 `scripts/si-config.awk` 作为唯一解析实现，fix 与 list-apps 共用；
+  压缩/多行 JSON、冒号逗号空白都支持，`packages` / `apps` 两种顶层字段都接受；
+  fail-closed：显式 `enabled:false` 或非布尔值跳过，缺省保持启用（兼容旧配置）；
+  未知模板、目录名含空格/`|`/引号等无法安全表示的一律跳过并打 `skipped=` 标签。
+- **状态契约**：`status.json` 增加 `reason_text`（中文短标签，单一词表；带
+  `+forced_event_unsupported` 后缀时先翻基础原因再追加后缀），只读快照增加
+  `config{enabled,mode,interval,min_age}`；selftest/kprobe 失败改为 600 秒退避重试事件模式，
+  poll 循环消费 `RETRY_AT` 的补扫时间，`young` 不再靠下一个事件触发。
+- **daemon 边角**：kprobe filter 增加 `comm != mount/umount` 防自触发（自检期间先放宽、
+  通过后才写最终 filter，否则自检会过滤掉自己的事件）；tracefs 恢复判据与启动一致（必须可写）；
+  假活检测只在有真实流量时恢复；管道占用/重建路径的探测子进程及时回收。
+- **打包**：版本号与包内文件白名单、可执行位等做前置校验，校验失败不产出半成品。
+- **发布**：推送 `v*` tag 时校验版本一致并自动发布 Release。
+- **测试与卸载**：修复脚本与守护之间的 RESULT 行格式收敛到一处，配置解析、状态优先级等
+  补了回归用例；`uninstall.sh` 改为按 cmdline 精确匹配，不再宽泛 `pkill -f`。
+- **WebUI / 操作**：状态展示统一走 `reason_text`，`churn`/`blind`/停用场景正确呈现；
+  桥接失败会重置并回退只读快照（重新探测复用同一个 Promise，避免并发探测的旧结果把界面
+  打回只读）；配置写入保留未知行并原子替换；补齐可访问性（`h1`、`aria-live`、
+  `:focus-visible`、`aria-label`）。
 
 ## 兼容与边界
 

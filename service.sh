@@ -50,10 +50,11 @@ if { [ -z "$lp" ] || [ ! -d "/proc/$lp" ]; } && [ "$fresh" = "0" ]; then
   ts=$(date +%s)
   ver=$(sed -n 's/^version=v//p' "$PROP" 2>/dev/null | head -1)
   [ -n "$ver" ] || ver="?"
-  st="{\"mode\":\"off\",\"reason\":\"launch_failed\",\"pid\":0,\"since\":$ts,\"last_event\":0,\"last_check\":0,\"last_fix\":0,\"last_fixed\":0,\"total_fixed\":0,\"interval\":60,\"min_age\":15,\"procs\":0,\"tracefs\":\"\",\"version\":\"$(sed -n 's/^version=v//p' "$PROP" 2>/dev/null | head -1)\",\"ts\":$ts}"
+  # 兜底状态也要满足面板契约：churn/blind 字段齐全，快照带 config（与守护正常路径一致）
+  st="{\"mode\":\"off\",\"reason\":\"launch_failed\",\"reason_text\":\"守护进程启动失败，请查看 daemon.log\",\"pid\":0,\"since\":$ts,\"last_event\":0,\"last_check\":0,\"last_fix\":0,\"last_fixed\":0,\"total_fixed\":0,\"interval\":60,\"min_age\":15,\"procs\":0,\"tracefs\":\"\",\"churn\":0,\"blind\":0,\"blind_since\":0,\"version\":\"$ver\",\"ts\":$ts}"
   printf '%s\n' "$st" > "$DATA/status.json" 2>/dev/null
   if [ -d "$MODDIR/webroot" ]; then
-    printf 'window.__SI_SNAPSHOT__={"v":1,"ts":%s,"version":"%s","status":%s,"log":["守护进程启动失败，请查看 daemon.log"]};\n' \
+    printf 'window.__SI_SNAPSHOT__={"v":1,"ts":%s,"version":"%s","config":{"enabled":1,"mode":"auto","interval":60,"min_age":15},"status":%s,"log":["守护进程启动失败，请查看 daemon.log"]};\n' \
       "$ts" "$ver" "$st" > "$MODDIR/webroot/snapshot.js.tmp.$$" 2>/dev/null && \
       mv -f "$MODDIR/webroot/snapshot.js.tmp.$$" "$MODDIR/webroot/snapshot.js" 2>/dev/null
   fi

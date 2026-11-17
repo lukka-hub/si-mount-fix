@@ -12,6 +12,18 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 FIX=scripts/fix-si-mounts.sh
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在或不可执行（曾被替换成
+# 设备节点）时回退 mksh → sh。用 `-c :` 真跑一次，比只 command -v 可靠。
+TEST_SH=${SI_TEST_SH:-/system/bin/sh}
+if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到可用的 sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
 
 T=${TMPDIR:-/tmp}/si-churn-test.$$
 trap 'rm -rf "$T"' EXIT INT TERM HUP
@@ -90,25 +102,25 @@ run2() {   # 独立数据目录，$1=now $2=bind-fail
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA2 \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=$2 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
-    PATH=$BIN:$PATH sh "$FIX" -q 2>&1
+    PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 run() {   # $1=now $2=bind-fail
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=$2 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
-    PATH=$BIN:$PATH sh "$FIX" -q 2>&1
+    PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 run_dry() {
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=0 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
-    PATH=$BIN:$PATH sh "$FIX" -n -q 2>&1
+    PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -q 2>&1
 }
 run_multi() {   # $1=now $2=数据目录；ps 多报同包 PID 102，bind 改各自 mountinfo
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$2 \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
     SI_TEST_MI=$MI SI_TEST_MI_DIR=$P SI_TEST_PS_EXTRA=1 SI_TEST_BIND_FAIL=0 \
-    SI_MIN_AGE=5 SI_FUSE_WAIT=1 PATH=$BIN:$PATH sh "$FIX" -q 2>&1
+    SI_MIN_AGE=5 SI_FUSE_WAIT=1 PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 
 fail=0
@@ -187,7 +199,7 @@ run_real() {   # $1=bind-sleep；真实时钟
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA_MS \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_MI=$MI \
     SI_TEST_BIND_FAIL=0 SI_TEST_BIND_SLEEP=$1 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
-    PATH=$BIN:$PATH sh "$FIX" -q 2>&1
+    PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 rm -rf "$DATA_MS"; rm -f "$DATA/.churn"; root_mi
 out=$(run_real 1.2); r=$(result "$out")
@@ -216,7 +228,7 @@ now=1700004000
   echo "$((now - 50)).500 com.keep2 DCIM fixed"
 } > "$DATA/.repairs"
 printf 'com.churn|DCIM|0|block\n' > "$DATA/.churn"
-SI_TEST=1 SI_DATA=$DATA SI_TEST_NOW=$now sh "$FIX" --trim-only >/dev/null 2>&1
+SI_TEST=1 SI_DATA=$DATA SI_TEST_NOW=$now "$TEST_SH" "$FIX" --trim-only >/dev/null 2>&1
 lines=$(wc -l < "$DATA/.repairs" 2>/dev/null)
 [ "$lines" -le 200 ] && ok "E1 --trim-only 后 ≤200 行（$lines）" || bad "E1 仍是 $lines 行"
 grep -q 'com.keep DCIM fixed' "$DATA/.repairs" && ok "E2 保留 1 小时内记录" || bad "E2 误删新记录"

@@ -3,40 +3,42 @@
 # 输出单行 JSON，供 WebUI 渲染。不做任何挂载/修改操作。
 # 状态位：1=已正确挂载  0=允许但没挂上（故障现场）  -1=应用没运行
 #
-# 性能：配置解析只用 3 个 awk，之后纯 shell 查表；只有"运行中"的应用才读 mountinfo。
+# 性能：配置解析交给 si-config.awk（1 次 awk + 1 次汇总），之后纯 shell 查表；
+# 只有"运行中"的应用才读 mountinfo。
 
 CONF=${SI_CONF:-/data/adb/storage-isolation/configuration.json}
 DATA=${SI_DATA:-/data/adb/si-mount-fix}
 mkdir -p "$DATA" 2>/dev/null
 
-R1=$DATA/.la1.$$; R2=$DATA/.la2.$$; R3=$DATA/.la3.$$
-cleanup() { rm -f "$R1" "$R2" "$R3"; }
+# 配置解析统一走 scripts/si-config.awk（与 fix 共用）；解析失败直接输出可读错误，
+# 不让 WebUI 把空数组误当成"没有应用"。
+case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
+PARSER=$D/si-config.awk
+PARSED=$DATA/.la-parsed.$$
+R2=$DATA/.la2.$$; R3=$DATA/.la3.$$
+cleanup() { rm -f "$PARSED" "$R2" "$R3"; }
 trap cleanup EXIT
 
-# 1) 模板 id → 目录列表（一次）
-grep -o '"mount_dirs_templates":.*' "$CONF" 2>/dev/null \
-  | awk '{n=split($0,a,"},{"); for(i=1;i<=n;i++) print a[i]}' \
-  | awk '{
-      id=""; l="";
-      if (match($0, /"id":"[^"]*"/)) id = substr($0, RSTART+6, RLENGTH-7);
-      if (match($0, /"list":\[[^]]*\]/)) { l = substr($0, RSTART+8, RLENGTH-9); gsub(/"/,"",l); gsub(/,/," ",l) }
-      if (id != "") print "|" id "=" l
-    }' > "$R1"
-IDMAP=$(tr -d '\n' < "$R1")
+if [ ! -r "$PARSER" ]; then
+  printf '{"total":0,"running":0,"missing":0,"apps":[],"error":"parser_missing"}'
+  exit 2
+fi
+if ! timeout 20 awk -f "$PARSER" "$CONF" > "$PARSED" 2>/dev/null; then
+  printf '{"total":0,"running":0,"missing":0,"apps":[],"error":"config"}'
+  exit 2
+fi
 
-# 2) 记录 → pkg;template_ids;custom_dirs（只取 enabled 的）
-awk '{
-  n = split($0, a, "},{");
-  for (i = 1; i <= n; i++) {
-    r = a[i];
-    if (r !~ /"mount_dirs"/ || r !~ /"enabled":true/) continue;
-    pkg=""; t=""; c="";
-    if (match(r, /"package_name":"[^"]*"/)) pkg = substr(r, RSTART+16, RLENGTH-17);
-    if (match(r, /"template_ids":\[[^]]*\]/)) { t = substr(r, RSTART+16, RLENGTH-17); gsub(/"/,"",t); gsub(/,/," ",t) }
-    if (match(r, /"custom_dirs":\[[^]]*\]/))  { c = substr(r, RSTART+15, RLENGTH-16); gsub(/"/,"",c); gsub(/,/," ",c) }
-    if (pkg != "") print pkg ";" t ";" c;
+# 1) 只取启用的 app → "pkg;dir1 dir2"（目录已由解析器校验/去重）
+awk -F'|' '
+  $1 == "P" {
+    if (cur != "") print cur ";" allow
+    if ($3 != 1) { cur = ""; allow = ""; next }
+    cur = $2; allow = ""
+    next
   }
-}' "$CONF" 2>/dev/null > "$R2"
+  $1 == "D" { if ($2 == cur) allow = allow (allow == "" ? "" : " ") $3; next }
+  END { if (cur != "") print cur ";" allow }
+' "$PARSED" > "$R2"
 
 # 3) 进程名 → pid（同名取第一个）
 ps -A -o pid,args 2>/dev/null | awk 'NR>1{ n=split($2,a,":"); print a[1] " " $1 }' > "$R3"
@@ -45,26 +47,8 @@ apps=""; total=0; running=0; missing=0
 
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  pkg=${line%%;*}; rest=${line#*;}
-  tids=${rest%%;*}; cst=${rest#*;}
+  pkg=${line%%;*}; allow=${line#*;}
   real=${pkg#shared-}
-
-  allow=""
-  for t in $tids; do
-    v=""
-    case "$IDMAP" in
-      *"|$t="*) v=${IDMAP#*"|$t="}; v=${v%%|*} ;;
-    esac
-    if [ -z "$v" ]; then
-      case "$t" in
-        BUILT_IN_PHOTOS)    v="DCIM Pictures" ;;
-        BUILT_IN_MUSIC)     v="Music" ;;
-        BUILT_IN_DOWNLOADS) v="Download Documents" ;;
-      esac
-    fi
-    allow="$allow $v"
-  done
-  allow="$allow $cst"
   set -- $allow; allow="$*"
 
   # 注意：不要对长字符串做 case 通配（mksh 在 ~20KB 上是 O(n^2)，单次可达数秒）

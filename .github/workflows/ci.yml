@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# 默认只读；打 tag 的 release job 单独申请 contents: write（不硬编码 token）。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test-build:
+    name: shellcheck + tests + build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck / mksh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck mksh unzip
+          shellcheck --version
+          mksh -c 'echo "mksh: $KSH_VERSION"'
+          python3 --version
+
+      # .shellcheckrc 里固定 shell=sh（Android /system/bin/sh = mksh）并列出有意为之的白名单；
+      # warning 及以上必须为 0，info/style 只作参考。
+      - name: shellcheck
+        run: |
+          shellcheck -x -S warning \
+            service.sh action.sh uninstall.sh \
+            scripts/*.sh tools/*.sh \
+            META-INF/com/google/android/update-binary
+
+      # 用 mksh 跑：与真机 /system/bin/sh 一致；/tmp 可写，TMPDIR 显式给出。
+      # 真机/容器里若没有 /tmp，需要 TMPDIR=/data/local/tmp sh tools/run-tests.sh。
+      - name: tests (mksh)
+        env:
+          TMPDIR: /tmp
+          SI_TEST_SH: mksh
+        run: sh tools/run-tests.sh
+
+      # build.sh 默认自己会跑测试；这里测试已单独跑过，用 SKIP_TESTS=1 只做打包自检。
+      - name: build zip
+        env:
+          TMPDIR: /tmp
+          SI_TEST_SH: mksh
+          SKIP_TESTS: '1'
+        run: sh tools/build.sh
+
+      - name: inspect artifact
+        run: |
+          unzip -l si-mount-fix.zip
+          sha256sum si-mount-fix.zip
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: si-mount-fix-${{ github.sha }}
+          path: si-mount-fix.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: release (tag)
+    needs: lint-test-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: tag must match module.prop version
+        run: |
+          v=$(sed -n 's/^version=//p' module.prop | head -1)
+          if [ "$GITHUB_REF" != "refs/tags/$v" ]; then
+            echo "tag $GITHUB_REF 与 module.prop $v 不一致" >&2
+            exit 1
+          fi
+
+      - name: build zip
+        env:
+          SKIP_TESTS: '1'
+        run: sh tools/build.sh
+
+      # 不硬编码 token：GITHUB_TOKEN 由 Actions 注入，权限来自上面的 contents: write。
+      - name: publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: si-mount-fix.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

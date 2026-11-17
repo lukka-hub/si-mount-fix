@@ -18,6 +18,20 @@ for a in "$@"; do
   esac
 done
 say() { [ "$QUIET" = 1 ] || echo "$@"; }
+# 配置解析器与脚本同目录；缺失时 fail-closed（error=config），不退回旧正则。
+case "$0" in */*) FIXDIR=${0%/*} ;; *) FIXDIR=. ;; esac
+PARSER=$FIXDIR/si-config.awk
+EXTRA_SKIP=""
+# RESULT 行格式的唯一实现（与 tools 里的 fix stub 共用）；缺失时保留等价输出。
+if [ -r "$FIXDIR/result.sh" ]; then . "$FIXDIR/result.sh"; fi
+if ! command -v result_line >/dev/null 2>&1; then
+  result_line() {
+    _ro="RESULT checked=${1:-0} broken=${2:-0} fixed=${3:-0} young=${4:-0}"
+    [ "$#" -ge 4 ] && shift 4
+    for _rkv in "$@"; do _ro="$_ro $_rkv"; done
+    printf '%s\n' "$_ro"
+  }
+fi
 
 CONF=${SI_CONF:-/data/adb/storage-isolation/configuration.json}
 # 自测用 SI_TEST=1 才把 /proc 换到 fixture，生产环境忽略残留变量。
@@ -32,25 +46,30 @@ if [ "$SI_TEST" = 1 ]; then
   [ -n "$SI_TEST_DATA" ] && DATA_ROOT=$SI_TEST_DATA
   [ -n "$SI_TEST_SRC" ] && SRC_ROOT=$SI_TEST_SRC
 fi
-AGE_MIN=${SI_MIN_AGE:-15}
-case "$AGE_MIN" in ''|*[!0-9]*) AGE_MIN=15 ;; esac
-[ "$AGE_MIN" -lt 5 ] && AGE_MIN=5
-[ "$AGE_MIN" -gt 120 ] && AGE_MIN=120
-
 RC=${SI_DATA:-/data/adb/si-mount-fix}
 if [ ! -d "$RC" ]; then
   mkdir -p "$RC" 2>/dev/null || {
     echo "无法写入 $RC" >&2
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=datadir"
+    result_line 0 0 0 0 error=datadir
     exit 3
   }
   chmod 700 "$RC" 2>/dev/null
 fi
 if [ ! -w "$RC" ]; then
   echo "无法写入 $RC" >&2
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 error=datadir"
+  result_line 0 0 0 0 error=datadir
   exit 3
 fi
+
+# MIN_AGE：daemon 用 SI_MIN_AGE 传入；手动执行（action/WebUI/终端）时读模块 config.conf。
+if [ -z "${SI_MIN_AGE:-}" ] && [ -r "$RC/config.conf" ]; then
+  SI_MIN_AGE=$(sed -n 's/^[[:space:]]*MIN_AGE[[:space:]]*=[[:space:]]*//p' "$RC/config.conf" 2>/dev/null \
+    | head -1 | sed 's/#.*//' | tr -d ' \r')
+fi
+AGE_MIN=${SI_MIN_AGE:-15}
+case "$AGE_MIN" in ''|*[!0-9]*) AGE_MIN=15 ;; esac
+[ "$AGE_MIN" -lt 5 ] && AGE_MIN=5
+[ "$AGE_MIN" -gt 120 ] && AGE_MIN=120
 
 # 纯 shell 取 epoch 秒（btime+uptime，不 fork date）；读不到退回 date，只影响熔断时间窗。
 get_now() {
@@ -84,8 +103,7 @@ CH=$RC/.churn
 CACHE=$RC/.conf.cache
 CACHE_USE=$CACHE
 SRC=$RC/.si-conf.$$
-RECF=$RC/.si-recs.$$
-TPLF=$RC/.si-tpl.$$
+PARSED=$RC/.si-parsed.$$
 OUTF=$RC/.si-out.fix
 FIXED_LIST=$RC/.si-fixed.$$
 [ "$DRY" = 1 ] && OUTF=$RC/.si-out.dry.$$
@@ -94,11 +112,11 @@ CLEAN_LOCK=""
 # <1 秒熔断判据要毫秒；只有已有 .repairs/.churn 时才多一次 date，健康首扫不 fork。
 NOW_MS=0
 if [ "$SI_TEST" = 1 ] && [ -n "$SI_TEST_NOW" ]; then
-  NOW_MS=$((NOW * 1000))
+  NOW_MS="${NOW}000"  # 用字符串拼接：mksh 的算术是 32 位，NOW*1000 会溢出成负数
 elif [ -s "$REP" ] || [ -s "$CH" ]; then
   NOW_MS=$(date +%s%3N 2>/dev/null)
 fi
-case "$NOW_MS" in ''|*[!0-9]*) NOW_MS=$((NOW * 1000)) ;; esac
+case "$NOW_MS" in ''|*[!0-9]*) NOW_MS="${NOW}000" ;; esac
 
 cleanup() {
   # 只删自己的锁：锁可能被判陈旧后重抢，别删别人的。
@@ -106,10 +124,7 @@ cleanup() {
     rm -rf "$CLEAN_LOCK" 2>/dev/null
   fi
   # 固定输出文件保留（下一轮覆盖），只清带 PID 的临时文件；dry-run 也带 PID 以免并发覆盖。
-  if [ -e "$RECF" ] || [ -e "$TPLF" ] || [ -e "$SRC" ] || [ -e "$FIXED_LIST" ] \
-     || [ -e "$CACHE.tmp.$$" ] || [ -e "$REP.tmp.$$" ] || [ -e "$CH.tmp.$$" ]; then
-    rm -f "$RECF" "$TPLF" "$SRC" "$FIXED_LIST" "$CACHE.tmp.$$" "$REP.tmp.$$" "$CH.tmp.$$" 2>/dev/null
-  fi
+  rm -f "$PARSED" "$SRC" "$FIXED_LIST" "$CACHE.tmp.$$" "$REP.tmp.$$" "$CH.tmp.$$" 2>/dev/null
   [ "$DRY" = 1 ] && [ -e "$OUTF" ] && rm -f "$OUTF" 2>/dev/null
 }
 trap cleanup EXIT
@@ -124,7 +139,7 @@ trim_state() {
     ' "$REP" > "$REP.tmp.$$" 2>/dev/null && mv -f "$REP.tmp.$$" "$REP" 2>/dev/null
   fi
   rm -f "$CH" 2>/dev/null
-  rm -f "$RC"/.si-conf.* "$RC"/.si-recs.* "$RC"/.si-tpl.* "$RC"/.si-allow.* \
+  rm -f "$RC"/.si-conf.* "$RC"/.si-parsed.* "$RC"/.si-allow.* \
         "$RC"/.si-cand.* "$RC"/.si-ps.* "$RC"/.si-fixed.* "$RC"/.si-out.dry.* \
         "$RC"/.conf.cache.tmp.* 2>/dev/null
 }
@@ -145,7 +160,7 @@ if [ "$DRY" = 0 ]; then
     fi
     if [ -n "$lp" ] && [ -d "$PROC/$lp" ] && \
        tr '\0' ' ' < "$PROC/$lp/cmdline" 2>/dev/null | grep -q 'fix-si-mounts\.sh'; then
-      echo "RESULT checked=0 broken=0 fixed=0 young=0 skipped=locked"
+      result_line 0 0 0 0 skipped=locked
       exit 0
     fi
     rm -rf "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || exit 0
@@ -172,109 +187,92 @@ stat_of() {      # mountinfo target -> "dev count"
   awk -v t="$1" '$5==t {d=$3; n++} END {print d, n+0}' "$mi" 2>/dev/null
 }
 
-# 配置缓存按 mtime:size 失效。SI 可能正在重写 configuration.json：半截 JSON 里
-# "enabled":false 可能被截掉，会把已停用应用当启用去补挂载；只缓存末字符为 } 的完整 JSON。
+# 配置缓存按 mtime:size 失效；解析统一走 scripts/si-config.awk（与 list-apps 共用）。
+# 旧实现按行 split + 正则扫整条记录，真正的多行 JSON 会漏记录，嵌套 mount_dirs
+# 也只能靠碰巧命中；新解析器切 JSON 结构，缓存层只做格式转换，不再二次猜语义。
 cache_ok=0
-# 键含纳秒 + 字节数：一次 stat，避免 -nt 的秒级精度把同秒内重写当成命中。
 CONF_STAT=$(stat -c '%y:%s' "$CONF" 2>/dev/null)
 if [ -s "$CACHE" ] && [ -n "$CONF_STAT" ]; then
   read -r chdr < "$CACHE" 2>/dev/null
-  [ "$chdr" = "#SI1 $CONF_STAT" ] && cache_ok=1
+  [ "$chdr" = "#SI2 $CONF_STAT" ] && cache_ok=1
 fi
 
 if [ "$cache_ok" = 0 ]; then
   META1=$(stat -c '%y:%s' "$CONF" 2>/dev/null)
   if ! cp -f "$CONF" "$SRC" 2>/dev/null || [ ! -s "$SRC" ]; then
     say "配置不可读，跳过本轮"
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+    result_line 0 0 0 0 error=config
     exit 2
   fi
   last=$(tr -d ' \t\r\n' < "$SRC" 2>/dev/null | tail -c 1)
   if [ "$last" != "}" ]; then
     say "配置不完整（SI 正在重写？），跳过本轮"
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+    result_line 0 0 0 0 error=config
     exit 2
   fi
-  TPLJSON=$(grep -o '"mount_dirs_templates":.*' "$SRC" 2>/dev/null)
-  [ -n "$TPLJSON" ] || say "警告：mount_dirs_templates 解析为空（配置可能是多行 JSON），模板目录会漏修"
-
-  awk '{n=split($0,a,"},{"); for(i=1;i<=n;i++) print a[i]}' "$SRC" 2>/dev/null > "$RECF"
-  printf '%s' "$TPLJSON" | awk '{n=split($0,a,"},{"); for(i=1;i<=n;i++) print a[i]}' 2>/dev/null > "$TPLF"
-
-  if [ ! -s "$RECF" ]; then
-    say "配置不可读，跳过本轮"
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+  if [ ! -r "$PARSER" ]; then
+    say "配置解析器缺失（$PARSER），跳过本轮"
+    result_line 0 0 0 0 error=config
+    exit 2
+  fi
+  if ! timeout 20 awk -f "$PARSER" "$SRC" > "$PARSED" 2>/dev/null; then
+    say "配置解析失败（JSON 结构不支持？），跳过本轮"
+    result_line 0 0 0 0 error=config
     exit 2
   fi
 
-  printf '#SI1 %s\n' "$META1" > "$CACHE.tmp.$$" 2>/dev/null
-  awk -v tf="$TPLF" '
-    function collect_pkgs(s,  p) {
-      while (match(s, /"package_name":"[^"]*"/)) {
-        p = substr(s, RSTART + 16, RLENGTH - 17)
-        sub(/^shared-/, "", p)
-        if (p != "") P[p] = 1
-        s = substr(s, RSTART + RLENGTH)
-      }
+  # 预扫描：有无法表示的目录/未知模板时只打标签，由后面的 skipped 汇总上报。
+  if grep -q '^X|' "$PARSED" 2>/dev/null; then
+    xtags=$(sed -n 's/^X|[^|]*|\([a-z_]*\)|.*/\1/p' "$PARSED" 2>/dev/null | sort -u | tr '\n' ' ')
+    EXTRA_SKIP="$EXTRA_SKIP $xtags"
+    say "警告：目录名无法安全表示，已跳过（$xtags）"
+  fi
+  if grep -q '^W|' "$PARSED" 2>/dev/null; then
+    wtags=$(sed -n 's/^W|[^|]*|\([a-z_]*\)|.*/\1/p' "$PARSED" 2>/dev/null | sort -u | tr '\n' ' ')
+    EXTRA_SKIP="$EXTRA_SKIP $wtags"
+    say "警告：模板里的目录名无法安全表示，已跳过（$wtags）"
+  fi
+  if grep -q '^U|' "$PARSED" 2>/dev/null; then
+    EXTRA_SKIP="$EXTRA_SKIP template"
+    say "警告：配置里有未知模板 id，已跳过（skipped=template）"
+  fi
+
+  printf '#SI2 %s\n' "$META1" > "$CACHE.tmp.$$" 2>/dev/null || {
+    say "配置缓存写入失败，跳过本轮"
+    result_line 0 0 0 0 error=config
+    exit 2
+  }
+  # Q→进程匹配集合（shared- 同时登记去掉前缀的别名）；P→en/allow；D→目录。
+  # 目录已在解析器里校验，这里只按空格拼接，不重做语义判断。
+  awk -F'|' '
+    function esc(s) { gsub(/\./, "\\.", s); return s }
+    function addp(s) {
+      s = esc(s)
+      if (!(s in SEEN)) { SEEN[s] = 1; pkgs = pkgs (pkgs == "" ? "" : "|") s }
     }
-    function esc(s,  r,i,c) {
-      r = ""
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (c == ".") c = "\\."
-        r = r c
-      }
-      return r
+    function flush() {
+      if (cur == "") return
+      # 旧缓存 allow 末尾带一个空格，主扫描的 A 行输出依赖这个格式；保持逐字兼容。
+      if (allow != "") allow = allow " "
+      print "|" cur "=" en ":" allow
+      if (cur ~ /^shared-/) { r = cur; sub(/^shared-/, "", r); print "|" r "=" en ":" allow }
+      cur = ""
     }
-    BEGIN {
-      while ((getline l < tf) > 0) {
-        id = ""; list = ""
-        if (match(l, /"id":"[^"]*"/)) id = substr(l, RSTART + 6, RLENGTH - 7)
-        if (match(l, /"list":\[[^]]*\]/)) { list = substr(l, RSTART + 8, RLENGTH - 9); gsub(/"/, "", list); gsub(/,/, " ", list) }
-        if (id != "") T[id] = list
-      }
-      close(tf)
-    }
-    {
-      collect_pkgs($0)
-      n = split($0, a, "},{")
-      for (i = 1; i <= n; i++) {
-        r = a[i]
-        if (r !~ /"mount_dirs"/) continue
-        pkg = ""; if (match(r, /"package_name":"[^"]*"/)) pkg = substr(r, RSTART + 16, RLENGTH - 17)
-        if (pkg == "") continue
-        en = 1; if (r ~ /"enabled":false/) en = 0
-        t = ""; if (match(r, /"template_ids":\[[^]]*\]/)) { t = substr(r, RSTART + 16, RLENGTH - 17); gsub(/"/, "", t) }
-        c = ""; if (match(r, /"custom_dirs":\[[^]]*\]/))  { c = substr(r, RSTART + 15, RLENGTH - 16); gsub(/"/, "", c) }
-        allow = ""
-        k = split(t, x, ",")
-        for (j = 1; j <= k; j++) { id = x[j]; gsub(/ /, "", id); if (id in T) allow = allow " " T[id] }
-        gsub(/,/, " ", c)
-        allow = allow " " c
-        gsub(/  +/, " ", allow); sub(/^ /, "", allow)
-        print "|" pkg "=" en ":" allow
-        # SI 可能把共享 uid 记为 shared-com.foo，而进程名是 com.foo：两个 key 都登记。
-        if (pkg ~ /^shared-/) {
-          real = pkg; sub(/^shared-/, "", real)
-          print "|" real "=" en ":" allow
-        }
-      }
-    }
-    END {
-      s = ""
-      for (p in P) { e = esc(p); s = s (s == "" ? e : "|" e) }
-      print "@PKGS " s
-    }' "$RECF" >> "$CACHE.tmp.$$" || {
+    $1 == "Q" { addp($2); if ($2 ~ /^shared-/) { r = $2; sub(/^shared-/, "", r); addp(r) } next }
+    $1 == "P" { flush(); cur = $2; en = $3; allow = ""; next }
+    $1 == "D" { if ($2 == cur) allow = allow (allow == "" ? "" : " ") $3; next }
+    END { flush(); if (pkgs == "") pkgs = "@none"; print "@PKGS " pkgs }
+  ' "$PARSED" >> "$CACHE.tmp.$$" 2>/dev/null || {
     rm -f "$CACHE.tmp.$$" 2>/dev/null
-    say "配置解析失败，跳过本轮"
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+    say "配置缓存生成失败，跳过本轮"
+    result_line 0 0 0 0 error=config
     exit 2
   }
   META2=$(stat -c '%y:%s' "$CONF" 2>/dev/null)
   if [ -n "$META1" ] && [ -n "$META2" ] && [ "$META1" != "$META2" ]; then
     rm -f "$CACHE.tmp.$$" 2>/dev/null
     say "配置在解析期间被改写，跳过本轮"
-    echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+    result_line 0 0 0 0 error=config
     exit 2
   fi
   if [ "$DRY" = 1 ] || [ -z "$META1" ] || [ -z "$META2" ]; then
@@ -283,7 +281,7 @@ if [ "$cache_ok" = 0 ]; then
   else
     if ! mv -f "$CACHE.tmp.$$" "$CACHE" 2>/dev/null; then
       say "配置缓存写入失败，跳过本轮"
-      echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+      result_line 0 0 0 0 error=config
       exit 2
     fi
   fi
@@ -484,42 +482,42 @@ fi
 arc=$?
 if [ "$arc" -eq 9 ]; then
   say "FUSE 层尚未就绪，本轮不修改挂载（交给守护退避重试）"
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 defer=fuse"
+  result_line 0 0 0 0 defer=fuse
   exit 0
 fi
 if [ "$arc" -eq 5 ]; then
   # 缓存坏了（@PKGS 为空等）：删掉，下一轮从配置重建。
   [ "$DRY" = 0 ] && rm -f "$CACHE" 2>/dev/null
   say "配置缓存无效，跳过本轮"
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 error=config"
+  result_line 0 0 0 0 error=config
   exit 2
 fi
 if [ "$arc" -eq 4 ]; then
   say "ps 不可用或输出异常，跳过本轮"
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 error=ps"
+  result_line 0 0 0 0 error=ps
   exit 4
 fi
 if [ "$arc" -ne 0 ]; then
   say "扫描异常（rc=$arc），跳过本轮"
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 error=scan"
+  result_line 0 0 0 0 error=scan
   exit 4
 fi
 
 checked=0; broken=0; fixed=0; young=0; churn=0; retry_in=0
 pid=""; age=""; pkg=""; mp=""; sbpath=""
 need=""; need_meta=""; proc_broken=0
-skipped=""
+skipped="$EXTRA_SKIP"
 
 rep_add() {   # $1=target $2=fixed|failed
   # 记录 bind 的实际时刻（秒.毫秒）：熔断的 <1 秒判据依赖它。
   set_now
   _ms=""
   if [ "$SI_TEST" = 1 ] && [ -n "$SI_TEST_NOW" ]; then
-    _ms=$((NOW * 1000))
+    _ms="${NOW}000"
   else
     _ms=$(date +%s%3N 2>/dev/null)
   fi
-  case "$_ms" in ''|*[!0-9]*) _ms=$((NOW * 1000)) ;; esac
+  case "$_ms" in ''|*[!0-9]*) _ms="${NOW}000" ;; esac
   _sec=${_ms%???}; _frac=${_ms#"$_sec"}
   [ "${#_frac}" = 3 ] || _frac=000
   n=0
@@ -579,17 +577,13 @@ repair_one() {   # $1=target $2=action
     return 0
   fi
 
+  # bind 命令的 stderr 不一定代表失败（挂载成功也可能有警告）；以挂载校验为准，
+  # 否则会出现“实际挂上了却记 bindfail，下一轮又判健康”的假失败。
   err=$(bind_mount "$pid" "$src" "$tgt" 2>&1)
-  if [ -n "$err" ]; then
-    say "  失败 $rt: $err"
-    skipped="$skipped bindfail"
-    rep_add "$rt" failed
-    [ "$ra" = "retry" ] && { churn_put "$pkg" "$rt" block "$((NOW + 3600))"; churn=$((churn + 1)); skipped="$skipped churn"; echo "N|$pkg|$rt|block|$((NOW + 3600))"; }
-    return 0
-  fi
   set -- $(stat_of "$tgt")
   c=${1:-}; k=${2:-0}
   if [ "$c" = "$FUSEDEV" ] && [ "$k" = "1" ]; then
+    [ -n "$err" ] && say "  警告 $rt: 命令有输出但挂载校验通过（$err）"
     # 同包多 PID 共用 (pkg,target)：每个 PID 都要实际修并校验，但成功只计一次。
     if ! grep -qxF "$pkg|$rt" "$FIXED_LIST" 2>/dev/null; then
       fixed=$((fixed + 1))
@@ -598,7 +592,12 @@ repair_one() {   # $1=target $2=action
     fi
     [ "$ra" = "retry" ] && churn_del "$pkg" "$rt"
   else
-    say "  校验失败 $rt (dev=$c n=$k)，回滚"
+    if [ -n "$err" ]; then
+      say "  失败 $rt: $err"
+      skipped="$skipped bindfail"
+    else
+      say "  校验失败 $rt (dev=$c n=$k)，回滚"
+    fi
     umount_one "$pid" "$tgt" >/dev/null 2>&1
     rep_add "$rt" failed
     [ "$ra" = "retry" ] && { churn_put "$pkg" "$rt" block "$((NOW + 3600))"; churn=$((churn + 1)); skipped="$skipped churn"; echo "N|$pkg|$rt|block|$((NOW + 3600))"; }
@@ -696,9 +695,11 @@ tags=""
 for t in $skipped; do
   case " +$tags+" in *"+$t+"*) ;; *) if [ -z "$tags" ]; then tags=$t; else tags="$tags+$t"; fi ;; esac
 done
-RES="RESULT checked=$checked broken=$broken fixed=$fixed young=$young"
-[ "$churn" -gt 0 ] && RES="$RES churn=$churn"
-[ "$retry_in" -gt 0 ] && RES="$RES retry=$retry_in"
-[ -n "$tags" ] && RES="$RES skipped=$tags"
-echo "$RES"
+set -- "$checked" "$broken" "$fixed" "$young"
+case "$churn" in ''|*[!0-9]*) churn=0 ;; esac
+[ "$churn" -gt 0 ] && set -- "$@" "churn=$churn"
+case "$retry_in" in ''|*[!0-9]*) retry_in=0 ;; esac
+[ "$retry_in" -gt 0 ] && set -- "$@" "retry=$retry_in"
+[ -n "$tags" ] && set -- "$@" "skipped=$tags"
+result_line "$@"
 exit 0

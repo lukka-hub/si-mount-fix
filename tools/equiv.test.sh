@@ -11,6 +11,19 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 FIX=scripts/fix-si-mounts.sh
+# 基线脚本与新脚本必须用同一个解释器跑，否则 diff 没有意义。
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在或不可执行（曾被替换成
+# 设备节点）时回退 mksh → sh。用 `-c :` 真跑一次，比只 command -v 可靠。
+TEST_SH=${SI_TEST_SH:-/system/bin/sh}
+if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到可用的 sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
 BASE=tools/fixtures/fix-1.3.4.baseline.sh
 [ -f "$BASE" ] || { echo "缺少基线脚本 $BASE"; exit 1; }
 
@@ -149,17 +162,30 @@ run_fix_keep() {   # 不清数据目录：用于验证缓存命中
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$2 \
     SI_MIN_AGE=15 SI_FUSE_WAIT=1 \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-    PATH=$BIN:$PATH sh "$1" -n -v > "$3" 2>&1
+    PATH=$BIN:$PATH "$TEST_SH" "$1" -n -v > "$3" 2>&1
+  clean_out "$3"
 }
 
 fail=0
 ok()  { echo "  ok   $1"; }
 bad() { echo "  FAIL $1"; fail=1; }
 
+# 1.3.4 基线用 `awk -v re=...\.` 传包名正则：gawk 会往 stderr 打
+# “escape sequence `\.' treated as plain `.'”，mawk 不打。这是基线写法导致的
+# 告警，不是新旧实现的输出差异；只丢这一行，其余 stderr 原样保留（真错误仍会让 diff 失败）。
+clean_out() {
+  [ -f "$1" ] || return 0
+  grep -v '^awk: warning: escape sequence' "$1" > "$1.chk" 2>/dev/null
+  mv -f "$1.chk" "$1" 2>/dev/null
+}
+
 run_fix "$T/old.sh" "$T/data-old" "$T/old.out"
 run_fix "$FIX" "$T/data-new" "$T/new.out"
 
-if diff -u "$T/old.out" "$T/new.out" > "$T/diff.txt" 2>&1; then
+# 两侧都启动失败时 diff 也会“相等”，所以先要求两侧都有输出。
+if [ ! -s "$T/old.out" ] || [ ! -s "$T/new.out" ]; then
+  bad "等价测试两侧输出为空（启动失败？），拒绝判绿"
+elif diff -u "$T/old.out" "$T/new.out" > "$T/diff.txt" 2>&1; then
   ok "1.3.4 与 1.3.5 的 -n -v 输出逐字一致（$(wc -l < "$T/new.out") 行）"
 else
   bad "输出不一致："
@@ -168,8 +194,13 @@ fi
 
 old_res=$(tail -1 "$T/old.out")
 new_res=$(tail -1 "$T/new.out")
-[ "$old_res" = "$new_res" ] && ok "RESULT 逐字一致：$new_res" \
-  || bad "RESULT 不一致：old=[$old_res] new=[$new_res]"
+if [ -z "$old_res" ] || [ -z "$new_res" ]; then
+  bad "RESULT 为空（old=[$old_res] new=[$new_res]）"
+elif [ "$old_res" = "$new_res" ]; then
+  ok "RESULT 逐字一致：$new_res"
+else
+  bad "RESULT 不一致：old=[$old_res] new=[$new_res]"
+fi
 
 case "$new_res" in
   *error=*) bad "等价用例出现 error：$new_res" ;;
@@ -187,7 +218,8 @@ run_fix_keep "$FIX" "$T/data-nocache" "$T/nocache.out"
 rm -rf "$T/data-cache"; mkdir -p "$T/data-cache"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-cache \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$FIX" -q > "$T/cachebuild.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q > "$T/cachebuild.out" 2>&1
+clean_out "$T/cachebuild.out"
 [ -s "$T/data-cache/.conf.cache" ] && ok "非 dry 扫描生成 .conf.cache" || bad "没有生成 .conf.cache"
 cache_before=$(stat -c '%Y:%s:%i' "$T/data-cache/.conf.cache" 2>/dev/null)
 run_fix_keep "$FIX" "$T/data-cache" "$T/cache1.out"
@@ -204,7 +236,8 @@ diff -u "$T/cache1.out" "$T/cache2.out" > "$T/diff2.txt" 2>&1 \
 PATH=$T/failbin:$BIN:$PATH SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json \
   SI_DATA=$T/data-cache SI_MIN_AGE=15 SI_FUSE_WAIT=1 \
   SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_CP_LOG=$T/cp.log \
-  sh "$FIX" -n -v > "$T/cache3.out" 2>&1
+  "$TEST_SH" "$FIX" -n -v > "$T/cache3.out" 2>&1
+clean_out "$T/cache3.out"
 [ ! -s "$T/cp.log" ] \
   && ok "缓存命中时没有调用 cp（证明真的读了缓存）" \
   || bad "缓存命中时仍调用 cp：$(cat "$T/cp.log")"
@@ -218,25 +251,45 @@ esac
 rm -rf "$T/data-old-r" "$T/data-new-r"; mkdir -p "$T/data-old-r" "$T/data-new-r"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-old-r \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$T/old.sh" -v > "$T/old-repair.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$T/old.sh" -v > "$T/old-repair.out" 2>&1
+clean_out "$T/old-repair.out"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-new-r \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$FIX" -v > "$T/new-repair.out" 2>&1
-if diff -u "$T/old-repair.out" "$T/new-repair.out" > "$T/diff-repair.txt" 2>&1; then
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -v > "$T/new-repair.out" 2>&1
+clean_out "$T/new-repair.out"
+if [ ! -s "$T/old-repair.out" ] || [ ! -s "$T/new-repair.out" ]; then
+  bad "repair 分支两侧输出为空，拒绝判绿"
+elif diff -u "$T/old-repair.out" "$T/new-repair.out" > "$T/diff-repair.txt" 2>&1; then
   ok "repair 分支输出一致（$(wc -l < "$T/new-repair.out") 行）"
 else
   bad "repair 分支输出不一致："
   sed -n '1,80p' "$T/diff-repair.txt"
 fi
 
-# 空 @PKGS 必须报 error=config，而不是被 awk END 误报成 ps
+# 空 apps 是有意修正，不是回归：1.3.4 把“零 app 的合法配置”当成 error=config
+# （还会被 awk END 误报成 ps），守护据此一直显示配置损坏；1.4.0 的 si-config.awk
+# 把它视为“合法但没东西可修”：checked=0，且不能出现任何 error=。
+# 真机顶层字段是 packages（不是 apps），两种都支持；这里保留 apps 用例覆盖空数组。
 printf '{"apps":[]}' > "$T/empty.json"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/empty.json SI_DATA=$T/data-empty \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$FIX" -n -q > "$T/empty.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -q > "$T/empty.out" 2>&1
+clean_out "$T/empty.out"
 case "$(tail -1 "$T/empty.out")" in
-  *error=config*) ok "空配置报 error=config（不是 ps）" ;;
-  *) bad "空配置错误码不对：$(tail -1 "$T/empty.out")" ;;
+  *error=*) bad "空 apps 不应报 error（合法配置）：$(tail -1 "$T/empty.out")" ;;
+  *checked=0*) ok "空 apps 视为合法空配置：checked=0 且无 error（相对 1.3.4 的有意修正）" ;;
+  *) bad "空 apps 输出不符合预期：$(tail -1 "$T/empty.out")" ;;
+esac
+# 顶层字段写成 packages（真机形态）时同样不该报 error
+printf '{"packages":[]}' > "$T/empty-pkg.json"
+SI_TEST=1 SI_PROC=$P SI_CONF=$T/empty-pkg.json SI_DATA=$T/data-empty-pkg \
+  SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -q > "$T/empty-pkg.out" 2>&1
+clean_out "$T/empty-pkg.out"
+case "$(tail -1 "$T/empty-pkg.out")" in
+  *error=*) bad "空 packages 不应报 error：$(tail -1 "$T/empty-pkg.out")" ;;
+  *checked=0*) ok "空 packages 同样视为合法空配置" ;;
+  *) bad "空 packages 输出不符合预期：$(tail -1 "$T/empty-pkg.out")" ;;
 esac
 
 # 配置变更后缓存必须失效（同目录已有旧 .conf.cache）
@@ -245,10 +298,12 @@ sed 's/"package_name":"com.enabled","enabled":true/"package_name":"com.enabled",
   "$T/conf.orig" > "$T/conf.json"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-cache \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$FIX" -n -v > "$T/inv-new.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -v > "$T/inv-new.out" 2>&1
+clean_out "$T/inv-new.out"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-inv-old \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$T/old.sh" -n -v > "$T/inv-old.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$T/old.sh" -n -v > "$T/inv-old.out" 2>&1
+clean_out "$T/inv-old.out"
 if diff -u "$T/inv-old.out" "$T/inv-new.out" > "$T/diff-inv.txt" 2>&1; then
   ok "配置变更后缓存失效，输出与 1.3.4 一致"
 else
@@ -261,10 +316,12 @@ sed 's/"package_name":"com.sub"/"package_name":"com.sux"/' "$T/conf.json" > "$T/
 mv -f "$T/conf.tmp" "$T/conf.json"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-cache \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$FIX" -n -v > "$T/inv2-new.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -v > "$T/inv2-new.out" 2>&1
+clean_out "$T/inv2-new.out"
 SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data-inv2-old \
   SI_MIN_AGE=15 SI_FUSE_WAIT=1 SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC \
-  PATH=$BIN:$PATH sh "$T/old.sh" -n -v > "$T/inv2-old.out" 2>&1
+  PATH=$BIN:$PATH "$TEST_SH" "$T/old.sh" -n -v > "$T/inv2-old.out" 2>&1
+clean_out "$T/inv2-old.out"
 if diff -u "$T/inv2-old.out" "$T/inv2-new.out" > "$T/diff-inv2.txt" 2>&1; then
   ok "同字节数改写也按 mtime 失效"
 else

@@ -41,6 +41,12 @@ mono() {
   fi
 }
 now_s() { date +%s; }
+# mksh 的算术是 32 位：1700000000000 这类毫秒值不能直接相减/比较。
+# 只做“最近 1 秒”判断，交给 awk 的 double，既避免溢出也保持事件循环可读。
+ms_recent() {   # $1=last_ms $2=now_ms
+  case "${1:-}${2:-}" in ''|*[!0-9]*) return 1 ;; esac
+  awk -v a="$2" -v b="$1" 'BEGIN { exit !(b > 0 && a - b < 1000) }'
+}
 uptime_s() {
   _u=""
   if [ "$SI_TEST" = 1 ] && [ -n "$SI_UPTIME" ]; then
@@ -75,8 +81,9 @@ pipe_has_holder() {   # $1=trace_pipe 路径；0=有活持有者，1=确认没�
     rm -f "$_hf" 2>/dev/null
     return 2
   fi
-  if grep -F "/instances/$INST_NAME/trace_pipe" "$_hf" 2>/dev/null \
-       | grep -q -v " /proc/$$/fd/" 2>/dev/null; then
+  # 精确匹配“fd 指向本次实例的 trace_pipe”，不要按后缀猜：别的 trace 根（测试/旧实例）
+  # 下同名实例的 fd 也会包含 "/instances/<name>/trace_pipe"，按后缀匹配会误判成“被占用”。
+  if grep -F " -> $1" "$_hf" 2>/dev/null | grep -q -v " /proc/$$/fd/" 2>/dev/null; then
     rm -f "$_hf" 2>/dev/null
     return 0
   fi
@@ -92,21 +99,30 @@ ENABLED=$(cfg_get ENABLED);              [ -n "$ENABLED" ] || ENABLED=1
 CFG_MODE=$(cfg_get MODE);                [ -n "$CFG_MODE" ] || CFG_MODE=auto
 POLL_INTERVAL=$(cfg_get POLL_INTERVAL);  [ -n "$POLL_INTERVAL" ] || POLL_INTERVAL=60
 MIN_AGE=$(cfg_get MIN_AGE);              [ -n "$MIN_AGE" ] || MIN_AGE=15
+case "$CFG_MODE" in auto|event|poll) ;; *) CFG_MODE=auto ;; esac
 case "$POLL_INTERVAL" in ''|*[!0-9]*) POLL_INTERVAL=60 ;; esac
 [ "$POLL_INTERVAL" -lt 10 ] && POLL_INTERVAL=10
 [ "$POLL_INTERVAL" -gt 600 ] && POLL_INTERVAL=600
 case "$MIN_AGE" in ''|*[!0-9]*) MIN_AGE=15 ;; esac
 [ "$MIN_AGE" -lt 5 ] && MIN_AGE=5
 [ "$MIN_AGE" -gt 120 ] && MIN_AGE=120
-case "$ENABLED" in
-  1|true|TRUE|yes|YES|on|ON) ENABLED=1 ;;
-  *) ENABLED=0 ;;
+# 与 supervisor.sh / WebUI 保持一致：只有显式 0/false/no/off 算停用（大小写不敏感），
+# 其它非空值按启用处理；否则三端对 "True"/未知写法判断不同，会出现反复起停。
+case "$(printf '%s' "$ENABLED" | tr 'A-Z' 'a-z')" in
+  0|false|no|off) ENABLED=0 ;;
+  *) ENABLED=1 ;;
 esac
 export SI_MIN_AGE=$MIN_AGE
 dbg "config parsed mode=$CFG_MODE interval=$POLL_INTERVAL"
 
 PIPE_PROBE_EVERY=$POLL_INTERVAL
 [ "$PIPE_PROBE_EVERY" -gt 60 ] && PIPE_PROBE_EVERY=60
+[ "$PIPE_PROBE_EVERY" -lt 1 ] && PIPE_PROBE_EVERY=1
+# 自测缝：pipe 降级期间的重探周期。默认跟随 POLL_INTERVAL，pipebusy 测试要把它
+# 压到 1 秒，否则“释放 holder → 重探 → 退出”只能在 10 秒量级的窗口里等。
+if [ "$SI_TEST" = 1 ]; then
+  case "$SI_PIPE_PROBE_EVERY" in ''|*[!0-9]*) ;; *) PIPE_PROBE_EVERY=$SI_PIPE_PROBE_EVERY ;; esac
+fi
 [ "$PIPE_PROBE_EVERY" -lt 1 ] && PIPE_PROBE_EVERY=1
 
 SINCE=$(now_s)
@@ -123,6 +139,8 @@ PUB_KEY=""; PUB_AT=0
 CHURN=0; BLIND=0; BLIND_SINCE=0
 LAST_FIX_MS=0
 DEFER_COUNT=0; FUSE_GRACE=180; FUSE_BACKOFF_MAX=30; FUSE_RETRY=60
+EVENT_RETRY_AT=0          # kprobe/selftest 失败后，多久再尝试切回事件模式（秒）
+POLL_REASON=""           # 轮询降级原因；run_fix 成功时不能把它洗成 ok
 FUSE_MISSING_LOGGED=0
 BLIND_EVERY=60            # 假活采样周期（秒）
 BLIND_MIN_HITS=20         # 一个周期内 kprobe 至少命中多少次才判定
@@ -146,10 +164,48 @@ fi
 [ "$FUSE_BACKOFF_MAX" -lt 1 ] && FUSE_BACKOFF_MAX=1
 [ "$FUSE_RETRY" -lt 1 ] && FUSE_RETRY=1
 
+# 状态文案的唯一定义处：status.json 的 reason_text 由这里生成，action/WebUI 直接展示，
+# 不再各自维护一份 case（两边已经漂移过一次）。
+reason_label() {
+  _rl_base=$REASON
+  _rl_suf=""
+  case "$_rl_base" in
+    *+forced_event_unsupported)
+      _rl_base=${_rl_base%+forced_event_unsupported}
+      _rl_suf="；配置要求事件，但环境不支持"
+      ;;
+  esac
+  _rl_txt=$(_reason_base "$_rl_base")
+  printf '%s%s\n' "$_rl_txt" "$_rl_suf"
+}
+
+_reason_base() {
+  case "$1" in
+    ok)               echo "正常" ;;
+    boot)             echo "启动中" ;;
+    disabled)         echo "已停用" ;;
+    tracefs_missing)  echo "缺少 tracefs，已降级轮询" ;;
+    kprobe_failed)    echo "kprobe 注册失败，已降级轮询" ;;
+    selftest_failed)  echo "事件自检失败，已降级轮询" ;;
+    pipe_busy)        echo "事件通道被占用" ;;
+    pipe_open_error)  echo "事件通道打不开（无占用者），已降级轮询" ;;
+    pipe_closed)      echo "事件通道关闭" ;;
+    trace_reset)      echo "trace 被重置，已自动恢复" ;;
+    forced_poll)      echo "配置要求轮询" ;;
+    skipped_locked)   echo "另一轮修复正在进行，稍后重试" ;;
+    blind)            echo "事件通道异常（收不到事件），建议重启手机" ;;
+    boot_wait)        echo "开机等待 FUSE 就绪（自动退避重试）" ;;
+    fuse_missing)     echo "FUSE 层未就绪（fail-closed，持续重试）" ;;
+    launch_failed)    echo "守护进程启动失败，请查看 daemon.log" ;;
+    fix_error_*)      echo "修复脚本异常：${1#fix_error_}" ;;
+    *)                echo "$1" ;;
+  esac
+}
+
 write_status() {
   tmp="$STATUS.$$.tmp"
   cat > "$tmp" <<EOF
-{"mode":"$MODE","reason":"$REASON","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
+{"mode":"$MODE","reason":"$REASON","reason_text":"$(reason_label)","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
 EOF
   mv -f "$tmp" "$STATUS" 2>/dev/null
   old=$(cat "$LAST_MODE_FILE" 2>/dev/null)
@@ -192,7 +248,7 @@ prop_desc() {
 write_prop() {
   [ -f "$PROP" ] || return 0
   d="$(prop_desc)"
-  [ "$TOTAL" -gt 0 ] && d="$d · 累计修复 $TOTAL 次"
+  [ "$TOTAL" -gt 0 ] && d="$d · 累计修复 $TOTAL 条"
   dom=$(date '+%m-%d %H:%M')
   desc="$d · $dom ｜存储空间隔离挂载自愈，只补挂载不改配置"
   cur=$(timeout -k 1 5 grep -m1 '^description=' "$PROP" 2>/dev/null)
@@ -210,12 +266,13 @@ publish() {                     # $1=force
   if [ -d "$MOD/webroot" ]; then
     st=$(cat "$STATUS" 2>/dev/null)
     [ -n "$st" ] || st=null
+    cfg="{\"enabled\":$ENABLED,\"mode\":\"$CFG_MODE\",\"interval\":$POLL_INTERVAL,\"min_age\":$MIN_AGE}"
     lines=$(timeout -k 1 5 tail -n 12 "$LOG" 2>/dev/null \
       | timeout -k 1 5 sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/[[:cntrl:]]/ /g' \
       | timeout -k 1 5 awk '{printf "%s\"%s\"", (n++?",":""), $0}')
     tmp="$SNAP.$$"
-    printf 'window.__SI_SNAPSHOT__={"v":1,"ts":%s,"version":"%s","status":%s,"log":[%s]};\n' \
-      "$now" "$VERSION" "$st" "$lines" > "$tmp" 2>/dev/null && mv -f "$tmp" "$SNAP" 2>/dev/null
+    printf 'window.__SI_SNAPSHOT__={"v":1,"ts":%s,"version":"%s","config":%s,"status":%s,"log":[%s]};\n' \
+      "$now" "$VERSION" "$cfg" "$st" "$lines" > "$tmp" 2>/dev/null && mv -f "$tmp" "$SNAP" 2>/dev/null
     rm -f "$tmp" 2>/dev/null
   fi
   if [ "$1" = "force" ] || [ "$key" != "$PUB_KEY" ]; then
@@ -301,11 +358,11 @@ run_fix() {
   checked=$(echo "$out" | sed -n 's/.*checked=\([0-9]*\).*/\1/p' | tail -1)
   broken=$(echo "$out"  | sed -n 's/.*broken=\([0-9]*\).*/\1/p' | tail -1)
   young=$(echo "$out"   | sed -n 's/.*young=\([0-9]*\).*/\1/p' | tail -1)
-  ferr=$(echo "$out"    | sed -n 's/.*error=\([a-z_]*\).*/\1/p' | tail -1)
-  skip=$(echo "$out"    | sed -n 's/.*skipped=\([a-z_+]*\).*/\1/p' | tail -1)
+  ferr=$(echo "$out"    | sed -n 's/.*error=\([A-Za-z0-9_+.-]*\).*/\1/p' | tail -1)
+  skip=$(echo "$out"    | sed -n 's/.*skipped=\([A-Za-z0-9_+.-]*\).*/\1/p' | tail -1)
   churn=$(echo "$out"   | sed -n 's/.*churn=\([0-9]*\).*/\1/p' | tail -1)
   retry=$(echo "$out"   | sed -n 's/.*retry=\([0-9]*\).*/\1/p' | tail -1)
-  defer=$(echo "$out"   | sed -n 's/.*defer=\([a-z_]*\).*/\1/p' | tail -1)
+  defer=$(echo "$out"   | sed -n 's/.*defer=\([A-Za-z0-9_+.-]*\).*/\1/p' | tail -1)
   [ -n "$fixed" ] || fixed=0
   case "$churn" in ''|*[!0-9]*) churn=0 ;; esac
   case "$retry" in ''|*[!0-9]*) retry=0 ;; esac
@@ -399,9 +456,15 @@ run_fix() {
       RETRY_AT=$_rt
     fi
   fi
-  # 降级轮询期间 run_fix 不能把原因洗成 ok，否则 status 会掩盖 pipe 仍被占。
-  if [ -n "$PIPE_REASON" ] && [ "$MODE" = "poll" ]; then
-    REASON=$PIPE_REASON
+  # 降级轮询期间 run_fix 不能把原因洗成 ok，否则 status 会掩盖 pipe/事件降级。
+  # 但只在“本轮成功”时恢复降级原因：fix_error_*/skipped_locked 是更具体的故障，
+  # 不能被降级原因覆盖，否则 status.json 看不到真正的错误。
+  if [ "$REASON" = "ok" ] && [ "$MODE" = "poll" ]; then
+    if [ -n "$POLL_REASON" ]; then
+      REASON=$POLL_REASON
+    elif [ -n "$PIPE_REASON" ]; then
+      REASON=$PIPE_REASON
+    fi
   fi
   # 假活是“仍在事件模式但收不到事件”，不能被本轮 ok 洗掉。
   if [ "$BLIND" = 1 ] && [ "$MODE" = "event" ]; then
@@ -493,7 +556,7 @@ else
          && grep -q '^p:.*si_fix_pu' "$T/kprobe_events" 2>/dev/null \
          && grep -q '^p:.*si_fix_pm' "$T/kprobe_events" 2>/dev/null; then
         for e in si_fix_pu si_fix_pm; do
-          echo 'comm != "nsenter" && comm != "magiskd"' > "$INST/events/kprobes/$e/filter" 2>/dev/null
+          echo 'comm != "nsenter" && comm != "magiskd" && comm != "mount" && comm != "umount"' > "$INST/events/kprobes/$e/filter" 2>/dev/null
           echo 1 > "$INST/events/kprobes/$e/enable" 2>/dev/null
         done
         echo 128 > "$INST/buffer_size_kb" 2>/dev/null
@@ -551,6 +614,8 @@ else
         echo 0 > "$T/events/kprobes/si_fix_pm/enable" 2>/dev/null
         mkdir -p "$INST" 2>/dev/null
         echo 0 > "$INST/events/enable" 2>/dev/null
+        # 自检本身用 mount/umount 命令触发事件（kprobe 记录的 comm 就是 mount/umount），
+        # 所以自检期间先不排除它们；自检通过后再写最终 filter，否则自检永远收不到事件。
         for e in si_fix_pu si_fix_pm; do
           echo 'comm != "nsenter" && comm != "magiskd"' > "$INST/events/kprobes/$e/filter" 2>/dev/null
           echo 1 > "$INST/events/kprobes/$e/enable" 2>/dev/null
@@ -573,6 +638,10 @@ else
            && [ -e "$INST/events/kprobes/si_fix_pm/enable" ] \
            && grep -q '^p:.*si_fix_pu' "$T/kprobe_events" 2>/dev/null \
            && grep -q '^p:.*si_fix_pm' "$T/kprobe_events" 2>/dev/null; then
+          # 自检通过，再排除我们自己 repair 产生的 mount/umount 事件（防止自触发）。
+          for e in si_fix_pu si_fix_pm; do
+            echo 'comm != "nsenter" && comm != "magiskd" && comm != "mount" && comm != "umount"' > "$INST/events/kprobes/$e/filter" 2>/dev/null
+          done
           MODE=event; REASON=ok
         else
           MODE=poll; REASON=selftest_failed
@@ -598,6 +667,25 @@ dbg "startup result mode=$MODE reason=$REASON"
 write_status
 publish force
 log "启动 mode=$MODE reason=$REASON version=$VERSION"
+
+# 降级原因要在轮询期间保持可见：run_fix 成功会把 REASON 置 ok，status 上就看
+# 不到 tracefs/kprobe/selftest/forced_poll 了。
+POLL_REASON=""
+if [ "$MODE" = "poll" ]; then
+  case "$REASON" in
+    ok|boot|boot_wait|fuse_missing|skipped_locked|fix_error_*) ;;
+    *) POLL_REASON=$REASON ;;
+  esac
+fi
+
+# kprobe/selftest 失败后不要立刻 exit：supervisor 30s 重启会让“失败→轮询→重启”
+# 形成快速循环；改成 600s 退避一次，给内核/实例状态一个恢复窗口。
+case "$MODE:$REASON" in
+  poll:kprobe_failed|poll:selftest_failed|poll:*+forced_event_unsupported)
+    EVENT_RETRY_AT=$(( $(mono) + 600 ))
+    log "事件模式不可用（$REASON），600s 后再尝试"
+    ;;
+esac
 
 run_fix
 
@@ -635,16 +723,38 @@ poll_loop() {
       case "$REASON" in
         boot_wait)    sleep 5 ;;
         fuse_missing) sleep "$FUSE_RETRY" ;;
-        *)            sleep "$POLL_INTERVAL" ;;
+        *)
+          # young/churn 会设置 RETRY_AT（MIN_AGE+2 / 熔断到期）；轮询模式也要消费它，
+          # 否则 README 承诺的“稍后补扫”要等满一个 POLL_INTERVAL。
+          _sleep=$POLL_INTERVAL
+          if [ "$RETRY_AT" -gt 0 ]; then
+            _t=$(( RETRY_AT - $(mono) ))
+            [ "$_t" -ge 1 ] && [ "$_t" -lt "$_sleep" ] && _sleep=$_t
+          fi
+          sleep "$_sleep"
+          ;;
       esac
       _now=$(now_s)
     fi
     # 轮询期间 tracefs 可用时退出，让 supervisor 以事件模式重启。
-    if [ -e /sys/kernel/tracing/kprobe_events ] || [ -e /sys/kernel/debug/tracing/kprobe_events ]; then
-      if [ "$REASON" = "tracefs_missing" ] || [ "$REASON" = "kprobe_failed" ]; then
-        log "检测到 tracefs 可用，尝试切回事件模式"
-        exit 0
-      fi
+    # 注意：只对 tracefs_missing 做“一出现就重试”；kprobe/selftest 失败走 600s 退避，
+    # 否则每次重启都会再次失败，形成每 ~90s 一次的 daemon 重启循环。
+    # 判据与启动一致（必须可写）：只读 tracefs 会让“重启→又缺 tracefs→再退出”打转。
+    # REASON 可能带 +forced_event_unsupported 后缀，用 case 前缀匹配。
+    case "$REASON" in
+      tracefs_missing*)
+        if [ -n "$SI_TRACE" ]; then
+          [ -w "$SI_TRACE/kprobe_events" ] 2>/dev/null && { log "检测到 tracefs 可写，尝试切回事件模式"; exit 0; }
+        else
+          for _c in /sys/kernel/tracing /sys/kernel/debug/tracing; do
+            [ -w "$_c/kprobe_events" ] 2>/dev/null && { log "检测到 tracefs 可写，尝试切回事件模式"; exit 0; }
+          done
+        fi
+        ;;
+    esac
+    if [ "$EVENT_RETRY_AT" -gt 0 ] && [ "$(mono)" -ge "$EVENT_RETRY_AT" ]; then
+      log "事件模式退避到期（reason=$REASON），重启后重试"
+      exit 0
     fi
     run_fix
     _next_fix=$(( $(now_s) + POLL_INTERVAL ))
@@ -729,10 +839,7 @@ if [ "$MODE" = "event" ]; then
       # 刚修完 <1 秒：立即复检，让 churn 的 <1 秒判据可达。
       _nowms=$(date +%s%3N 2>/dev/null)
       _recent=0
-      case "$LAST_FIX_MS$_nowms" in
-        ''|*[!0-9]*) ;;
-        *) [ "$LAST_FIX_MS" -gt 0 ] && [ $(( _nowms - LAST_FIX_MS )) -lt 1000 ] && _recent=1 ;;
-      esac
+      ms_recent "$LAST_FIX_MS" "$_nowms" && _recent=1
       if [ "$_recent" = 0 ]; then
         # 尾部去抖：1 秒内没有新事件就开修（同时充当下落定窗口）。
         n=0; dstart=$(mono)
@@ -756,10 +863,7 @@ if [ "$MODE" = "event" ]; then
       if [ "$got" = 1 ]; then
         _nowms=$(date +%s%3N 2>/dev/null)
         _recent=0
-        case "$LAST_FIX_MS$_nowms" in
-          ''|*[!0-9]*) ;;
-          *) [ "$LAST_FIX_MS" -gt 0 ] && [ $(( _nowms - LAST_FIX_MS )) -lt 1000 ] && _recent=1 ;;
-        esac
+        ms_recent "$LAST_FIX_MS" "$_nowms" && _recent=1
         if [ "$_recent" = 1 ]; then
           # 修复后 <1 秒又被拆：立刻复检，让熔断的 <1 秒判据生效。
           run_fix

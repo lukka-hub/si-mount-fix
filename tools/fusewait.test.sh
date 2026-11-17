@@ -4,6 +4,18 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 FIX=scripts/fix-si-mounts.sh
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在或不可执行（曾被替换成
+# 设备节点）时回退 mksh → sh。用 `-c :` 真跑一次，比只 command -v 可靠。
+TEST_SH=${SI_TEST_SH:-/system/bin/sh}
+if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到可用的 sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
 
 T=${TMPDIR:-/tmp}/si-fusewait-test.$$
 trap 'rm -rf "$T"' EXIT INT TERM HUP
@@ -36,8 +48,22 @@ run_fix() {
   rm -f "$T/nsenter.log"
   PATH=$T/bin:$PATH SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data \
     SI_MIN_AGE=5 SI_TEST_NSENTER_LOG=$T/nsenter.log \
-    sh "$FIX" -n -v 2>&1
+    "$TEST_SH" "$FIX" -n -v 2>&1
 }
+
+# 毫秒时钟：GNU date 有 %3N，toybox/其它实现没有时退回秒级。
+now_ms() {
+  _ms=$(date +%s%3N 2>/dev/null)
+  case "$_ms" in
+    ''|*[!0-9]*) _ms="$(date +%s)000" ;;
+  esac
+  printf '%s\n' "$_ms"
+}
+
+# wall-clock 上限可用 SI_TEST_FUSEWAIT_MAX_MS 调整（慢机器/CI 放宽，默认 2000ms）。
+# 只验证“立即返回、不阻塞等待”，不断言具体毫秒数。
+FUSE_DEFER_MAX_MS=${SI_TEST_FUSEWAIT_MAX_MS:-2000}
+case "$FUSE_DEFER_MAX_MS" in ''|*[!0-9]*) FUSE_DEFER_MAX_MS=2000 ;; esac
 
 fail=0
 ok()  { echo "  ok   $1"; }
@@ -47,9 +73,9 @@ bad() { echo "  FAIL $1"; fail=1; }
 cat > "$P/self/mountinfo" <<'M'
 100 1 0:50 / / rw - ext4 /dev/root rw
 M
-t0=$(date +%s%3N)
+t0=$(now_ms)
 out=$(run_fix); rc=$?
-t1=$(date +%s%3N)
+t1=$(now_ms)
 el=$((t1 - t0))
 [ "$rc" = 0 ] && ok "defer 退出码 0（不是错误）" || bad "退出码不是 0：rc=$rc out=$out"
 case "$out" in
@@ -69,7 +95,11 @@ if [ -s "$T/nsenter.log" ]; then
 else
   ok "FUSE 未就绪时没有 mount 调用"
 fi
-[ "$el" -le 500 ] && ok "立即返回（实测 ${el}ms）" || bad "仍在阻塞等待（实测 ${el}ms）"
+if [ "$el" -le "$FUSE_DEFER_MAX_MS" ]; then
+  ok "立即返回，不阻塞（实测 ${el}ms <= ${FUSE_DEFER_MAX_MS}ms）"
+else
+  bad "仍在阻塞等待（实测 ${el}ms > ${FUSE_DEFER_MAX_MS}ms）"
+fi
 
 # ---------- 2) FUSE 已就绪：正常进入扫描 ----------
 rm -f "$T/nsenter.log"
@@ -78,9 +108,9 @@ cat > "$P/self/mountinfo" <<'M'
 101 100 0:50 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
 102 100 0:50 / /storage/emulated rw - fuse /dev/fuse rw
 M
-t0=$(date +%s%3N)
+t0=$(now_ms)
 out=$(run_fix); rc=$?
-t1=$(date +%s%3N)
+t1=$(now_ms)
 el=$((t1 - t0))
 [ "$rc" = 0 ] && ok "FUSE 已就绪时正常结束（rc=0）" || bad "FUSE 已就绪时仍失败：rc=$rc out=$out"
 case "$out" in

@@ -55,12 +55,27 @@ SI 的增强模式会为每个被隔离应用准备独立的 mount namespace，�
 
 ## 安装与升级
 
-**Magisk**：模块 → 从本地安装 → 选择 zip → 重启。
+**Magisk**：模块 → 从本地安装 → 选择 zip → 重启。模块的 `module.prop` 带 `updateJson`，
+Magisk 管理器会按 `update.json` 提示新版本。
 
-**KernelSU**：模块 → 安装 → 选择 zip → 重启。
+**KernelSU / APatch**：模块 → 安装 → 选择 zip → 重启。两者使用各自管理器的模块安装入口，
+不经过本模块 `META-INF/.../update-binary` 里的 Magisk 安装流程，也不读 `updateJson`；
+升级时手动刷入新 zip 即可。
 
 升级用同一个 zip 覆盖安装即可，配置与状态保存在 `/data/adb/si-mount-fix/`，升级不会清空；
 卸载会删除该目录。安装后无需手动执行脚本。
+
+**覆盖升级后要重启手机**（或在 WebUI 里点「重启守护」）：模块文件会立即替换，但已经在运行的
+旧守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是旧守护写下的状态
+（没有 `reason_text`、快照里没有 `config`），版本号却已经是新模块的——这属于正常现象。
+
+### 版本与更新检查
+
+- 版本只有一个来源：`module.prop` 的 `version=v1.4.0` 与 `versionCode=140`
+  （规则 `versionCode = major*100 + minor*10 + patch`）。
+- `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
+- `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
+  `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。
 
 **打开面板**：KernelSU 管理器可在模块页打开 WebUI；Magisk 本体没有内建 WebUI，
 需安装 **KsuWebUI Standalone** 后从其中打开本模块。没有 WebUI 时，点模块的「操作」按钮
@@ -95,6 +110,10 @@ sh /data/adb/modules/si-mount-fix/scripts/fix-si-mounts.sh -n      # 只读体�
 sh /data/adb/modules/si-mount-fix/scripts/fix-si-mounts.sh -n -v   # 附带允许目录
 sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守护
 ```
+
+`status.json` 同时提供 `reason`（机器可读）与 `reason_text`（中文短标签，面板/「操作」按钮直接用；
+旧版守护没有该字段时，两端保留一份兜底词表）。无桥接时用的只读快照 `webroot/snapshot.js` 里另带
+`config{enabled,mode,interval,min_age}`，面板据此渲染配置。
 
 `status.json` 的 `reason`：
 
@@ -149,18 +168,6 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
   应连同日志反馈，而不是反复手动修复。
 - `fuse_missing`：多为开机 FUSE 服务异常；先重启，仍不恢复则检查系统存储服务，模块会持续 fail-closed。
 - 守护没运行：确认模块已启用、`ENABLED=1`，然后重启手机或执行 `restart.sh`。
-
-## 开发与测试
-
-```sh
-sh tools/run-tests.sh              # 全部回归（pipebusy 约 30 秒）
-SKIP_SLOW=1 sh tools/run-tests.sh  # 跳过 pipebusy
-sh tools/build.sh                  # 打包 si-mount-fix.zip 并自检
-```
-
-测试覆盖身份校验、FUSE defer、开机退避、熔断、假活、事件通道占用与输出等价回归。
-`tools/` 只在源码目录，不随 zip 发布。`build.sh` 会检查脚本语法、版本号来源、包内权限与
-运行期文件泄漏。
 
 ## 文档
 

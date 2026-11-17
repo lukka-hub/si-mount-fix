@@ -1,5 +1,11 @@
 #!/sbin/sh
 # Magisk 模块安装入口（标准模板 + 安装器缺失保护）
+#
+# 只有 Magisk 的安装器会 source /data/adb/magisk/util_functions.sh 并执行本文件：
+#   - Magisk App「从本地安装」/ magisk --install-module；
+#   - KernelSU / APatch 用各自管理器的模块安装入口，它们有自己的安装逻辑，
+#     不会走到这里，所以下面这个前置检查不会挡住 KSU/APatch 用户；
+#   - 若用 recovery 或其它工具刷入，则本文件所在的安装流程不成立，直接给出提示。
 umask 022
 
 OUTFD=$2
@@ -20,7 +26,7 @@ mount /data 2>/dev/null
 # 注意：abort 由 util_functions.sh 定义，这之前不能用它
 if [ ! -f /data/adb/magisk/util_functions.sh ]; then
   ui_print "! 未检测到 Magisk：/data/adb/magisk/util_functions.sh 不存在"
-  ui_print "! 本模块需要 Magisk 24+（或用 KernelSU/APatch 的模块安装入口）"
+  ui_print "! 本模块需要 Magisk v20.4+（Magisk 更新检查需 v24+；也可用 KernelSU/APatch 的模块安装入口）"
   exit 1
 fi
 

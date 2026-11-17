@@ -7,9 +7,24 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 DAEMON=scripts/si-mount-eventd.sh
-DSH=${SI_TEST_SHELL:-mksh}
-command -v "$DSH" >/dev/null 2>&1 || DSH=/system/bin/sh
-command -v "$DSH" >/dev/null 2>&1 || { echo "需要 mksh（read -t）"; exit 1; }
+# 守护事件循环用 read -t（mksh 扩展），必须挑一个支持它的 shell。
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在/不可执行时回退 mksh → sh。
+# 守护事件循环用 read -t（mksh 扩展），必须挑一个支持它的 shell。
+DSH=${SI_TEST_SHELL:-${SI_TEST_SH:-/system/bin/sh}}
+if ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  DSH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$DSH" ] || ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  DSH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$DSH" ] || ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到 mksh/sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
+"$DSH" -c 'read -t 1 _probe' </dev/null >/dev/null 2>&1
+case $? in
+  0|1) ;;
+  *) echo "需要支持 read -t 的 shell（mksh），当前 $DSH 不支持"; exit 1 ;;
+esac
 
 T=${TMPDIR:-/tmp}/si-bootwait-test.$$
 DATA=$T/data; MOD=$T/mod; TRACE=$T/trace; I=$TRACE/instances/si_mount_fix
@@ -39,6 +54,16 @@ wait_prop() {
   done
   return 1
 }
+# 等 fix 调用次数超过基线（有上限），替代固定 sleep：慢机器多等，快机器立刻过。
+wait_fix_runs() {   # $1=基线行数 $2=超时秒数
+  _i=0; _max=$(( $2 * 10 ))
+  while [ "$_i" -lt "$_max" ]; do
+    _n=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+    [ "$_n" -gt "$1" ] && return 0
+    sleep 0.1; _i=$((_i + 1))
+  done
+  return 1
+}
 
 reset_fixture() {
   rm -rf "$DATA" "$MOD" "$TRACE" "$T/fix.state" "$T/fix.log"
@@ -47,17 +72,21 @@ reset_fixture() {
            "$TRACE/events/kprobes/si_fix_pm" "$I/per_cpu/cpu0" || exit 1
   printf 'ENABLED=1\nMODE=auto\nPOLL_INTERVAL=60\nMIN_AGE=15\n' > "$DATA/config.conf"
   printf 'version=v1.3.6\nversionCode=136\ndescription=x\n' > "$MOD/module.prop"
+  # stub 只决定“这轮输出什么数字”，RESULT 行格式来自真实 scripts/result.sh，
+  # daemon 的 token 一旦变化，stub 会跟着变，不会出现测试仍绿的漂移。
   cat > "$MOD/scripts/fix-si-mounts.sh" <<'S'
 #!/bin/sh
+. "$(dirname "$0")/result.sh"
 case "$1" in --trim-only) exit 0 ;; esac
 echo run >> "$SI_TEST_FIX_LOG"
 if [ -f "$SI_TEST_FIX_STATE" ] && [ "$(cat "$SI_TEST_FIX_STATE" 2>/dev/null)" = defer ]; then
-  echo "RESULT checked=0 broken=0 fixed=0 young=0 defer=fuse"
+  result_line 0 0 0 0 defer=fuse
 else
-  echo "RESULT checked=1 broken=0 fixed=0 young=0"
+  result_line 1 0 0 0
 fi
 S
-  chmod 755 "$MOD/scripts/fix-si-mounts.sh"
+  cp scripts/result.sh "$MOD/scripts/result.sh" || exit 1
+  chmod 755 "$MOD/scripts/fix-si-mounts.sh" "$MOD/scripts/result.sh"
   printf 'p:si_fix_pu path_umount\np:si_fix_pm path_mount\n' > "$TRACE/kprobe_events"
   echo 1 > "$I/tracing_on"
   echo 1 > "$I/events/enable"
@@ -116,11 +145,14 @@ _n1=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
   done
 ) &
 SP=$!
-sleep 4
-_n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+if wait_fix_runs "$_n1" 8; then
+  _n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+  ok "连续事件下退避重试仍发生（run $_n1 -> $_n2）"
+else
+  _n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+  bad "事件风暴饿死退避（run $_n1 -> $_n2）"
+fi
 kill -9 "$SP" 2>/dev/null; SP=""
-[ "$_n2" -gt "$_n1" ] && ok "连续事件下退避重试仍发生（run $_n1 -> $_n2）" \
-  || bad "事件风暴饿死退避（run $_n1 -> $_n2）"
 echo ok > "$T/fix.state"
 if wait_status '"reason":"ok"'; then
   ok "FUSE 就绪后恢复 reason:ok"
@@ -154,10 +186,13 @@ wait_prop 'FUSE 层未就绪' && ok "描述为“FUSE 层未就绪”" \
 _cnt=$(grep -c 'FUSE 层 10s 未就绪' "$DATA/daemon.log" 2>/dev/null || echo 0)
 [ "$_cnt" -eq 1 ] && ok "FUSE 未就绪日志只记一次" || bad "日志次数=$_cnt（应 1）"
 _n1=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
-sleep 4
-_n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
-[ "$_n2" -gt "$_n1" ] && ok "fuse_missing 后仍有 60s 重试（run $_n1 -> $_n2；测试缩短为 1s）" \
-  || bad "fuse_missing 后没有重试（run $_n1 -> $_n2）"
+if wait_fix_runs "$_n1" 8; then
+  _n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+  ok "fuse_missing 后仍有 60s 重试（run $_n1 -> $_n2；测试缩短为 1s）"
+else
+  _n2=$(wc -l < "$T/fix.log" 2>/dev/null || echo 0)
+  bad "fuse_missing 后没有重试（run $_n1 -> $_n2）"
+fi
 stop_daemon
 
 echo

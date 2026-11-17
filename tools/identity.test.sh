@@ -11,6 +11,18 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 FIX=scripts/fix-si-mounts.sh
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在或不可执行（曾被替换成
+# 设备节点）时回退 mksh → sh。用 `-c :` 真跑一次，比只 command -v 可靠。
+TEST_SH=${SI_TEST_SH:-/system/bin/sh}
+if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  TEST_SH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到可用的 sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
 
 T=${TMPDIR:-/tmp}/si-identity-test.$$
 trap 'rm -rf "$T"' EXIT
@@ -55,7 +67,7 @@ run_fix() {   # $1=cmdline 包名；真实模式，nsenter 用 stub 拦截
   rm -f "$T/nsenter.log"
   PATH=$T/bin:$PATH SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$T/data \
     SI_MIN_AGE=5 SI_TEST_NSENTER_LOG=$T/nsenter.log \
-    sh "$FIX" -q 2>&1
+    "$TEST_SH" "$FIX" -q 2>&1
 }
 
 fail=0

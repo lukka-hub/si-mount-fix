@@ -76,6 +76,7 @@ header{display:flex;align-items:flex-start;justify-content:space-between;gap:10p
 .banner.warn{background:var(--warn-bg);color:var(--warn)}
 .banner.bad{background:var(--bad-bg);color:var(--bad)}
 .banner .b-title{font-weight:600;margin-bottom:2px}
+.banner .b-item + .b-item{margin-top:8px;padding-top:8px;border-top:1px dashed currentColor;opacity:.95}
 .switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0 10px}
 .switch-row span{font-size:14px}
 .switch-row input{position:absolute;opacity:0;pointer-events:none}
@@ -89,6 +90,10 @@ header{display:flex;align-items:flex-start;justify-content:space-between;gap:10p
 .switch-row input:checked + i{background:var(--accent)}
 .switch-row input:checked + i::after{transform:translateX(19px)}
 .switch-row input:disabled + i{opacity:.45}
+.switch-row input:focus-visible + i{outline:2px solid var(--accent);outline-offset:2px}
+button:focus-visible,input:focus-visible,summary:focus-visible,pre:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;
+}
 .field-label{display:flex;align-items:center;gap:6px;font-size:12.5px;margin:12px 0 6px;color:var(--fg)}
 .field-label .muted{margin-left:auto;font-size:11.5px}
 code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--muted);border-radius:5px;padding:1px 5px}
@@ -163,13 +168,13 @@ details.card[open] summary{margin-bottom:8px}
 <body>
 <header>
   <div class="title-row">
-    <div class="t1">存储空间隔离 · 挂载自愈</div>
+    <h1 class="t1">存储空间隔离 · 挂载自愈</h1>
     <div class="t2"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></div>
   </div>
-  <span class="pill" id="statePill">读取中</span>
+  <span class="pill" id="statePill" role="status" aria-live="polite">读取中</span>
 </header>
 
-<div id="banner" class="banner" hidden></div>
+<div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
 
 <section class="card">
   <div class="card-head"><h2>状态</h2><span class="muted small" id="stamp">—</span></div>
@@ -182,33 +187,33 @@ details.card[open] summary{margin-bottom:8px}
   <div id="cfgHint" class="hint" hidden></div>
   <label class="switch-row">
     <span>启用挂载自愈</span>
-    <input type="checkbox" id="cfgEnabled"><i></i>
+    <input type="checkbox" id="cfgEnabled" disabled><i></i>
   </label>
   <div class="field-label">模式偏好 <code>MODE</code></div>
   <div class="seg" id="cfgMode">
-    <button type="button" data-mode="auto">自动</button>
-    <button type="button" data-mode="event">事件</button>
-    <button type="button" data-mode="poll">轮询</button>
+    <button type="button" data-mode="auto" disabled>自动</button>
+    <button type="button" data-mode="event" disabled>事件</button>
+    <button type="button" data-mode="poll" disabled>轮询</button>
   </div>
   <div id="cfgPollGroup" hidden>
     <div class="field-label">轮询间隔 <code>POLL_INTERVAL</code><span class="muted">10–600 秒</span></div>
     <div class="stepper">
-      <button type="button" data-step="-1" data-target="cfgInterval">−</button>
-      <input id="cfgInterval" type="number" min="10" max="600" step="1" inputmode="numeric" disabled>
-      <button type="button" data-step="1" data-target="cfgInterval">+</button>
+      <button type="button" data-step="-1" data-target="cfgInterval" aria-label="减少轮询间隔" disabled>−</button>
+      <input id="cfgInterval" type="number" min="10" max="600" step="1" inputmode="numeric" aria-label="轮询间隔（秒）" disabled>
+      <button type="button" data-step="1" data-target="cfgInterval" aria-label="增加轮询间隔" disabled>+</button>
     </div>
     <div class="field-error" id="cfgIntervalErr" hidden>轮询间隔需为 10–600 之间的整数</div>
   </div>
   <div class="field-label">最小进程年龄 <code>MIN_AGE</code><span class="muted">5–120 秒</span></div>
   <div class="stepper">
-    <button type="button" data-step="-1" data-target="cfgMinAge">−</button>
-    <input id="cfgMinAge" type="number" min="5" max="120" step="1" inputmode="numeric" disabled>
-    <button type="button" data-step="1" data-target="cfgMinAge">+</button>
+    <button type="button" data-step="-1" data-target="cfgMinAge" aria-label="减少最小进程年龄" disabled>−</button>
+    <input id="cfgMinAge" type="number" min="5" max="120" step="1" inputmode="numeric" aria-label="最小进程年龄（秒）" disabled>
+    <button type="button" data-step="1" data-target="cfgMinAge" aria-label="增加最小进程年龄" disabled>+</button>
   </div>
   <div class="field-error" id="cfgMinAgeErr" hidden>最小进程年龄需为 5–120 之间的整数</div>
   <div class="row-actions" id="cfgActions" hidden>
-    <button class="btn primary" id="cfgSave" style="flex:1">保存并重启守护</button>
-    <button class="btn ghost" id="cfgDiscard">撤销</button>
+    <button class="btn primary" id="cfgSave" style="flex:1" disabled>保存并重启守护</button>
+    <button class="btn ghost" id="cfgDiscard" disabled>撤销</button>
   </div>
 </section>
 
@@ -216,22 +221,22 @@ details.card[open] summary{margin-bottom:8px}
   <div class="card-head"><h2>操作</h2><span class="muted small" id="opStamp"></span></div>
   <div class="btn-grid">
     <button class="btn ghost" id="btnRefresh">刷新</button>
-    <button class="btn ghost" id="btnCheck">体检</button>
-    <button class="btn primary" id="btnFix">立即修复</button>
-    <button class="btn ghost" id="btnRestart">重启守护</button>
+    <button class="btn ghost" id="btnCheck" disabled>体检</button>
+    <button class="btn primary" id="btnFix" disabled>立即修复</button>
+    <button class="btn ghost" id="btnRestart" disabled>重启守护</button>
   </div>
-  <div id="opResult" class="result" hidden></div>
+  <div id="opResult" class="result" role="status" aria-live="polite" hidden></div>
 </section>
 
 <section class="card">
-  <div class="card-head"><h2>应用与可访问目录</h2><button class="btn tiny ghost" id="btnApps">读取</button></div>
+  <div class="card-head"><h2>应用与可访问目录</h2><button class="btn tiny ghost" id="btnApps" disabled>读取</button></div>
   <div class="muted small" id="appsSum">未读取</div>
   <div id="appsBody"></div>
 </section>
 
 <section class="card">
-  <div class="card-head"><h2>日志</h2><button class="btn tiny ghost" id="btnLog">重新加载</button></div>
-  <pre id="logBox">（未加载）</pre>
+  <div class="card-head"><h2>日志</h2><button class="btn tiny ghost" id="btnLog" disabled>重新加载</button></div>
+  <pre id="logBox" tabindex="0" aria-label="守护进程日志">（未加载）</pre>
   <div class="muted small" id="logStamp"></div>
 </section>
 
@@ -254,12 +259,15 @@ details.card[open] summary{margin-bottom:8px}
   /* ============================================================
      常量
      ============================================================ */
-  var D = '/data/adb/si-mount-fix';
+  /* 模块路径集中在这里；改目录只动这一处 */
+  var ADB = '/data/adb';
+  var D = ADB + '/si-mount-fix';
+  var MODDIR = ADB + '/modules/si-mount-fix';
   var P = {
     status: D + '/status.json',
     config: D + '/config.conf',
     log: D + '/daemon.log',
-    mod: '/data/adb/modules/si-mount-fix'
+    mod: MODDIR
   };
   P.fix = P.mod + '/scripts/fix-si-mounts.sh';
   P.restart = P.mod + '/scripts/restart.sh';
@@ -267,34 +275,83 @@ details.card[open] summary{margin-bottom:8px}
 
   var POLL_MS = 8000;
   var CMD_TIMEOUT = 35000;
+  var BRIDGE_FAIL_LIMIT = 3;   /* 连续失败 N 次：桥接判定失效，回落只读快照 */
+  var REPROBE_MS = 20000;      /* 只读模式下重新探测桥接的最小间隔 */
+  var SNAPSHOT_STALE = 600;    /* 快照超过 10 分钟没更新，视为守护已停 */
 
   var MODE_CHIP = {
     event: { label: '事件驱动', tone: 'good' },
-    poll: { label: '轮询降级', tone: 'warn' },
+    poll: { label: '轮询', tone: 'warn' },
     starting: { label: '启动中', tone: 'info' },
-    off: { label: '已停止', tone: 'bad' }
+    off: { label: '已停止', tone: 'warn' }
   };
 
+  /* 本地兜底词表：只在 status.json 没有 reason_text（旧版守护）时使用。
+     文案与守护进程 reason_label() 保持同义；新原因优先由 daemon 提供。
+     原因里可能带 "+tag" 后缀（如 xxx+forced_event_unsupported），见 reasonText()。 */
   var REASON_LABEL = {
     ok: '正常',
     boot: '启动中',
     disabled: '已停用',
-    tracefs_missing: '缺少 tracefs',
-    kprobe_failed: 'kprobe 注册失败',
-    selftest_failed: '事件自检失败',
+    tracefs_missing: '缺少 tracefs，已降级轮询',
+    kprobe_failed: 'kprobe 注册失败，已降级轮询',
+    selftest_failed: '事件自检失败，已降级轮询',
     pipe_busy: '事件通道被占用',
-    pipe_open_error: '事件通道打不开',
+    pipe_open_error: '事件通道打不开（无占用者），已降级轮询',
     pipe_closed: '事件通道关闭',
-    trace_reset: 'trace 被重置',
-    forced_poll: '已强制轮询',
-    forced_event_unsupported: '事件模式不可用',
-    launch_failed: '启动失败',
-    blind: '事件通道异常（请重启手机）',
-    boot_wait: '开机等待 FUSE 就绪（自动重试）',
-    fuse_missing: 'FUSE 层未就绪（fail-closed）'
+    trace_reset: 'trace 被重置，已自动恢复',
+    forced_poll: '配置要求轮询',
+    forced_event_unsupported: '配置要求事件但环境不支持，已降级轮询',
+    skipped_locked: '另一轮修复正在进行，稍后重试',
+    blind: '事件通道异常（收不到事件），建议重启手机',
+    boot_wait: '开机等待 FUSE 就绪（自动退避重试）',
+    fuse_missing: 'FUSE 层未就绪（fail-closed，持续重试）',
+    launch_failed: '守护进程启动失败，请查看 daemon.log'
   };
 
   var STYLE_LABEL = { cb3: '回调（3 参）', cb2: '回调（2 参）', sync: '同步字符串' };
+
+  /* fix 的 RESULT skipped=tag+tag：tag 来自 scripts/result.sh 契约，未知 tag 原样显示 */
+  var SKIP_LABEL = {
+    locked: '另一轮修复进行中',
+    disabled: '应用未启用',
+    identity: '沙箱身份不符',
+    layer: '挂载层级不符',
+    source: '源目录不存在',
+    source_ns: '应用内看不到源',
+    bindfail: '绑定挂载失败',
+    churn: '频繁被拆已熔断',
+    template: '未知模板 id',
+    dir_space: '目录名无法安全表示',
+    dir_invalid: '目录路径不合法'
+  };
+
+  function skipText(tags) {
+    var arr = String(tags || '').split('+');
+    var out = [];
+    for (var i = 0; i < arr.length; i++) {
+      var t = arr[i];
+      if (!t) { continue; }
+      out.push(SKIP_LABEL[t] || t);
+    }
+    return out.join('、');
+  }
+
+  /* fix 的 RESULT error=token；未知 token 原样显示 */
+  var ERROR_LABEL = {
+    datadir: '数据目录不可写',
+    config: '配置不可读或格式不对',
+    ps: '进程列表读取失败',
+    scan: '扫描失败',
+    timeout: '执行超时'
+  };
+
+  function errorText(code) {
+    var c = String(code || '');
+    if (ERROR_LABEL[c]) { return ERROR_LABEL[c]; }
+    if (c.indexOf('exit') === 0) { return '脚本异常退出（' + c + '）'; }
+    return c || '未知错误';
+  }
 
   /* ============================================================
      DOM / 工具
@@ -337,6 +394,28 @@ details.card[open] summary{margin-bottom:8px}
     el.hidden = false;
   }
 
+  /* 多条提示合并成一个 banner：tone 取最严重的，正文一律 esc()。
+     item: {title, body, tone, action?, actionLabel?}；action 由 boot 里的委托监听处理。 */
+  var TONE_RANK = { info: 0, warn: 1, bad: 2 };
+  function setBannerItems(items) {
+    items = (items || []).filter(Boolean);
+    if (!items.length) { setBanner('', 'info'); return; }
+    var tone = 'info';
+    var html = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (TONE_RANK[it.tone] > TONE_RANK[tone]) { tone = it.tone; }
+      var one = '<div class="b-title">' + esc(it.title) + '</div>' +
+        (it.body ? '<div>' + esc(it.body) + '</div>' : '');
+      if (it.action) {
+        one += '<div style="margin-top:8px"><button type="button" class="btn tiny ghost" data-action="' +
+          esc(it.action) + '">' + esc(it.actionLabel || '重试') + '</button></div>';
+      }
+      html.push('<div class="b-item">' + one + '</div>');
+    }
+    setBanner(html.join(''), tone);
+  }
+
   /* ============================================================
      桥接层：三种形态都要兼容
        cb3  exec(cmd, optionsJson, callbackName)   KernelSU / WebUI-Next / KsuWebUI
@@ -344,7 +423,7 @@ details.card[open] summary{margin-bottom:8px}
        sync exec(cmd) -> String                     WebUI-Next / KsuWebUI（会阻塞）
      探测一次，记住能用的那种。
      ============================================================ */
-  var BR = { obj: null, name: '', style: '', ok: false, note: '', latency: 0, error: '' };
+  var BR = { obj: null, name: '', style: '', ok: false, note: '', latency: 0, error: '', fails: 0, probing: false, probeP: null };
   var cbSeq = 0;
 
   function normalize(res) {
@@ -425,9 +504,13 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function probeBridge() {
+    /* 单飞：进行中的探测直接复用同一个 Promise。不要用“清 BR.probing 再探测”，
+       否则两个探测并发，先返回的旧结果会把刚恢复的实时模式打回只读/锁死按钮。 */
+    if (BR.probeP) { return BR.probeP; }
     var list = candidates();
     if (!list.length) { BR.note = '未检测到 WebUI 桥接'; return Promise.resolve(false); }
 
+    BR.probing = true;
     var styles = ['cb3', 'cb2', 'sync'];
     var ci = 0, si = 0;
 
@@ -450,7 +533,19 @@ details.card[open] summary{margin-bottom:8px}
         return step();
       });
     }
-    return step();
+    BR.probeP = step().then(function (v) {
+      BR.probing = false;
+      BR.probeP = null;
+      if (!v) { BR.ok = false; }
+      return v;
+    }, function (err) {
+      BR.probing = false;
+      BR.probeP = null;
+      BR.ok = false;
+      BR.error = String(err && err.message ? err.message : err);
+      return false;
+    });
+    return BR.probeP;
   }
 
   function run(cmd) {
@@ -476,47 +571,109 @@ details.card[open] summary{margin-bottom:8px}
      ============================================================ */
   var state = {
     status: null, alive: null, fetchedAt: 0, mode: 'live',
-    config: null, snapshot: null, snapshotTs: 0,
+    config: null, configRaw: null, snapshot: null, snapshotTs: 0,
+    uid: null, noRoot: false, statusExist: null, statusSize: null,
     apps: null, log: null, busy: false
   };
 
+  /* 一条命令同时取：uid（判断有没有 root）、文件是否存在/多大（区分空文件/没文件）、
+     PID 是否还活着、以及 status.json 原文。全都用标记分段，避免命令失败时误判。 */
   var STATUS_CMD = [
-    'cat ' + P.status + ' 2>/dev/null',
-    'echo',
+    'echo "@@UID@@$(id -u 2>/dev/null || echo x)"',
+    'if [ -f ' + P.status + ' ]; then echo "@@EXIST@@1"; echo "@@SIZE@@$(wc -c < ' + P.status + ' 2>/dev/null || echo 0)"; else echo "@@EXIST@@0"; fi',
     'echo "@@PROBE@@"',
     'p=$(sed -n \'s/.*"pid":\\([0-9]*\\).*/\\1/p\' ' + P.status + ' 2>/dev/null | head -1)',
-    'if [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && kill -0 "$p" 2>/dev/null; then echo ALIVE; else echo DEAD; fi'
+    'if [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && kill -0 "$p" 2>/dev/null; then echo ALIVE; else echo DEAD; fi',
+    'echo "@@JSON@@"',
+    'cat ' + P.status + ' 2>/dev/null',
+    'true'
   ].join('\n');
 
   function parseStatusOutput(text) {
-    var cut = String(text || '').indexOf('@@PROBE@@');
-    var head = cut >= 0 ? text.slice(0, cut) : text;
-    var tail = cut >= 0 ? text.slice(cut + 9) : '';
-    var alive = null;
-    if (/ALIVE/.test(tail)) { alive = true; }
-    else if (/DEAD/.test(tail)) { alive = false; }
-    var obj = null;
-    var raw = String(head || '').trim();
-    if (raw) {
-      try { obj = JSON.parse(raw.split('\n').filter(Boolean).pop()); } catch (e) { obj = null; }
+    var all = String(text || '');
+    var uid = null, exist = null, size = null, alive = null, obj = null;
+
+    var mUid = /@@UID@@\s*(\S*)/.exec(all);
+    if (mUid) {
+      var u = parseInt(mUid[1], 10);
+      uid = isFinite(u) ? u : null;
     }
-    return { obj: obj, alive: alive, raw: raw };
+    var mExist = /@@EXIST@@\s*(\d)/.exec(all);
+    if (mExist) { exist = mExist[1] === '1'; }
+    var mSize = /@@SIZE@@\s*(\d+)/.exec(all);
+    if (mSize) { size = parseInt(mSize[1], 10); }
+
+    var probeAt = all.indexOf('@@PROBE@@');
+    var jsonAt = all.indexOf('@@JSON@@');
+    var probe = probeAt >= 0 ? all.slice(probeAt + 9, jsonAt >= 0 ? jsonAt : all.length) : '';
+    if (/ALIVE/.test(probe)) { alive = true; }
+    else if (/DEAD/.test(probe)) { alive = false; }
+
+    var jsonText = jsonAt >= 0 ? all.slice(jsonAt + 8).replace(/^\s+|\s+$/g, '') : '';
+    if (jsonText) {
+      try { obj = JSON.parse(jsonText); }
+      catch (e) {
+        try { obj = JSON.parse(jsonText.split('\n').filter(Boolean).pop()); }
+        catch (e2) { obj = null; }
+      }
+    }
+    return { obj: obj, alive: alive, uid: uid, exist: exist, size: size, raw: jsonText };
   }
 
-  function reasonText(reason) {
-    var r = String(reason || '');
-    if (REASON_LABEL[r]) { return REASON_LABEL[r]; }
-    var head = r.split('+')[0];
-    if (REASON_LABEL[head]) { return REASON_LABEL[head]; }
-    if (r.indexOf('fix_error_') === 0) { return '修复失败：' + r.slice(10); }
-    if (r.indexOf('skipped_') === 0) { return '本轮跳过：' + r.slice(8); }
-    return r || '—';
+  function isDisabledStatus(s) {
+    return !!s && String(s.reason || '') === 'disabled';
+  }
+
+  function isBlindStatus(s) {
+    /* blind 是“事件模式在跑但收不到事件”；守护退出后（mode=off）BLIND 可能还是 1，
+       那种情况要显示「已停止」，不能显示「事件通道异常」。 */
+    if (!s || String(s.mode || '') !== 'event') { return false; }
+    return toInt(s.blind, 0) === 1 || String(s.reason || '') === 'blind';
+  }
+
+  /* 优先用 daemon 写的中文短标签（reason_text）；旧版没有时用本地词表兜底。
+     原因可能带 "+tag" 后缀（例如 xxx+forced_event_unsupported），逐段翻译。 */
+  function reasonText(s) {
+    if (!s) { return '—'; }
+    if (typeof s.reason_text === 'string' && s.reason_text) { return s.reason_text; }
+    var raw = String(s.reason || '');
+    if (!raw) { return '—'; }
+    /* 旧 daemon 可能写 "xxx+forced_event_unsupported"：先剥后缀翻基础原因，再统一追加
+       说明，否则会出现“已降级轮询；配置要求事件但环境不支持，已降级轮询”的重复。 */
+    var suffix = '';
+    if (/\+forced_event_unsupported$/.test(raw)) {
+      raw = raw.replace(/\+forced_event_unsupported$/, '');
+      suffix = '；配置要求事件，但环境不支持';
+    }
+    var parts = raw.split('+');
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (!p) { continue; }
+      if (REASON_LABEL[p]) { out.push(REASON_LABEL[p]); continue; }
+      if (p.indexOf('fix_error_') === 0) { out.push('修复脚本异常：' + p.slice(10)); continue; }
+      if (p.indexOf('skipped_') === 0) { out.push('本轮跳过：' + p.slice(8)); continue; }
+      out.push(p);
+    }
+    return (out.length ? out.join('；') : '—') + suffix;
   }
 
   function pillFor(s, alive) {
-    if (!s) { return { label: '未运行', tone: 'bad' }; }
+    if (state.noRoot) { return { label: '无权限', tone: '' }; }
+    if (!s) { return { label: '未运行', tone: 'warn' }; }
+    /* 停用是预期状态，用中性色，不渲染成故障 */
+    if (isDisabledStatus(s)) { return { label: '已停用', tone: '' }; }
+    /* blind：事件通道收不到事件，不能再显示绿色「事件驱动」；
+       进程已经没了（alive=false）时显示「已停止」更准确，交给下面的判据。 */
+    if (isBlindStatus(s) && alive !== false) { return { label: '事件通道异常', tone: 'warn' }; }
+    var reason = String(s.reason || '');
+    if (reason === 'fuse_missing') { return { label: 'FUSE 未就绪', tone: 'warn' }; }
+    if (reason === 'boot_wait') { return { label: '开机等待 FUSE', tone: 'info' }; }
+    if (reason === 'launch_failed') { return { label: '启动失败', tone: 'bad' }; }
+    if (state.mode === 'snapshot' && alive === false) { return { label: '快照过期', tone: 'warn' }; }
     /* status.json 是上一次写的，可能留着旧状态；PID 没了就按已停止显示 */
     if (alive === false) { return { label: '已停止', tone: 'bad' }; }
+    if (s.mode === 'off') { return { label: '已停止', tone: 'warn' }; }
     return MODE_CHIP[s.mode] || { label: s.mode || '未知', tone: 'info' };
   }
 
@@ -527,31 +684,42 @@ details.card[open] summary{margin-bottom:8px}
 
     var pill = $('statePill');
     pill.textContent = chip.label;
-    pill.className = 'pill ' + chip.tone;
+    pill.className = 'pill' + (chip.tone ? ' ' + chip.tone : '');
 
     var m = [];
     var since = s ? toInt(s.since, 0) : 0;
     var lastFix = s ? toInt(s.last_fix, 0) : 0;
+    var snapshotStale = state.mode === 'snapshot' && alive === false;
 
     m.push(metric('运行时长', (s && since && alive !== false) ? dur(nowSec() - since) : '—', ''));
-    m.push(metric('守护进程', s && toInt(s.pid, 0) ? ('PID ' + toInt(s.pid, 0)) : '—', alive === false ? 'bad' : ''));
+    m.push(metric('守护进程', s && toInt(s.pid, 0) ? ('PID ' + toInt(s.pid, 0)) : '—',
+      (alive === false && !snapshotStale) ? 'bad' : ''));
     m.push(metric('本次修复', s ? String(toInt(s.last_fixed, 0)) + ' 条' : '—', toInt(s && s.last_fixed, 0) > 0 ? 'good' : ''));
-    m.push(metric('累计修复', s ? String(toInt(s.total_fixed, 0)) + ' 次' : '—', toInt(s && s.total_fixed, 0) > 0 ? 'good' : ''));
+    /* total_fixed 是守护累计"成功补上的挂载条数"，不是修复轮次 */
+    m.push(metric('累计修复', s ? String(toInt(s.total_fixed, 0)) + ' 条' : '—', toInt(s && s.total_fixed, 0) > 0 ? 'good' : ''));
     m.push(metric('隔离进程', s ? String(toInt(s.procs, 0)) + ' 个' : '—', ''));
     m.push(metric('最后事件', s && toInt(s.last_event, 0) ? rel(toInt(s.last_event, 0)) : '—', ''));
 
     $('metrics').innerHTML = m.join('');
 
     var kv = [];
-    kv.push(row('状态上报', s ? esc(reasonText(s.reason)) : '—'));
+    kv.push(row('状态上报', s ? esc(reasonText(s)) : '—'));
     var lastCheck = s ? toInt(s.last_check, 0) : 0;
     if (!lastCheck) { lastCheck = lastFix; }
     kv.push(row('最后检查', lastCheck ? rel(lastCheck) + '（' + clock(lastCheck) + '）' : '—'));
     kv.push(row('tracefs', s && s.tracefs ? esc(s.tracefs) : '—'));
-    if (s && s.mode === 'poll') {
+    if (s && (s.mode === 'poll' || String(s.reason || '').indexOf('poll') >= 0)) {
       kv.push(row('轮询间隔', toInt(s.interval, 0) ? toInt(s.interval, 0) + ' 秒' : '—'));
     }
     kv.push(row('最小进程年龄', s && toInt(s.min_age, 0) ? toInt(s.min_age, 0) + ' 秒' : '—'));
+    var churn = s ? toInt(s.churn, 0) : 0;
+    if (churn > 0) {
+      kv.push(row('熔断目标', churn + ' 个（暂停自动修复，等待重试）'));
+    }
+    if (s && isBlindStatus(s)) {
+      var blindSince = toInt(s.blind_since, 0);
+      kv.push(row('事件通道', '异常' + (blindSince ? ' · 自 ' + rel(blindSince) : '')));
+    }
     kv.push(row('版本', s && s.version ? 'v' + esc(s.version) : '—'));
     $('kv').innerHTML = kv.join('');
 
@@ -560,7 +728,99 @@ details.card[open] summary{margin-bottom:8px}
     if (s && s.version) { $('ver').textContent = 'v' + s.version; }
     else if (state.snapshot && state.snapshot.version) { $('ver').textContent = 'v' + state.snapshot.version; }
 
+    renderStateBanner();
     renderDiag();
+  }
+
+  /* ============================================================
+     状态提示：停用/故障/blind/熔断/只读快照/no-root 统一组装成一个 banner
+     ============================================================ */
+  function configEnabledState() {
+    if (state.mode === 'snapshot' && state.snapshot && state.snapshot.config) {
+      return toInt(state.snapshot.config.enabled, 1) !== 0;
+    }
+    if (state.config) { return cfgEnabled(state.config.ENABLED); }
+    return null;
+  }
+
+  function bannerItemsForState() {
+    var s = state.status;
+    var items = [];
+    if (state.noRoot) {
+      items.push({ tone: 'bad', title: '没有 root 权限',
+        body: '当前上下文读不到 ' + D + ' 下的状态与配置。请从 Magisk 模块页的「操作」按钮或 KsuWebUI 打开本面板。' });
+      if (!s) { return items; }
+    }
+    if (state.mode === 'snapshot') {
+      var age = state.snapshotTs ? (nowSec() - state.snapshotTs) : -1;
+      if (isDisabledStatus(s)) {
+        items.push({ tone: 'info', title: '守护已停用',
+          body: '配置里 ENABLED=0，守护不会修复挂载，这是预期状态。' });
+      } else if (!state.alive) {
+        items.push({ tone: 'warn', title: '快照很久没更新',
+          body: '最近一次状态是 ' + (age >= 0 ? rel(state.snapshotTs) : '未知') + '，守护进程可能没在运行。' +
+            '到 Magisk 模块页点「操作」可以看当前状态。' });
+      } else {
+        items.push({ tone: 'info', title: '只读快照',
+          body: '这是守护进程写入的静态状态（' + (age >= 0 ? rel(state.snapshotTs) : '未知') + '）。' +
+            '装 KsuWebUI Standalone 后打开本页即可修改配置、执行体检/修复。' });
+      }
+    } else if (!s) {
+      if (state.statusExist === false) {
+        items.push({ tone: 'warn', title: '状态文件不存在',
+          body: '还没生成 status.json：守护可能没启动过，或被停用。重启手机后会自动生成。' });
+      } else if (state.statusSize === 0) {
+        items.push({ tone: 'warn', title: '状态文件为空',
+          body: 'status.json 是空文件：守护可能刚启动还没写入，稍候会自动刷新。' });
+      } else {
+        items.push({ tone: 'warn', title: '状态文件读不懂',
+          body: 'status.json 不是合法 JSON（可能写到一半），下次守护写状态后会自动恢复。' });
+      }
+    } else if (isDisabledStatus(s)) {
+      items.push({ tone: 'info', title: '守护已停用',
+        body: '配置里 ENABLED=0，守护不会修复挂载，这是预期状态。在「配置」里启用并保存即可恢复。' });
+    } else if (state.alive === false) {
+      items.push({ tone: 'warn', title: '守护进程没在运行',
+        body: '下面是上一次写下的状态；点「重启守护」可以重新拉起，或重启手机。' });
+    }
+
+    if (s && !isDisabledStatus(s)) {
+      if (isBlindStatus(s)) {
+        var blindSince = toInt(s.blind_since, 0);
+        items.push({ tone: 'bad', title: '事件通道异常',
+          body: '收不到挂载事件' + (blindSince ? '（自 ' + rel(blindSince) + '）' : '') +
+            '，修复会退化成定时补扫。建议重启手机恢复事件投递。' });
+      }
+      var churn = toInt(s.churn, 0);
+      if (churn > 0) {
+        items.push({ tone: 'warn', title: '熔断保护生效',
+          body: churn + ' 个目标因频繁被拆已暂停自动修复；重试仍失败会锁定至多 1 小时（重启守护可提前解除）。' });
+      }
+      var reason = String(s.reason || '');
+      if (reason === 'fuse_missing') {
+        items.push({ tone: 'warn', title: 'FUSE 层未就绪',
+          body: '模块保持 fail-closed，不会乱动挂载；每 60 秒自动重试。' });
+      } else if (reason === 'boot_wait') {
+        items.push({ tone: 'info', title: '开机等待 FUSE',
+          body: '开机宽限期内 FUSE 还没就绪，模块会退避重试，不会动挂载。' });
+      }
+    }
+
+    /* 配置已停用但守护还在跑（还没重启）：提示一下，别让用户以为没生效 */
+    if (state.mode !== 'snapshot' && s && !isDisabledStatus(s) && configEnabledState() === false) {
+      items.push({ tone: 'info', title: '配置已停用',
+        body: 'config.conf 里 ENABLED=0，保存并重启守护后会停止修复。' });
+    }
+    if (state.mode === 'snapshot' && !BR.ok) {
+      items.push({ tone: 'warn', title: '没有可用的 WebUI 桥接',
+        body: (BR.note || '桥接没有响应') + '。页面处于只读快照，配置只读。',
+        action: 'retry-bridge', actionLabel: '重试连接' });
+    }
+    return items;
+  }
+
+  function renderStateBanner() {
+    setBannerItems(bannerItemsForState());
   }
 
   function metric(label, value, tone) {
@@ -572,38 +832,95 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   var statusLoading = false;
+  var lastReprobe = 0;
+
+  function applyPermissionLock(msg) {
+    state.noRoot = true;
+    state.status = null;
+    state.alive = null;
+    state.fetchedAt = Date.now();
+    state.mode = 'live';
+    renderStatus();
+    lockConfig(msg || '没有 root 权限，配置只读。');
+    lockActions();
+  }
 
   function refreshStatus() {
     if (!BR.ok) { return Promise.resolve(false); }
     if (statusLoading) { return Promise.resolve(false); }
     statusLoading = true;
     return run(STATUS_CMD).then(function (res) {
+      BR.fails = 0;
       var p = parseStatusOutput(res.stdout);
+      state.uid = p.uid;
+      state.statusExist = p.exist;
+      state.statusSize = p.size;
+      /* 没有 root 时读不到 /data/adb：明确告诉用户，不要误报"文件为空/守护没运行" */
+      if (p.uid !== null && p.uid !== 0) {
+        applyPermissionLock('当前不是 root（uid ' + p.uid + '），配置只读。请从 Magisk / KsuWebUI 打开本面板。');
+        return false;
+      }
+      state.noRoot = false;
       state.status = p.obj;
       state.alive = p.alive;
       state.fetchedAt = Date.now();
       state.mode = 'live';
       renderStatus();
-      if (!p.obj) {
-        setBanner('<div class="b-title">状态文件读不到内容</div>status.json ' +
-          (p.raw ? '不是合法 JSON（可能被写坏了）' : '为空：守护进程可能还没开始运行'), 'warn');
-      } else if (p.alive === false) {
-        setBanner('<div class="b-title">守护进程没在运行</div>下面是上一次写下的状态；' +
-          '点「重启守护」可以重新拉起，或重启手机。', 'warn');
-      } else {
-        setBanner('', 'info');
-      }
       return true;
     }).catch(function (err) {
-      state.status = null;
-      state.alive = null;
-      state.fetchedAt = Date.now();
-      renderStatus();
-      setBanner('<div class="b-title">状态读取失败</div>' + esc(err.message || err), 'bad');
+      /* 连续失败：桥接可能已经失效，回落到快照模式，并在后台重新探测 */
+      if (BR.ok) { noteBridgeFailure(); }
+      if (BR.ok) {
+        state.status = null;
+        state.alive = null;
+        state.fetchedAt = Date.now();
+        renderStatus();
+        setBanner('<div class="b-title">状态读取失败</div>' + esc(err.message || err), 'bad');
+      }
       return false;
     }).then(function (r) {
       statusLoading = false;
       return r;
+    });
+  }
+
+  function noteBridgeFailure() {
+    BR.fails += 1;
+    if (!BR.ok || BR.fails < BRIDGE_FAIL_LIMIT) { return; }
+    BR.ok = false;
+    BR.note = '桥接连续失败 ' + BR.fails + ' 次，已回落只读快照';
+    snapshotMode();
+  }
+
+  function maybeReprobe() {
+    if (BR.ok || BR.probing) { return; }
+    if (!candidates().length) { return; }
+    if (Date.now() - lastReprobe < REPROBE_MS) { return; }
+    lastReprobe = Date.now();
+    probeBridge().then(function (ok) { if (ok) { restoreLive(); } });
+  }
+
+  function retryBridge() {
+    lastReprobe = Date.now();
+    setBannerItems([{ tone: 'info', title: '正在重试连接…', body: '重新探测 WebUI 桥接。' }]);
+    probeBridge().then(function (ok) {
+      if (ok) { restoreLive().then(function () { toast('已连接桥接'); }); return; }
+      setBannerItems([{ tone: 'warn', title: '仍然没有可用的桥接',
+        body: (BR.note || '桥接没有响应') + '。可以刷新页面再试。',
+        action: 'reload-page', actionLabel: '刷新页面' }]);
+    });
+  }
+
+  function restoreLive() {
+    BR.fails = 0;
+    state.noRoot = false;
+    unlockAll();
+    $('bridgeName').textContent = BR.note;
+    setBanner('', 'info');
+    return refreshStatus().then(function () {
+      return state.noRoot ? false : loadConfig();
+    }).then(function () {
+      return state.noRoot ? false : loadLog();
     });
   }
 
@@ -614,17 +931,22 @@ details.card[open] summary{margin-bottom:8px}
     var snap = window.__SI_SNAPSHOT__;
     state.mode = 'snapshot';
     if (!snap || !snap.status) {
+      state.snapshot = null; state.snapshotTs = 0;
+      state.status = null; state.alive = null; state.fetchedAt = 0;
+      state.config = null; state.configRaw = null;
       $('statePill').textContent = '未连接';
-      $('statePill').className = 'pill bad';
+      $('statePill').className = 'pill';
       $('bridgeName').textContent = '无 WebUI 桥接';
       $('metrics').innerHTML = metric('运行时长', '—', '') + metric('守护进程', '—', '') +
         metric('本次修复', '—', '') + metric('累计修复', '—', '') +
         metric('隔离进程', '—', '') + metric('最后事件', '—', '');
       $('kv').innerHTML = row('提示', '请从模块「操作」按钮或 KsuWebUI 打开本页');
-      setBanner('<div class="b-title">只读模式</div>这里没有可用的 WebUI 桥接，也还没生成状态快照。' +
-        'Magisk 里点模块的「操作」按钮可以直接看到守护状态；装了 KsuWebUI 后可在其中打开本面板。', 'warn');
+      setBannerItems([{ tone: 'warn', title: '只读模式',
+        body: '这里没有可用的 WebUI 桥接，也还没生成状态快照。Magisk 里点模块的「操作」按钮可以直接看到守护状态；装了 KsuWebUI 后可在其中打开本面板。',
+        action: 'retry-bridge', actionLabel: '重试连接' }]);
       lockConfig('未连接桥接，配置只读。');
       lockActions();
+      renderDiag();
       return;
     }
     state.snapshot = snap;
@@ -632,24 +954,42 @@ details.card[open] summary{margin-bottom:8px}
     state.status = snap.status || null;
     var age = state.snapshotTs ? (nowSec() - state.snapshotTs) : -1;
     /* 快照超过 10 分钟没更新，基本可以判定守护没在跑 */
-    state.alive = age >= 0 && age <= 600;
+    state.alive = age >= 0 && age <= SNAPSHOT_STALE;
     state.fetchedAt = state.snapshotTs * 1000;
-    renderStatus();
-
     $('bridgeName').textContent = '只读快照';
-    if (state.alive) {
-      setBanner('<div class="b-title">只读快照</div>守护进程写的静态状态（' +
-        (age >= 0 ? rel(state.snapshotTs) : '未知') + '）。' +
-        '装 KsuWebUI Standalone 后打开本页即可修改配置、执行体检/修复。', 'info');
-    } else {
-      setBanner('<div class="b-title">快照很久没更新</div>最近一次状态是 ' +
-        (age >= 0 ? rel(state.snapshotTs) : '未知') + '，守护进程可能没在运行。' +
-        '到 Magisk 模块页点「操作」可以看当前状态。', 'warn');
-    }
+    renderStatus();
+    lockConfig('只读快照：修改配置需要 WebUI 桥接。');
+    showReadOnlyConfig(snap.config);
+    lockActions();
     if (snap.log && snap.log.length) { renderLog(snap.log, true); }
     else { $('logBox').textContent = '（快照里没有日志）'; }
-    lockConfig('只读快照：修改配置需要 WebUI 桥接。');
-    lockActions();
+  }
+
+  /* 快照里的配置是只读展示（契约：snapshot.config = {enabled,mode,interval,min_age}） */
+  function showReadOnlyConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') {
+      $('cfgHint').textContent = '只读快照里没有配置信息（守护版本可能较旧），配置只读。';
+      $('cfgHint').hidden = false;
+      return;
+    }
+    var enabled = toInt(cfg.enabled, 1) !== 0;
+    var mode = (cfg.mode === 'event' || cfg.mode === 'poll') ? cfg.mode : 'auto';
+    var iv = Math.min(600, Math.max(10, toInt(cfg.interval, 60)));
+    var ma = Math.min(120, Math.max(5, toInt(cfg.min_age, 15)));
+    form.enabled = enabled;
+    form.mode = mode;
+    form.interval = iv;
+    form.minAge = ma;
+    form.snap = null;
+    $('cfgEnabled').checked = enabled;
+    var segs = $('cfgMode').getElementsByTagName('button');
+    for (var i = 0; i < segs.length; i++) {
+      segs[i].setAttribute('aria-pressed', segs[i].getAttribute('data-mode') === mode ? 'true' : 'false');
+    }
+    $('cfgInterval').value = String(iv);
+    $('cfgMinAge').value = String(ma);
+    syncModeFields();
+    $('cfgActions').hidden = true;
   }
 
   function lockConfig(msg) {
@@ -662,6 +1002,8 @@ details.card[open] summary{margin-bottom:8px}
     $('cfgMinAge').disabled = true;
     var btns = document.querySelectorAll('.stepper button');
     for (var j = 0; j < btns.length; j++) { btns[j].disabled = true; }
+    $('cfgSave').disabled = true;
+    $('cfgDiscard').disabled = true;
     $('cfgActions').hidden = true;
   }
   function unlockAll() {
@@ -696,7 +1038,10 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function cfgEnabled(v) {
-    var t = String(v == null || v === '' ? '1' : v).trim().toLowerCase();
+    /* 与守护 / supervisor / action.sh 一致：空值或无法识别的写法都按启用，
+       只有显式 0/false/no/off 才算停用。 */
+    var t = String(v == null ? '' : v).trim().toLowerCase();
+    if (!t) { return true; }
     return !(t === '0' || t === 'false' || t === 'no' || t === 'off');
   }
 
@@ -723,6 +1068,8 @@ details.card[open] summary{margin-bottom:8px}
     syncModeFields();
     var btns = document.querySelectorAll('.stepper button');
     for (var j = 0; j < btns.length; j++) { btns[j].disabled = false; }
+    $('cfgSave').disabled = false;
+    $('cfgDiscard').disabled = false;
     $('cfgHint').hidden = true;
     refreshDirty();
   }
@@ -748,7 +1095,8 @@ details.card[open] summary{margin-bottom:8px}
         }
         return 'auto';
       })(),
-      interval: isFinite(iv) ? iv : (form.snap ? form.snap.interval : 60),
+      /* 清空就是 null：不静默回填，校验时统一报错 */
+      interval: isFinite(iv) ? iv : null,
       minAge: isFinite(ma) ? ma : null
     };
   }
@@ -767,32 +1115,74 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function refreshDirty() {
-    if (!form.snap) { $('cfgActions').hidden = true; return; }
+    if (!form.snap) { $('cfgActions').hidden = true; return false; }
     var f = readForm();
     var dirty = (f.enabled ? 1 : 0) !== (form.snap.enabled ? 1 : 0) ||
       f.mode !== form.snap.mode ||
-      String(f.interval) !== String(form.snap.interval) ||
-      String(f.minAge) !== String(form.snap.minAge);
+      (f.interval === null ? '' : String(f.interval)) !== String(form.snap.interval) ||
+      (f.minAge === null ? '' : String(f.minAge)) !== String(form.snap.minAge);
     $('cfgActions').hidden = !dirty;
-    if (dirty) { validate(f); }
+    if (dirty) {
+      $('cfgSave').disabled = false;
+      $('cfgDiscard').disabled = false;
+      validate(f);
+    }
     return dirty;
+  }
+
+  /* 配置保存：保留注释与未知键，只替换 4 个已知键；内容走 base64，避免引号/换行注入。 */
+  var CFG_KEYS = ['ENABLED', 'MODE', 'POLL_INTERVAL', 'MIN_AGE'];
+
+  function buildConfigText(raw, values) {
+    var lines = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').split('\n');
+    if (lines.length && lines[lines.length - 1] === '') { lines.pop(); }
+    var seen = {};
+    var out = lines.map(function (line) {
+      /* 只替换值区间：行尾注释（`# ...`）原样保留，符合“保留未知行/注释”的约定 */
+      var hash = line.indexOf('#');
+      var body = hash >= 0 ? line.slice(0, hash) : line;
+      var comment = hash >= 0 ? line.slice(hash) : '';
+      var m = /^(\s*)([A-Z_]+)(\s*)=/.exec(body);
+      if (!m || !Object.prototype.hasOwnProperty.call(values, m[2])) { return line; }
+      seen[m[2]] = 1;
+      return m[1] + m[2] + m[3] + '=' + values[m[2]] + (comment ? ' ' + comment : '');
+    });
+    for (var i = 0; i < CFG_KEYS.length; i++) {
+      var k = CFG_KEYS[i];
+      if (!seen[k]) { out.push(k + '=' + values[k]); }
+    }
+    return out.join('\n') + '\n';
+  }
+
+  function b64utf8(str) {
+    var s = String(str);
+    try {
+      if (typeof window.TextEncoder === 'function' && typeof window.btoa === 'function') {
+        var bytes = new window.TextEncoder().encode(s);
+        var bin = '';
+        for (var i = 0; i < bytes.length; i++) { bin += String.fromCharCode(bytes[i]); }
+        return window.btoa(bin);
+      }
+    } catch (e) { /* 回退到下面 */ }
+    return window.btoa(unescape(encodeURIComponent(s)));
   }
 
   function loadConfig() {
     if (!BR.ok) { return Promise.resolve(false); }
+    if (state.noRoot) { lockConfig('没有 root 权限，配置只读。'); return Promise.resolve(false); }
     return run('cat ' + P.config).then(function (res) {
-      var cfg = parseConfig(res.stdout);
-      if (!cfg.ENABLED && !cfg.MODE) { throw new Error('config.conf 为空'); }
+      var raw = String(res.stdout || '');
+      var cfg = parseConfig(raw);
+      if (!cfg.ENABLED && !cfg.MODE && !cfg.POLL_INTERVAL && !cfg.MIN_AGE) {
+        throw new Error('config.conf 里没有可识别的配置项（文件为空或格式不对）');
+      }
       state.config = cfg;
+      state.configRaw = raw;
       applyConfig(cfg);
       return true;
     }).catch(function (err) {
-      $('cfgHint').textContent = '读取配置失败：' + (err.message || err);
-      $('cfgHint').hidden = false;
-      $('cfgEnabled').disabled = true;
-      $('cfgInterval').disabled = true;
-      $('cfgMinAge').disabled = true;
-      $('cfgActions').hidden = true;
+      /* 读失败就整块锁住：别让用户在空表单上改出半套配置 */
+      lockConfig('读取配置失败：' + (err.message || err) + '（配置已锁定，点「刷新」重试）');
       return false;
     });
   }
@@ -802,13 +1192,21 @@ details.card[open] summary{margin-bottom:8px}
     if (!validate(f)) { toast('配置数值不合法'); return; }
     if (!form.snap) { toast('配置尚未读取成功'); return; }
 
-    var en = f.enabled ? '1' : '0';
+    /* 轮询间隔在非轮询模式下不显示：一律沿用上一次有效值（隐藏的输入框可能残留旧值）；
+       MIN_AGE 始终可见，必须显式填写。 */
+    var iv = ($('cfgPollGroup').hidden || f.interval === null) ? form.snap.interval : f.interval;
+    var ma = f.minAge;
     var mode = (f.mode === 'event' || f.mode === 'poll') ? f.mode : 'auto';
-    /* 只用白名单值和整数拼接，避免注入 */
-    var cmd = "printf 'ENABLED=%s\\nMODE=%s\\nPOLL_INTERVAL=%s\\nMIN_AGE=%s\\n' " +
-      en + ' ' + mode + ' ' + f.interval + ' ' + f.minAge +
-      ' > ' + P.config + '.tmp && mv -f ' + P.config + '.tmp ' + P.config +
-      ' && chmod 600 ' + P.config;
+    var values = {
+      ENABLED: f.enabled ? '1' : '0',
+      MODE: mode,
+      POLL_INTERVAL: String(iv),
+      MIN_AGE: String(ma)
+    };
+    var text = buildConfigText(state.configRaw, values);
+    var tmp = P.config + '.tmp.$$';
+    var cmd = 'umask 077; printf %s \'' + b64utf8(text) + '\' | base64 -d > ' + tmp +
+      ' && chmod 600 ' + tmp + ' && mv -f ' + tmp + ' ' + P.config;
 
     setBusy(true);
     $('cfgSave').disabled = true;
@@ -816,10 +1214,13 @@ details.card[open] summary{margin-bottom:8px}
 
     run(cmd).then(function () {
       written = true;
+      state.config = values;
+      state.configRaw = text;
       return run('sh ' + P.restart);
     }).then(function () {
-      state.config = { ENABLED: en, MODE: mode, POLL_INTERVAL: String(f.interval), MIN_AGE: String(f.minAge) };
-      form.snap = { enabled: f.enabled, mode: mode, interval: f.interval, minAge: f.minAge };
+      form.snap = { enabled: f.enabled, mode: mode, interval: iv, minAge: ma };
+      /* 隐藏中的轮询间隔不会显示，但输入框里可能残留旧数字；保存后同步成真正写入的值 */
+      if ($('cfgInterval')) { $('cfgInterval').value = String(iv); }
       $('cfgActions').hidden = true;
       toast('已保存，守护进程重启中');
       setTimeout(function () { refreshStatus(); }, 3000);
@@ -827,8 +1228,7 @@ details.card[open] summary{margin-bottom:8px}
     }).catch(function (err) {
       if (written) {
         /* 文件已经落盘，只是重启失败：界面同步到新值，别让用户以为没保存 */
-        state.config = { ENABLED: en, MODE: mode, POLL_INTERVAL: String(f.interval), MIN_AGE: String(f.minAge) };
-        form.snap = { enabled: f.enabled, mode: mode, interval: f.interval, minAge: f.minAge };
+        form.snap = { enabled: f.enabled, mode: mode, interval: iv, minAge: ma };
         $('cfgActions').hidden = true;
         opResult('配置已写入，但重启守护失败', '守护进程可能还在用旧配置，点「重启守护」重试。', 'warn');
       } else {
@@ -871,7 +1271,7 @@ details.card[open] summary{margin-bottom:8px}
     var m = /RESULT\b([^\n]*)/.exec(String(text || ''));
     if (!m) { return null; }
     var out = {};
-    var re = /([a-z_]+)=([A-Za-z0-9_+]+)/g;
+    var re = /([a-z_]+)=([A-Za-z0-9_+.-]+)/g;
     var kv;
     while ((kv = re.exec(m[1])) !== null) { out[kv[1]] = kv[2]; }
     return out;
@@ -881,6 +1281,7 @@ details.card[open] summary{margin-bottom:8px}
     var started = Date.now();
     setBusy(true);
     opResult(dry ? '正在体检…' : '正在修复…', '请稍候', '');
+    /* 不传 SI_MIN_AGE：fix 自己从 config.conf 读 MIN_AGE，面板显示的也是同一个值 */
     return run('sh ' + P.fix + (dry ? ' -n' : ' -q')).then(function (res) {
       var r = parseResultLine(res.stdout);
       var ms = Date.now() - started;
@@ -889,35 +1290,41 @@ details.card[open] summary{margin-bottom:8px}
         return;
       }
       if (r.error) {
-        opResult('执行失败：' + r.error, '检查 ' + (r.checked || 0) + ' 个进程 · 耗时 ' + ms + 'ms', 'bad');
+        opResult('执行失败：' + errorText(r.error), '检查 ' + toInt(r.checked, 0) + ' 个进程 · 耗时 ' + ms + 'ms', 'bad');
         return;
       }
       if (r.defer === 'fuse') {
         opResult('FUSE 层未就绪', '本轮没有动任何挂载；守护会在开机宽限期内退避重试。', 'warn');
         return;
       }
-      if (r.skipped && String(r.skipped).indexOf('locked') >= 0) {
+      if (r.skipped && String(r.skipped).split('+').indexOf('locked') >= 0) {
         opResult('另一轮修复正在进行', '这一轮没有执行（抢锁失败），几秒后重试即可。', 'warn');
         return;
       }
       var fixed = toInt(r.fixed, 0);
       var broken = toInt(r.broken, 0);
       var checked = toInt(r.checked, 0);
+      var young = toInt(r.young, 0);
+      var churn = toInt(r.churn, 0);
+      var retry = toInt(r.retry, 0);
+      /* broken 是"需要修复的进程数"，fixed 是"补上的挂载条数"，单位不能混 */
       var title = dry
         ? (broken > 0 ? ('发现 ' + broken + ' 个进程需要修复') : '一切正常')
         : (fixed > 0 ? ('已修复 ' + fixed + ' 条挂载')
           : (broken > 0 ? ('发现 ' + broken + ' 个进程需要修复，但本轮未补上') : '没有需要修复的挂载'));
       var body = '检查 ' + checked + ' 个已隔离进程' +
-        (broken ? ' · 缺失 ' + broken + ' 个' : '') +
-        (r.young && toInt(r.young, 0) ? ' · ' + r.young + ' 个太年轻已跳过' : '') +
-        (r.skipped ? ' · 跳过：' + r.skipped : '') +
+        (broken ? ' · 需修复 ' + broken + ' 个进程' : '') +
+        (young ? ' · ' + young + ' 个进程太年轻，已跳过' : '') +
+        (r.skipped ? ' · 跳过：' + skipText(r.skipped) : '') +
+        (churn ? ' · 熔断跳过 ' + churn + ' 个目标' : '') +
+        (retry ? ' · 约 ' + retry + ' 秒后重试' : '') +
         ' · 耗时 ' + ms + 'ms';
       var tone = '';
       if (dry) { tone = broken > 0 ? 'warn' : ''; }
       else if (fixed > 0) { tone = 'good'; }
       else if (broken > 0) { tone = 'warn'; }
       opResult(title, body, tone);
-      if (!dry && fixed > 0) { setTimeout(refreshStatus, 800); }
+      if (!dry && (fixed > 0 || churn > 0)) { setTimeout(refreshStatus, 800); }
     }).catch(function (err) {
       opResult('执行失败', err.message || String(err), 'bad');
     }).then(function () { setBusy(false); });
@@ -956,9 +1363,12 @@ details.card[open] summary{margin-bottom:8px}
     $('appsSum').textContent = sum;
 
     var rows = [];
-    (data.apps || []).forEach(function (a) {
+    (Array.isArray(data.apps) ? data.apps : []).forEach(function (a) {
+      if (!a || typeof a !== 'object') { return; }
       var st = appState(a.a);
-      var chips = (a.d || []).map(function (d) {
+      var dirs = Array.isArray(a.d) ? a.d : [];
+      var chips = dirs.map(function (d) {
+        if (!Array.isArray(d)) { return ''; }
         var ok = d[1] === 1;
         return '<span class="chip ' + (ok ? 'ok' : (d[1] === 0 ? 'bad' : 'na')) + '">' + esc(d[0]) + '</span>';
       }).join('');
@@ -981,11 +1391,21 @@ details.card[open] summary{margin-bottom:8px}
     $('appsSum').textContent = '读取中…';
     return run('sh ' + P.list).then(function (res) {
       var raw = String(res.stdout || '').trim();
-      if (!raw) { throw new Error('没有输出'); }
-      var data = JSON.parse(raw);
+      if (!raw) { throw new Error('没有输出（list-apps 可能不是 root 运行或脚本报错）'); }
+      var data = null;
+      try { data = JSON.parse(raw); }
+      catch (e) {
+        throw new Error('list-apps 返回的不是合法 JSON（输出可能被截断或脚本报错），已放弃解析');
+      }
+      if (!data || typeof data !== 'object' || !Array.isArray(data.apps)) {
+        throw new Error('list-apps 返回的数据结构不完整（缺少 apps 数组）');
+      }
+      if (data.error) {
+        throw new Error('配置解析失败：' + errorText(data.error));
+      }
       renderApps(data);
     }).catch(function (err) {
-      $('appsSum').textContent = '读取失败：' + (err.message || err);
+      $('appsSum').textContent = '读取失败：' + (err && err.message ? err.message : String(err));
       $('appsBody').innerHTML = '';
     }).then(function () {
       btn.disabled = false;
@@ -1009,6 +1429,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function loadLog() {
     if (!BR.ok) { return Promise.resolve(false); }
+    if (state.noRoot) { return Promise.resolve(false); }
     var btn = $('btnLog');
     btn.disabled = true;
     return run('tail -n 40 ' + P.log).then(function (res) {
@@ -1030,7 +1451,12 @@ details.card[open] summary{margin-bottom:8px}
     d.push(row('桥接对象', esc(BR.ok ? (BR.name + ' · ' + BR.style) : (BR.name || '无'))));
     d.push(row('调用方式', esc(BR.ok ? (STYLE_LABEL[BR.style] || BR.style) : BR.note || '—')));
     d.push(row('最近耗时', esc(BR.latency ? (BR.latency + ' ms') : '—')));
+    d.push(row('权限', esc(state.uid === null || state.uid === undefined ? '未知' :
+      (state.uid === 0 ? 'root' : 'uid ' + state.uid))));
     d.push(row('模式', esc(state.mode === 'snapshot' ? '只读快照' : '实时')));
+    if (!BR.ok && BR.fails) {
+      d.push(row('桥接失败', esc(BR.fails + ' 次（连续 ' + BRIDGE_FAIL_LIMIT + ' 次回落只读）')));
+    }
     if (state.mode === 'snapshot' && state.snapshotTs) {
       d.push(row('快照时间', esc(clock(state.snapshotTs) + '（' + rel(state.snapshotTs) + '）')));
     }
@@ -1061,7 +1487,16 @@ details.card[open] summary{margin-bottom:8px}
   function boot() {
     /* 事件绑定 */
     $('btnRefresh').addEventListener('click', function () {
-      if (!BR.ok) { location.reload(); return; }
+      if (!BR.ok) {
+        /* 快照模式：先重新探测桥接，成功就回实时；仍失败再刷新页面（重新载入快照） */
+        if (BR.probing) { return; }
+        lastReprobe = Date.now();
+        probeBridge().then(function (ok) {
+          if (ok) { restoreLive().then(function () { toast('已连接桥接'); }); return; }
+          location.reload();
+        });
+        return;
+      }
       var dirty = refreshDirty();
       refreshStatus().then(function () {
         return dirty ? true : loadConfig();
@@ -1096,6 +1531,16 @@ details.card[open] summary{margin-bottom:8px}
     $('cfgInterval').addEventListener('input', refreshDirty);
     $('cfgMinAge').addEventListener('input', refreshDirty);
 
+    /* banner 里的「重试连接 / 刷新页面」走事件委托，不用内联 onclick */
+    $('banner').addEventListener('click', function (ev) {
+      var t = ev.target;
+      while (t && t !== this && !(t.getAttribute && t.getAttribute('data-action'))) { t = t.parentNode; }
+      if (!t || t === this || !t.getAttribute) { return; }
+      var act = t.getAttribute('data-action');
+      if (act === 'retry-bridge') { retryBridge(); }
+      else if (act === 'reload-page') { location.reload(); }
+    });
+
     var segs = $('cfgMode').getElementsByTagName('button');
     for (var i = 0; i < segs.length; i++) {
       segs[i].addEventListener('click', function () {
@@ -1123,28 +1568,30 @@ details.card[open] summary{margin-bottom:8px}
     }
 
     /* 先用手上的快照把界面填上，再去探测桥接（避免冷启动时白屏 7 秒） */
+    lockConfig('正在探测 WebUI 桥接…');
+    lockActions();
     if (window.__SI_SNAPSHOT__) { snapshotMode(); }
 
     probeBridge().then(function (ok) {
       if (!ok) {
         $('bridgeName').textContent = BR.note || '无桥接';
         snapshotMode();
-        var b = $('banner');
-        b.innerHTML += '<div style="margin-top:8px"><button class="btn tiny ghost" onclick="location.reload()">重试连接</button></div>';
         return;
       }
-      unlockAll();
-      $('bridgeName').textContent = BR.note;
-      setBanner('', 'info');
-      refreshStatus().then(loadConfig).then(loadLog);
+      restoreLive();
     });
 
-    /* 轮询：只在页面可见时读状态 */
+    /* 轮询：只在页面可见时读状态；桥接失效时改做重新探测 */
     setInterval(function () {
       if (document.visibilityState !== 'visible') { return; }
       if (state.busy) { return; }
+      if (!BR.ok) { maybeReprobe(); return; }
       refreshStatus();
     }, POLL_MS);
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && !BR.ok) { maybeReprobe(); }
+    });
   }
 
   if (document.readyState === 'loading') {

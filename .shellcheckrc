@@ -1,0 +1,12 @@
+# shellcheck 配置：模块运行在 Android 的 /system/bin/sh（mksh）上，按 POSIX sh 检查。
+shell=sh
+external-sources=true
+
+# 已知且有意为之的写法（随代码多处出现，逐处 disable 只会让脚本更难读）：
+#   SC1090/SC1091 运行时动态 source（模块安装路径在设备上才确定，如 . "${0%/*}/result.sh"）
+#   SC2034        update-binary 的 ZIPFILE 是 Magisk 安装器约定变量，本模块不直接用
+#   SC2046        set -- $(stat_of "$tgt") 有意按空白拆成“设备号/挂载点”
+#   SC3045        read -t 是 mksh 扩展；事件循环依赖它（Android /system/bin/sh = mksh）
+#   SC2209        PS_BIN=ps 是有意的命令别名（固定用系统 ps，不随 PATH 漂移）
+#   SC1111        中文字符串里的“”不是 shell 引号
+disable=SC1090,SC1091,SC2034,SC2046,SC3045,SC2209,SC1111

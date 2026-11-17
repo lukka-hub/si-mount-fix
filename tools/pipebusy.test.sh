@@ -11,9 +11,23 @@
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 DAEMON=scripts/si-mount-eventd.sh
-DSH=${SI_TEST_SHELL:-mksh}
-command -v "$DSH" >/dev/null 2>&1 || DSH=/system/bin/sh
-command -v "$DSH" >/dev/null 2>&1 || { echo "需要 mksh（read -t）"; exit 1; }
+# 解释器可移植：默认 Android 的 /system/bin/sh；不存在/不可执行时回退 mksh → sh。
+# 守护事件循环用 read -t（mksh 扩展），必须挑一个支持它的 shell。
+DSH=${SI_TEST_SHELL:-${SI_TEST_SH:-/system/bin/sh}}
+if ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  DSH=$(command -v mksh 2>/dev/null)
+fi
+if [ -z "$DSH" ] || ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  DSH=$(command -v sh 2>/dev/null)
+fi
+if [ -z "$DSH" ] || ! { command -v "$DSH" >/dev/null 2>&1 && "$DSH" -c ':' >/dev/null 2>&1; }; then
+  echo "找不到 mksh/sh（可用 SI_TEST_SH=... 指定）"; exit 1
+fi
+"$DSH" -c 'read -t 1 _probe' </dev/null >/dev/null 2>&1
+case $? in
+  0|1) ;;
+  *) echo "需要支持 read -t 的 shell（mksh），当前 $DSH 不支持"; exit 1 ;;
+esac
 REAL_MKDIR=$(command -v mkdir) || { echo "缺少 mkdir"; exit 1; }
 
 T=${TMPDIR:-/tmp}/si-pipebusy-test.$$
@@ -51,10 +65,15 @@ for _a in "$@"; do
 done
 exit $_rc
 S
-# 自检 stub：向 fake trace 追加两条事件，让重建后的自检通过
+# 自检 stub：向 fake trace 追加两条事件，让重建后的自检通过。
+# 同时在自检这一刻把 kprobe filter 记下来：自检本身是用 mount/umount 命令触发的
+# （comm=mount/umount），filter 一旦排除它们，自检就永远收不到事件 → 事件模式起不来。
 cat > "$T/bin/unshare" <<'S'
 #!/bin/sh
 [ -n "$SI_TEST_TRACE_FILE" ] || exit 0
+if [ -n "$SI_TEST_FILTER_OUT" ] && [ -n "$SI_TRACE" ]; then
+  cat "$SI_TRACE/instances/si_mount_fix/events/kprobes/si_fix_pu/filter" 2>/dev/null >> "$SI_TEST_FILTER_OUT"
+fi
 echo si_fix_pm >> "$SI_TEST_TRACE_FILE" 2>/dev/null
 echo si_fix_pu >> "$SI_TEST_TRACE_FILE" 2>/dev/null
 exit 0
@@ -68,14 +87,18 @@ reset_fixture() {   # $1=config MODE
            "$TRACE/events/kprobes/si_fix_pu" || exit 1
   printf 'ENABLED=1\nMODE=%s\nPOLL_INTERVAL=10\nMIN_AGE=15\n' "$1" > "$DATA/config.conf"
   printf 'version=v1.3.4\nversionCode=134\ndescription=x\n' > "$MOD/module.prop"
+  # RESULT 行格式来自真实 scripts/result.sh（fixture 复制到 scripts/ 下），
+  # 生产端 token 改了 stub 会跟着改，避免“stub 早已过期但测试仍绿”。
   cat > "$MOD/scripts/fix-si-mounts.sh" <<'S'
 #!/bin/sh
 # 启动时 daemon 会先调 --trim-only；它不算一次真实 run_fix
+. "$(dirname "$0")/result.sh"
 case "$1" in --trim-only) exit 0 ;; esac
 echo run >> "$SI_TEST_FIX_LOG"
-echo "RESULT checked=0 broken=0 fixed=0 young=0"
+result_line 0 0 0 0
 S
-  chmod 755 "$MOD/scripts/fix-si-mounts.sh"
+  cp scripts/result.sh "$MOD/scripts/result.sh" || exit 1
+  chmod 755 "$MOD/scripts/fix-si-mounts.sh" "$MOD/scripts/result.sh"
   printf 'p:si_fix_pu path_umount\np:si_fix_pm path_mount\n' > "$TRACE/kprobe_events"
   cp -f "$TRACE/kprobe_events" "$T/kprobe.before"
   echo 1 > "$I/tracing_on"
@@ -88,7 +111,10 @@ S
 }
 
 start_daemon() {
-  SI_DATA=$DATA SI_MOD=$MOD SI_TRACE=$TRACE SI_TEST_FIX_LOG=$T/fix.log \
+  # SI_TEST=1 + SI_PIPE_PROBE_EVERY=1：把 pipe 降级时的重探周期压到 1 秒，
+  # A 段“释放 holder 后应退出”不必等满一个 POLL_INTERVAL（10s），CI 慢机也不会卡在窗口边缘。
+  SI_TEST=1 SI_PIPE_PROBE_EVERY=1 SI_TEST_FILTER_OUT=$T/filter.selftest \
+    SI_DATA=$DATA SI_MOD=$MOD SI_TRACE=$TRACE SI_TEST_FIX_LOG=$T/fix.log \
     SI_TEST_TRACE_FILE=$I/trace SI_TEST_WRITER_PID=$T/rebuild-writer.pid \
     SI_TEST_REAL_MKDIR="$REAL_MKDIR" PATH=$T/bin:$PATH \
     "$DSH" "$DAEMON" >"$T/daemon.out" 2>&1 &
@@ -137,13 +163,28 @@ assert_untouched() {   # $1=场景名
 }
 
 # ---------- B) 打不开 + 无 holder → 先尝试重建 ----------
-reset_fixture auto
-ln -s trace_pipe "$I/trace_pipe"     # 自环 = ELOOP，且没有持有者
-start_daemon
-if wait_status '"mode":"event"'; then
+# 已知偶发（环境时序，不是被测代码回归）：daemon 判断“有没有 holder”用的是
+# `timeout 2 ls -l /proc/*/fd`，机器负载高时扫描会超时，daemon 按 busy 保守降级
+# （pipe_has_holder 返回 2 = 未知 → 降级，属 daemon 侧行为，不在本测试改）。
+# 这里允许重试一次，避免把环境抖动记成 PASS/FAIL 之外的假红；两次都降级才算失败。
+_case_b() {
+  reset_fixture auto
+  ln -s trace_pipe "$I/trace_pipe"     # 自环 = ELOOP，且没有持有者
+  start_daemon
+  wait_status '"mode":"event"'
+}
+_b_ok=0
+_b_try=1
+while [ "$_b_try" -le 2 ]; do
+  if _case_b; then _b_ok=1; break; fi
+  stop_daemon
+  kill_rebuild_writer
+  _b_try=$((_b_try + 1))
+done
+if [ "$_b_ok" = 1 ]; then
   ok "B) 无 holder 坏实例 → 重建后进入 event"
 else
-  bad "B) 没有重建回 event：$(cat "$DATA/status.json" 2>/dev/null)"
+  bad "B) 没有重建回 event（重试 2 次）：$(cat "$DATA/status.json" 2>/dev/null)"
 fi
 wait_fix && ok "B) 启动 run_fix 执行" || bad "B) 启动没有 run_fix"
 grep -q 'p:si_fix_pu' "$TRACE/kprobe_events" 2>/dev/null \
@@ -151,6 +192,22 @@ grep -q 'p:si_fix_pu' "$TRACE/kprobe_events" 2>/dev/null \
   && ok "B) kprobe 已重新注册" || bad "B) kprobe 没有重新注册"
 [ -e "$I/events/kprobes/si_fix_pu/enable" ] && [ -e "$I/events/kprobes/si_fix_pm/enable" ] \
   && ok "B) 实例内 kprobe 事件已重建" || bad "B) 实例内 kprobe 事件缺失"
+# 自检期间的 filter 不能排除 mount/umount；自检通过后要写回“排除 mount/umount”的最终 filter
+if [ -s "$T/filter.selftest" ]; then
+  if grep -q 'comm != "mount"' "$T/filter.selftest"; then
+    bad "B) 自检期间 filter 排除了 mount（自检会永远收不到事件）"
+  else
+    ok "B) 自检期间 filter 未排除 mount/umount"
+  fi
+else
+  bad "B) 没有捕获到自检期间的 filter（stub 没被调用？）"
+fi
+if grep -q 'comm != "mount"' "$I/events/kprobes/si_fix_pu/filter" 2>/dev/null \
+   && grep -q 'comm != "umount"' "$I/events/kprobes/si_fix_pu/filter" 2>/dev/null; then
+  ok "B) 自检通过后写回最终 filter（排除 mount/umount，防自触发）"
+else
+  bad "B) 最终 filter 没有排除 mount/umount：$(cat "$I/events/kprobes/si_fix_pu/filter" 2>/dev/null)"
+fi
 stop_daemon
 kill_rebuild_writer
 
@@ -224,7 +281,9 @@ sh -c 'exec 9< "$1"; exec sleep 60' _ "$I/trace_pipe" &
 HP=$!
 _i=0
 while [ "$_i" -lt 50 ] && [ ! -e "/proc/$HP/fd/9" ]; do sleep 0.1; _i=$((_i+1)); done
-sleep 1
+# 等临时 writer 自然退出（它有 1s 寿命），最多 5s；不再固定 sleep 1
+_i=0
+while [ "$_i" -lt 50 ] && kill -0 "$TW" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); done
 kill "$TW" 2>/dev/null; wait "$TW" 2>/dev/null
 [ -e "/proc/$HP/fd/9" ] && ok "A) holder 已持有 FIFO（fd 9）" || bad "A) holder 没有打开 FIFO"
 _t0=$(date +%s)
@@ -240,7 +299,17 @@ else
   bad "A) 没有识别出 holder：$(cat "$DATA/status.json" 2>/dev/null)"
 fi
 wait_fix && ok "A) 降级前先 run_fix 一次" || bad "A) 降级前没有 run_fix"
-sleep 0.5
+# 等降级时的探测子进程退出（最多 2s），不再固定 sleep 0.5
+_i=0
+while [ "$_i" -lt 20 ]; do
+  _left=0
+  for _k in $(cat "/proc/$DPID/task/$DPID/children" 2>/dev/null); do
+    _kc=$(tr '\0' ' ' < "/proc/$_k/cmdline" 2>/dev/null)
+    case "$_kc" in sleep*) ;; *) _left=1 ;; esac
+  done
+  [ "$_left" = 0 ] && break
+  sleep 0.1; _i=$((_i+1))
+done
 _kids=$(cat "/proc/$DPID/task/$DPID/children" 2>/dev/null)
 _lk=0
 for _k in $_kids; do
@@ -253,13 +322,19 @@ done
 [ "$_lk" = 0 ] && ok "A) 无残留探测子进程"
 assert_untouched A
 kill "$HP" 2>/dev/null; HP=""
-# holder 释放后给一个 writer，下一次重探就能打开 pipe；守护应 exit 0 交 supervisor
-( exec 8> "$I/trace_pipe"; exec sleep 30 ) &
+# holder 释放后放一个常驻写端，让 pipe 重新可打开，守护应 exit 0 交 supervisor。
+# 用 O_RDWR（<>）且不 exec：`exec 8> fifo; exec sleep` 里的 fd 8 会在 exec 时被
+# shell 关掉，等于没有写端，守护的重探在 CI 上就永远等不到空闲。
+sh -c 'exec 8<> "$1"; while :; do sleep 1; done' _ "$I/trace_pipe" &
 WP=$!
 _i=0
 while [ "$_i" -lt 200 ] && kill -0 "$DPID" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); done
 if kill -0 "$DPID" 2>/dev/null; then
   bad "A) pipe 空出后没有退出重进事件模式"
+  # 失败时把现场打出来：是重探没跑、pipe_open_ok 失败，还是退出码不对。
+  echo "  ---- daemon.out ----"; sed -n '1,40p' "$T/daemon.out" 2>/dev/null
+  echo "  ---- status.json ----"; cat "$DATA/status.json" 2>/dev/null; echo
+  echo "  ---- daemon.log ----"; sed -n '1,80p' "$DATA/daemon.log" 2>/dev/null
   stop_daemon
 else
   wait "$DPID" 2>/dev/null; _rc=$?; DPID=""

@@ -26,5 +26,9 @@ fi
 [ "$dp_ok" = 1 ] || pkill -9 -f '^sh .*/si-mount-eventd\.sh' 2>/dev/null
 rm -rf "$DATA/.daemon.lock" 2>/dev/null   # .si-fix.lock 留着，新进程会按 pid 判活接管
 sleep 1
-setsid sh "$D/supervisor.sh" >/dev/null 2>&1 &
+if command -v setsid >/dev/null 2>&1; then
+  setsid sh "$D/supervisor.sh" >/dev/null 2>&1 &
+else
+  nohup sh "$D/supervisor.sh" >/dev/null 2>&1 &
+fi
 echo "restarted"
