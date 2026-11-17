@@ -14,7 +14,7 @@ cd "$D/.." || exit 1
 OUT=si-mount-fix.zip
 US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
-REPO_URL=https://github.com/qiang794445923/si-mount-fix
+REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
 
 say() { printf '%s\n' "$*"; }
