@@ -16,9 +16,9 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
-# 第三方补丁 dex（酷安用户「无所事事」提供）：只替换 SI 的 server-v355.dex。
+# 自建补丁 dex；思路由酷安用户「无所事事」提供。只替换 SI 的 server-v355.dex。
 PATCH_ASSET=assets/server-v355.dex
-PATCH_SHA=48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679
+PATCH_SHA=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -127,9 +127,9 @@ PY
 say "updateJson：$PROP_UJ"
 
 # ---------- 3b) 第三方补丁资产：内容不能变，sha256 必须与发布说明一致 ----------
-[ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（应由发布者提供，不要自行生成）"
+[ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（自建 dex，构建时校验后打进 zip）"
 PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
-[ "$PATCH_SIZE" = 380692 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 380692 B）"
+[ "$PATCH_SIZE" = 325984 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 325984 B）"
 if command -v sha256sum >/dev/null 2>&1; then
   PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
 else

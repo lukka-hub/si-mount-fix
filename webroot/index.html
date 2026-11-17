@@ -893,7 +893,7 @@ details.card[open] summary{margin-bottom:8px}
         ] });
     } else if (patchPromptable()) {
       items.push({ tone: 'warn', title: 'Android 17 应用列表可能为空',
-        body: '可应用社区补丁修复。补丁只替换 SI 的 server-v355.dex，确认后才会执行；' +
+        body: '可应用自建补丁修复。补丁只替换 SI 的 server-v355.dex，确认后才会执行；' +
           '应用后需要重新打开 SI。之后仍可在下方「Android 17 应用列表修复」里手动应用。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
@@ -1114,7 +1114,7 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function patchConfirmTitle(action) {
-    if (action === 'apply') { return '确认应用社区补丁？'; }
+    if (action === 'apply') { return '确认应用自建补丁？'; }
     if (action === 'force') { return '确认强制恢复原版？'; }
     return '确认恢复原版？';
   }
@@ -1132,7 +1132,7 @@ details.card[open] summary{margin-bottom:8px}
     var srv = p.targetServer || 'server-v355';
     var what;
     if (action === 'apply') {
-      what = '把 server-v355.dex 替换为社区补丁';
+      what = '把 server-v355.dex 替换为自建补丁';
     } else if (action === 'force') {
       what = '用有效原版备份强制覆盖当前 server-v355.dex';
     } else {
@@ -1199,7 +1199,7 @@ details.card[open] summary{margin-bottom:8px}
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       if (p.match) {
         badge = '可应用';
-        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用社区补丁修复。' +
+        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用自建补丁修复。' +
           '补丁只替换 server-v355.dex，确认后才会执行。';
       } else {
         badge = '版本不匹配';

@@ -40,14 +40,14 @@ has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 ASSET_SHA=$(sha_of "$ASSET_REAL")
-PATCH_SHA_EXPECT=48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679
+PATCH_SHA_EXPECT=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
 ORIGINAL_SHA_EXPECT=c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
 SI_VER_OK=8.8.1.r3684.test
 
 [ -f "$ASSET_REAL" ] && ok "补丁资产存在" || bad "补丁资产不存在：$ASSET_REAL"
 [ "$ASSET_SHA" = "$PATCH_SHA_EXPECT" ] && ok "补丁资产 sha256 正确" \
   || bad "补丁资产 sha256 不对：$ASSET_SHA"
-[ "$(wc -c < "$ASSET_REAL" | tr -d ' ')" = 380692 ] && ok "补丁资产大小 380692 B" \
+[ "$(wc -c < "$ASSET_REAL" | tr -d ' ')" = 325984 ] && ok "补丁资产大小 325984 B" \
   || bad "补丁资产大小不对：$(wc -c < "$ASSET_REAL")"
 grep -q "ORIGINAL_SHA=$ORIGINAL_SHA_EXPECT" "$PATCH" \
   && ok "脚本原版 sha256 常量正确" || bad "脚本原版 sha256 常量不对"
@@ -626,16 +626,25 @@ grep -q 'si-patch\.sh" apply' action.sh && bad "action.sh 会自动 apply" \
   || ok "action.sh 不自动 apply"
 grep -q 'assets/server-v355.dex' tools/build.sh && ok "构建脚本包含补丁资产" \
   || bad "构建脚本没有补丁资产"
-grep -q '48ff195e' tools/build.sh && ok "构建脚本校验补丁 sha" \
+grep -q '7a941f35' tools/build.sh && ok "构建脚本校验补丁 sha" \
   || bad "构建脚本没有校验补丁 sha"
 grep -q 'siPatchVersion' tools/build.sh && ok "构建脚本校验适用版本字段" \
   || bad "构建脚本没有校验适用版本字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.0' CHANGELOG.md \
-  && ok "CHANGELOG 只列出 1.5.0" || bad "CHANGELOG 缺少 1.5.0"
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.1' CHANGELOG.md \
+  && ! grep -q '^## 1.5.0' CHANGELOG.md \
+  && ok "CHANGELOG 只列出 1.5.1" || bad "CHANGELOG 不是只含 1.5.1"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
+grep -q '反编译改动' README.md && ok "README 有反编译改动一节" \
+  || bad "README 缺少反编译改动"
+_stale=0
+for _f in scripts/si-patch.sh tools/build.sh README.md HISTORY.md \
+          CHANGELOG.md module.prop update.json; do
+  grep -q '48ff195e\|380692' "$_f" 2>/dev/null && _stale=1
+done
+[ "$_stale" = 0 ] && ok "没有旧补丁哈希/大小残留" || bad "还有旧补丁哈希/大小残留"
 
 echo
 [ "$fail" = 0 ] && { echo "patch.test: PASS"; exit 0; }

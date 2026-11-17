@@ -75,7 +75,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
-- Android 17 可选补丁：SDK 37 下 SI 应用列表为空时，用户确认后用一个社区 dex 替换
+- Android 17 可选补丁：SDK 37 下 SI 应用列表为空时，用户确认后用一个自建补丁 dex 替换
   `server-v355.dex`；自动备份、校验并支持恢复，不动 `main.dex` 与 SI 配置。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
 - 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录。
@@ -100,7 +100,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.0` 与 `versionCode=150`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.1` 与 `versionCode=151`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -120,8 +120,10 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` 解析不了新系统
 返回的数据。替换这个 dex 后列表恢复；本机实测从 17 个恢复到 31 个。
 
-**来源**：补丁 dex 由酷安用户「无所事事」提供，用于已停止更新的 SI 在 Android 17 上的
-善意兼容修复；本仓库只做校验、备份和分发，没有修改 dex 内容。补丁只替换
+**鸣谢**：思路由酷安用户「无所事事」提供。
+
+**来源**：模块内的 `assets/server-v355.dex` 由本模块对官方 SI v355 的
+`server-v355.dex` 自行反编译并重打。补丁只替换
 `/data/adb/storage-isolation/bin/server-v355.dex`，不改 `main.dex`、不改 SI 配置、
 不动 SI 的其它文件。补丁在用户确认后由模块写入。
 
@@ -129,8 +131,8 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
 
 - 原版 `server-v355.dex`：331,520 B，sha256
   `c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a`
-- 社区补丁：380,692 B，sha256
-  `48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679`
+- 自建补丁：325,984 B，sha256
+  `7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe`
 
 `check` 按 sha256 判断：`original`（可应用）、`patched`（已应用）、`unknown`
 （既非原版也非补丁，拒绝操作）、`no-si`（未装/无 server）、`unsupported`
@@ -139,6 +141,21 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
 `apply` 前还会校验 SI versionName 前缀（适用版本由 `module.prop` 的 `siPatchVersion` /
 `siPatchServer` 提供，当前为 8.8.1 r3684 / server-v355）。版本不匹配时只提示、不执行，
 哈希门禁仍然保留。versionName 读不到时，以固定路径 `server-v355.dex` 作为适用范围依据。
+
+### 反编译改动
+
+本模块对官方 SI v355 的 `server-v355.dex` 自行反编译并重打，只改 4 条指令：
+
+1. `IPackageManager.getInstalledPackages(JI)` 的返回类型：`ParceledListSlice` → `PackageInfoList`
+2. `IPackageManager.getInstalledPackages(II)` 的返回类型：`ParceledListSlice` → `PackageInfoList`
+3. 第一处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`
+4. 第二处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`
+
+其余 386 类、1635 方法（1634 个方法体完全一致）、806 字段不变；新增字符串只有
+`Landroid/content/pm/PackageInfoList;`。
+
+为控制体积，重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号）；
+因此体积 325,984 B，与原版 331,520 B 接近。
 
 **在 WebUI 里操作**：
 

@@ -3,8 +3,9 @@
 #
 # 只替换 /data/adb/storage-isolation/bin/server-v355.dex：
 #   原版 331,520 B / sha256 c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
-#   补丁 380,692 B / sha256 48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679
-# 补丁 dex 由酷安用户「无所事事」提供，随模块 assets/server-v355.dex 分发；不要修改内容。
+#   补丁 325,984 B / sha256 7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
+# 补丁 dex 由本模块对官方 SI v355 的 server-v355.dex 自行反编译重打；
+# 思路由酷安用户「无所事事」提供。随模块 assets/server-v355.dex 分发，不要修改内容。
 # 适用 SI 版本取自 module.prop 的 siPatchVersion / siPatchServer，脚本里不写版本字面量。
 #
 # 用法：sh si-patch.sh check|status|apply|restore [--force]
@@ -19,7 +20,7 @@ LC_ALL=C
 export LC_ALL
 
 ORIGINAL_SHA=c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
-PATCH_SHA=48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679
+PATCH_SHA=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
 SERVER=server-v355.dex
 
 case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac

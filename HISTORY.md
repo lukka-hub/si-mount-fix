@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.0）
+# 演化过程（1.0 → 1.5.1）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -175,8 +175,8 @@
 - **恢复**：`restore` 从新到旧扫描备份，选第一份哈希为原版的；最新备份坏了会跳过。
   当前是 `unknown` 但存在有效原版备份时，加 `--force`（WebUI 为「强制恢复」）显式覆盖；
   恢复前会保存当前目标副本，失败时用副本回滚。
-- **补丁资产**：`assets/server-v355.dex`（380,692 B，sha256 `48ff195e…`），
-  由酷安用户「无所事事」提供；构建时校验 sha256，zip 自检再校验一次，保持可复现。
+- **补丁资产**：`assets/server-v355.dex`；1.5.0 使用当时的补丁 dex，1.5.1 起改为自建 dex。
+  构建时校验 sha256，zip 自检再校验一次，保持可复现。
 - **界面**：WebUI 增加「Android 17 应用列表修复」卡片；首次检测到 `original` 时提示
   「应用补丁 / 暂不」，写 `.patch_prompted` 防重复，手动入口保留。应用、恢复、强制恢复
   都需二次确认，确认框显示目标 SI 版本和适用范围；`unknown` 且有有效备份时提供
@@ -191,6 +191,22 @@
   chown、umask 022 下 600、最新备份坏/旧备份有效、备份全坏、unknown 强制恢复、
   restore 当前副本回滚、无备份、持锁后重查、并发锁、卸载恢复/失败保留，以及 WebUI/action
   接线。
+
+## 1.5.1 自建补丁 dex
+
+- **鸣谢**：思路由酷安用户「无所事事」提供。
+- **自建 dex**：对官方 SI v355 的 `server-v355.dex` 自行反编译重打，不再使用 1.5.0 的补丁 dex；
+  新文件 325,984 B，sha256 `7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe`。
+- **反编译改动**：只改 4 条指令：
+  1. `IPackageManager.getInstalledPackages(JI)` 返回类型 `ParceledListSlice` → `PackageInfoList`；
+  2. `IPackageManager.getInstalledPackages(II)` 返回类型同上；
+  3. 第一处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`；
+  4. 第二处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`。
+- **结构**：其余 386 类、1635 方法（1634 个方法体完全一致）、806 字段不变；新增字符串只有
+  `Landroid/content/pm/PackageInfoList;`。
+- **体积**：重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号）；
+  325,984 B，与原版 331,520 B 接近。
+- **版本**：`v1.5.1` / `versionCode 151`；`CHANGELOG.md` 只展示 1.5.1。
 
 ## 兼容与边界
 

@@ -1,19 +1,13 @@
 # 更新日志
 
-## 1.5.0
+## 1.5.1
 
-- Android 17（SDK 37）下 SI 应用列表为空时，可选择应用社区补丁修复。
-- 补丁只替换 SI 的 `server-v355.dex`，不改 `main.dex`，也不改 SI 配置。
-- 应用前自动备份原版并校验；失败会回滚。恢复时自动跳过损坏的备份。
-- 应用、恢复、强制恢复都需要二次确认。仅适用于 SI 8.8.1 r3684 / server-v355。
-- 卸载模块前会先尝试恢复原版；恢复失败会保留备份并提示路径。
+- 补丁 dex 改为对官方 SI v355 的 `server-v355.dex` 自行反编译重打（325,984 B）。
+- 只改 4 条指令：`IPackageManager.getInstalledPackages(JI)` 和 `getInstalledPackages(II)`
+  的返回类型由 `ParceledListSlice` 改为 `PackageInfoList`；两处 `ParceledListSlice.getList()`
+  改为 `PackageInfoList.getList()`。
+- 其余 386 类、1635 方法（1634 个方法体完全一致）、806 字段不变；新增字符串只有
+  `Landroid/content/pm/PackageInfoList;`。
+- 重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号），所以体积更接近原版。
+- 仍仅适用于 SI 8.8.1 r3684 / server-v355；应用、恢复、强制恢复都需要二次确认。
 - 思路由酷安用户「无所事事」提供。
-
-### 反编译改动
-
-对 SI 的 `server-v355.dex`（8.8.1 r3684）做反编译，只改 6 处类型引用：
-- `IPackageManager.getInstalledPackages(JI)` 与 `(II)` 的返回类型 `ParceledListSlice` → `PackageInfoList`（2 处）；
-- 两处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`；
-- 补 `PackageInfoList` 类型引用与方法引用。
-
-其余 386 个类、1635 个方法、806 个字段不变；新增字符串只有 `Landroid/content/pm/PackageInfoList;`。
