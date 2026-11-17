@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.4.0）
+# 演化过程（1.0 → 1.4.1）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成独立发布 tag，1.3.4 接续。
@@ -89,6 +89,18 @@
   桥接失败会重置并回退只读快照（重新探测复用同一个 Promise，避免并发探测的旧结果把界面
   打回只读）；配置写入保留未知行并原子替换；补齐可访问性（`h1`、`aria-live`、
   `:focus-visible`、`aria-label`）。
+
+## 1.4.1 沙箱丢失检测与重建
+
+- **检测**：以前识别到过合法沙箱的包登记在 `.sandbox_seen`；这些包的进程在跑、年龄达标、
+  配置里仍启用，但 `mountinfo` 里没有沙箱挂载时，判定为 `sandbox_gone`。
+- **自愈**：非 dry 时把 FUSE 沙箱源 bind 回 `/storage/emulated/0`，校验设备号是当前 FUSE、
+  条数为 1、source 指向该包沙箱后，再复用 `repair_one` 补 allow 目录与
+  `Android/{data,media,obb}/<pkg>`；任何一步不满足就 `umount -l` 回滚。不杀进程、不改 SI 配置。
+- **报告**：RESULT 增加 `sandbox=N`；重建失败或 dry-run 报 `skipped=sandbox_gone`，
+  从未见过沙箱的包保持静默。`.fuse_dev` 记录本轮 FUSE 设备号供排障。
+- **配套**：新增 `tools/sandbox.test.sh`；`action.sh` / WebUI 增加沙箱丢失标签与体检文案；
+  根因文档补充 vold 重挂 FUSE（MediaProvider 被杀）一节。
 
 ## 兼容与边界
 

@@ -108,6 +108,13 @@ OUTF=$RC/.si-out.fix
 FIXED_LIST=$RC/.si-fixed.$$
 [ "$DRY" = 1 ] && OUTF=$RC/.si-out.dry.$$
 CLEAN_LOCK=""
+# 曾经识别到合法沙箱的包（重建资格证据，不随 trim 删除，只限 200 行）；
+# .fuse_dev 只记录本轮 FUSE 设备号，供排障，不作为重建依据。
+SANDBOX_SEEN=$RC/.sandbox_seen
+FUSE_DEV=$RC/.fuse_dev
+SEEN_TMP=$RC/.si-seen.$$
+SEEN_LIST=""
+SEEN_N=0
 
 # <1 秒熔断判据要毫秒；只有已有 .repairs/.churn 时才多一次 date，健康首扫不 fork。
 NOW_MS=0
@@ -124,7 +131,7 @@ cleanup() {
     rm -rf "$CLEAN_LOCK" 2>/dev/null
   fi
   # 固定输出文件保留（下一轮覆盖），只清带 PID 的临时文件；dry-run 也带 PID 以免并发覆盖。
-  rm -f "$PARSED" "$SRC" "$FIXED_LIST" "$CACHE.tmp.$$" "$REP.tmp.$$" "$CH.tmp.$$" 2>/dev/null
+  rm -f "$PARSED" "$SRC" "$FIXED_LIST" "$SEEN_TMP" "$CACHE.tmp.$$" "$REP.tmp.$$" "$CH.tmp.$$" 2>/dev/null
   [ "$DRY" = 1 ] && [ -e "$OUTF" ] && rm -f "$OUTF" 2>/dev/null
 }
 trap cleanup EXIT
@@ -175,6 +182,33 @@ if [ "$TRIM_ONLY" = 1 ]; then
   exit 0
 fi
 
+# .sandbox_seen：每行一个“曾经识别到合法沙箱”的包名（重建资格证据）。
+# 去重、最多 200 行并保留最近；读进变量避免每个 K 行 fork，写入用 tmp+mv。
+load_seen() {
+  SEEN_LIST=""; SEEN_N=0
+  [ -r "$SANDBOX_SEEN" ] || return 0
+  while IFS= read -r _sl; do
+    [ -n "$_sl" ] || continue
+    SEEN_LIST="$SEEN_LIST $_sl"
+    SEEN_N=$((SEEN_N + 1))
+  done 2>/dev/null < "$SANDBOX_SEEN"
+}
+seen_has() { case " $SEEN_LIST " in *" $1 "*) return 0 ;; esac; return 1; }
+seen_add() {
+  _sa=$1
+  case "$_sa" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
+  seen_has "$_sa" && return 0
+  printf '%s\n' "$_sa" >> "$SANDBOX_SEEN" 2>/dev/null || return 0
+  SEEN_LIST="$SEEN_LIST $_sa"
+  SEEN_N=$((SEEN_N + 1))
+  if [ "$SEEN_N" -gt 200 ]; then
+    tail -n 200 "$SANDBOX_SEEN" > "$SEEN_TMP" 2>/dev/null \
+      && mv -f "$SEEN_TMP" "$SANDBOX_SEEN" 2>/dev/null
+    SEEN_N=200
+  fi
+}
+load_seen
+
 bind_mount() {   # pid src tgt（</dev/null：别吃掉调用方 while read 的 stdin）
   timeout 3 nsenter -t "$1" -m -- mount --bind "$2" "$3" </dev/null 2>&1 && return 0
   timeout 3 nsenter -t "$1" -m sh -c 'mount --bind "$1" "$2"' _ "$2" "$3" </dev/null 2>&1
@@ -185,6 +219,31 @@ umount_one() {   # pid tgt
 }
 stat_of() {      # mountinfo target -> "dev count"
   awk -v t="$1" '$5==t {d=$3; n++} END {print d, n+0}' "$mi" 2>/dev/null
+}
+stat_src_of() {  # mountinfo target -> "dev count source"
+  awk -v t="$1" '$5==t {d=$3; s=$4; n++} END {print d, n+0, s}' "$mi" 2>/dev/null
+}
+sandbox_owner() {  # path -> uid；SI_TEST_UID 只给测试构造“属主不符”
+  if [ "$SI_TEST" = 1 ] && [ -n "$SI_TEST_UID" ]; then
+    printf '%s\n' "$SI_TEST_UID"
+  else
+    stat -c '%u' "$1" 2>/dev/null
+  fi
+}
+allow_of() {     # pkg -> 配置缓存里的 allow 目录（缓存键里的 . 被转义过）
+  [ -s "$CACHE_USE" ] || return 0
+  awk -F'|' -v want="$1" '
+    function unesc(s) { gsub(/\\\./, ".", s); return s }
+    /^\|/ {
+      i = index($0, "=")
+      if (i < 3) next
+      if (unesc(substr($0, 2, i - 2)) != want) next
+      v = substr($0, i + 1)
+      sub(/^[^:]*:/, "", v)
+      print v
+      exit
+    }
+  ' "$CACHE_USE" 2>/dev/null
 }
 
 # 配置缓存按 mtime:size 失效；解析统一走 scripts/si-config.awk（与 list-apps 共用）。
@@ -292,7 +351,7 @@ fi
 
 "$PS_BIN" -A -o pid,uid,etime,args 2>/dev/null | awk -v cache="$CACHE_USE" -v proc="$PROC" \
     -v now="$NOW" -v nowms="$NOW_MS" -v amin="$AGE_MIN" -v verbose="$VERBOSE" -v dry="$DRY" \
-    -v rep="$REP" -v ch="$CH" -v dataroot="$DATA_ROOT" '
+    -v rep="$REP" -v ch="$CH" -v dataroot="$DATA_ROOT" -v seenfile="$SANDBOX_SEEN" '
   function secs(e,  p,n,t,d) {
     d = 0
     if (index(e, "-") > 0) { split(e, p, "-"); d = p[1] + 0; e = p[2] }
@@ -371,6 +430,11 @@ fi
     }
     close(cache)
     if (pkgs == "") { BAD_CFG = 1; exit 5 }
+    # 曾经识别到合法沙箱的包（BEGIN 快照；本轮 K 登记的不参与本轮 G 判断）。
+    while ((getline l < seenfile) > 0) {
+      if (l != "") SEENP[l] = 1
+    }
+    close(seenfile)
     while ((getline l < rep) > 0) {
       split(l, a, " ")
       if (a[4] == "fixed" && a[1] + 0 >= now - 300 && a[1] + 0 <= now + 5) {
@@ -419,7 +483,11 @@ fi
     parse_mi(first)
     while ((getline ml < mi) > 0) parse_mi(ml)
     close(mi)
-    if (SB == "") next
+    if (SB == "") {
+      # 包启用、年龄达标、SB 为空且曾经见过沙箱：交给 shell 判断重建。
+      if (pkg in SEENP) print "G|" pid "|" uid "|" age "|" pkg
+      next
+    }
 
     # 身份/层保护：沙箱根必须属于该包（shared- 前缀忽略），且必须已在 FUSE 层，否则不动。
     rid = SB
@@ -439,6 +507,8 @@ fi
     else if (SB ~ /^\/[0-9]+\/Android\/data\//) sbpath = dataroot "/media" SB
     else next
 
+    # 合法沙箱（身份/层都通过、路径形态可解释）→ 供 shell 登记 .sandbox_seen。
+    print "K|" pkg
     print "I|" pid "|" age "|" pkg "|" MP "|" sbpath
 
     m = split(allow, dirs, " ")
@@ -504,6 +574,7 @@ if [ "$arc" -ne 0 ]; then
 fi
 
 checked=0; broken=0; fixed=0; young=0; churn=0; retry_in=0
+SAND_REBUILT=0
 pid=""; age=""; pkg=""; mp=""; sbpath=""
 need=""; need_meta=""; proc_broken=0
 skipped="$EXTRA_SKIP"
@@ -604,6 +675,86 @@ repair_one() {   # $1=target $2=action
   fi
 }
 
+# 沙箱丢失重建：只在“曾经见过沙箱、当前 SB 为空”的进程 namespace 里补回沙箱根。
+# 返回 0=已重建 1=条件不满足/失败（报 sandbox_gone） 2=已是沙箱/无需动作。
+rebuild_sandbox() {   # pid uid pkg
+  rb_pid=$1; rb_uid=$2; rb_pkg=$3
+  rb_src=$SRC_ROOT/0/Android/data/$rb_pkg/sdcard
+  rb_tgt=/storage/emulated/0
+  rb_mi=$PROC/$rb_pid/mountinfo
+
+  # 1) 源必须是真实目录（不是符号链接），且属主就是该进程 uid。
+  if [ -L "$rb_src" ] || [ ! -d "$rb_src" ]; then
+    say "  跳过沙箱 $rb_pkg（源不存在或不是目录）"
+    return 1
+  fi
+  rb_owner=$(sandbox_owner "$rb_src")
+  if [ "$rb_owner" != "$rb_uid" ]; then
+    say "  跳过沙箱 $rb_pkg（属主 ${rb_owner:-?} ≠ 进程 uid $rb_uid）"
+    return 1
+  fi
+  # 2) 源必须在应用 namespace 里可见。
+  if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_src" </dev/null 2>/dev/null; then
+    say "  跳过沙箱 $rb_pkg（应用 namespace 看不到源）"
+    return 1
+  fi
+  # 3) 目标必须存在；已在同一目标上的沙箱是 SI 自愈，不重复 bind。
+  if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_tgt" </dev/null 2>/dev/null; then
+    say "  跳过沙箱 $rb_pkg（目标不存在）"
+    return 1
+  fi
+  mi=$rb_mi
+  set -- $(stat_src_of "$rb_tgt"); rb_dev=${1:-}; rb_n=${2:-0}; rb_s=${3:-}
+  if [ "$rb_n" -gt 0 ]; then
+    case "$rb_s" in
+      */Android/data/"$rb_pkg"/sdcard)
+        say "  跳过沙箱 $rb_pkg（目标已是沙箱，无需重建）"
+        return 2 ;;
+    esac
+    # 不叠挂：bind 后要求该 target 只有一条挂载，已有别的挂载时硬来会校验失败。
+    say "  跳过沙箱 $rb_pkg（目标已有其他挂载 dev=${rb_dev:-?} src=$rb_s）"
+    return 1
+  fi
+
+  err=$(bind_mount "$rb_pid" "$rb_src" "$rb_tgt" 2>&1)
+  set -- $(stat_src_of "$rb_tgt"); rb_dev=${1:-}; rb_n=${2:-0}; rb_s=${3:-}
+  rb_ok=0
+  [ "$rb_dev" = "$FUSEDEV" ] && [ "$rb_n" = "1" ] || rb_ok=1
+  case "$rb_s" in
+    */Android/data/"$rb_pkg"/sdcard) ;;
+    *) rb_ok=1 ;;
+  esac
+  if [ "$rb_ok" -ne 0 ]; then
+    [ -n "$err" ] && say "  沙箱 bind 输出: $err"
+    say "  跳过沙箱 $rb_pkg（bind 后校验失败 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}，已回滚）"
+    umount_one "$rb_pid" "$rb_tgt" >/dev/null 2>&1
+    return 1
+  fi
+  [ -n "$err" ] && say "  警告 沙箱 $rb_pkg: 命令有输出但挂载校验通过（$err）"
+
+  # 沙箱本身算一条 fixed；同包多 PID 每个 namespace 都要 bind，但只计一次。
+  if ! grep -qxF "$rb_pkg|sandbox" "$FIXED_LIST" 2>/dev/null; then
+    fixed=$((fixed + 1))
+    SAND_REBUILT=$((SAND_REBUILT + 1))
+    printf '%s|%s\n' "$rb_pkg" "sandbox" >> "$FIXED_LIST" 2>/dev/null
+  fi
+  say "重建沙箱: $rb_pkg (pid $rb_pid)"
+
+  # 4) 复用现有 repair_one：先 allow 目录，再 Android/{data,media,obb}/<pkg>。
+  pid=$rb_pid; pkg=$rb_pkg; mp=$rb_tgt; sbpath=$rb_src; mi=$rb_mi
+  rb_allow=$(allow_of "$rb_pkg")
+  for rb_d in $rb_allow; do
+    [ -d "$sbpath/$rb_d" ] || continue
+    repair_one "$rb_d" b
+  done
+  for rb_d in "Android/data/$rb_pkg" "Android/media/$rb_pkg" "Android/obb/$rb_pkg"; do
+    [ -d "$sbpath/${rb_d%/*}" ] || continue
+    [ -d "$DATA_ROOT/media/0/$rb_d" ] || continue
+    repair_one "$rb_d" b
+  done
+  return 0
+}
+
 flush_proc() {
   if [ -n "$need" ]; then
     broken=$((broken + 1))
@@ -626,6 +777,29 @@ while IFS='|' read -r tag f1 f2 f3 f4 f5; do
   case "$tag" in
     F)
       FUSEDEV=$f1
+      # 记录本轮 FUSE 设备号（排障用）；值没变就不写，减少闪存写入。
+      _fd=""
+      [ -r "$FUSE_DEV" ] && read -r _fd < "$FUSE_DEV" 2>/dev/null
+      [ "$_fd" = "$FUSEDEV" ] || printf '%s\n' "$FUSEDEV" > "$FUSE_DEV" 2>/dev/null
+      ;;
+    K)
+      # 合法沙箱证据：登记包名，供以后 SB 消失时判断“曾经隔离过”。
+      seen_add "$f1"
+      ;;
+    G)
+      flush_proc
+      gpkg=$f4
+      if [ "$DRY" = 1 ]; then
+        broken=$((broken + 1))
+        skipped="$skipped sandbox_gone"
+        say "  跳过 $gpkg（沙箱丢失，体检不重建）"
+      else
+        rebuild_sandbox "$f1" "$f2" "$f4"
+        case $? in
+          0) broken=$((broken + 1)) ;;
+          1) broken=$((broken + 1)); skipped="$skipped sandbox_gone" ;;
+        esac
+      fi
       ;;
     A)
       flush_proc
@@ -700,6 +874,7 @@ case "$churn" in ''|*[!0-9]*) churn=0 ;; esac
 [ "$churn" -gt 0 ] && set -- "$@" "churn=$churn"
 case "$retry_in" in ''|*[!0-9]*) retry_in=0 ;; esac
 [ "$retry_in" -gt 0 ] && set -- "$@" "retry=$retry_in"
+[ "$SAND_REBUILT" -gt 0 ] 2>/dev/null && set -- "$@" "sandbox=$SAND_REBUILT"
 [ -n "$tags" ] && set -- "$@" "skipped=$tags"
 result_line "$@"
 exit 0

@@ -162,6 +162,10 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 
 - 微信仍提示文件不存在：先看 `status.json` 的 `reason` 和 `procs`；若 `procs=0` 或体检 `checked=0`，确认设备是
   FUSE 存储、SI 增强模式已启用、应用在主用户下；再跑 `fix-si-mounts.sh -n -v` 看允许目录是否解析正确。
+- 视频/图片突然读不到，且体检或 `status.json` 出现 `skipped=*sandbox_gone*`：ColorOS 上 MediaProvider 被杀后
+  vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮自动重建沙箱并补回挂载，
+  不需要重启应用；若这个标记持续出现，说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上
+  `daemon.log`、`status.json` 反馈。
 - 面板打不开：Magisk 需 KsuWebUI Standalone；没有桥接时面板会显示只读快照。也可直接用模块「操作」按钮。
 - `blind=1`：重启手机恢复事件投递；重启后仍是 `blind`，把 `daemon.log` 和 `status.json` 一起反馈。
 - `churn>0`：等 10 分钟自动重试，或点「重启守护」清除熔断状态；仍反复出现说明 SI 在持续重挂，

@@ -44,6 +44,33 @@ Storage Isolation（`moe.shizuku.redirectstorage`）的增强模式会为每个�
 2. 共享目录必须来自 **FUSE 层** `/mnt/user/0/emulated/0/...`；
 3. bind 后校验目标挂载的设备号与沙箱一致、挂载条数为 1；不一致就拆掉回滚。
 
+## FUSE 重挂（MediaProvider 被杀）
+
+ColorOS 等 ROM 的进程管理会杀掉 `com.android.providers.media.module`（MediaProvider）。
+它退出后 `vold` 会先 `umount /mnt/user/0/emulated`，再重新挂载 FUSE 存储，FUSE 的
+设备号随之变化（真机实测 `0:235` → `0:286`）。应用 namespace 里来自这块 FUSE 的挂载
+都是它的 slave（mountinfo 里的 `master:86`），master 被拆后内核会把这些 slave 一起摘掉：
+
+- 沙箱根 `/storage/emulated/0`（source `/<user>/Android/data/<pkg>/sdcard`）消失；
+- 共享目录（DCIM/Documents/Download/Music/Movies/Pictures）消失；
+- `Android/{data,media,obb}/<pkg>` 也消失。
+
+应用不会立刻崩溃，但按路径读文件时看到的是“无沙箱”的真实存储，于是视频/图片突然
+提示“已被删除”；缩略图来自 MediaStore 缓存，可能仍然可见，更容易误判。
+
+v1.4.1 起，模块把“曾经识别到合法沙箱”的包记录在 `.sandbox_seen`。这类包的进程还在、
+年龄达标、但当前 namespace 里没有沙箱挂载时，模块会：
+
+1. 校验沙箱源存在、属主等于进程 uid、应用 namespace 里能看到源、目标目录存在，
+   且目标当前不是沙箱；
+2. 把 `<host FUSE>/<user>/Android/data/<pkg>/sdcard` bind 回 `/storage/emulated/0`；
+3. 校验目标设备号是当前 FUSE 设备号、挂载条数为 1、source 指向该包沙箱；任一条
+   不满足立即 `umount -l` 回滚；
+4. 复用正常修复路径补回 allow 目录与 `Android/{data,media,obb}/<pkg>`。
+
+全程只在应用自己的 namespace 里 bind，不杀进程、不改 SI 配置。重建失败（源目录已被清理、
+目标被别的挂载占用、校验不过等）报 `skipped=sandbox_gone`，下一轮继续尝试。
+
 ## 为什么用事件驱动
 
 丢失发生在应用 namespace 内的 mount/umount，轮询只能事后发现。模块用

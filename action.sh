@@ -79,6 +79,7 @@ skip_label() {
     source)    echo "源目录不存在" ;;
     source_ns) echo "应用内看不到源" ;;
     bindfail)  echo "绑定挂载失败" ;;
+    sandbox_gone) echo "沙箱丢失（模块会尝试重建）" ;;
     churn)     echo "频繁被拆已熔断" ;;
     template)  echo "未知模板 id" ;;
     dir_space) echo "目录名无法安全表示" ;;
@@ -224,11 +225,13 @@ yn=$(printf '%s' "$raw" | sed -n 's/.*young=\([0-9]*\).*/\1/p')
 skp=$(printf '%s' "$raw" | sed -n 's/.*skipped=\([A-Za-z0-9_+.-]*\).*/\1/p')
 rchurn=$(printf '%s' "$raw" | sed -n 's/.*churn=\([0-9]*\).*/\1/p')
 rretry=$(printf '%s' "$raw" | sed -n 's/.*retry=\([0-9]*\).*/\1/p')
+rsbox=$(printf '%s' "$raw" | sed -n 's/.*sandbox=\([0-9]*\).*/\1/p')
 [ -n "$chk" ] || chk=0
 [ -n "$brk" ] || brk=0
 [ -n "$fixn" ] || fixn=0
 [ -n "$rchurn" ] || rchurn=0
 [ -n "$rretry" ] || rretry=0
+[ -n "$rsbox" ] || rsbox=0
 printf ' ─────────────────────────────\n'
 if printf '%s' "$raw" | grep -q 'defer=fuse'; then
   printf ' 体检   FUSE 未就绪，本轮未动挂载；守护会在开机宽限期内退避重试\n'
@@ -237,10 +240,13 @@ elif printf '%s' "$raw" | grep -q 'error='; then
   printf ' 体检   执行失败：%s\n' "$(error_label "$_err")"
 else
   # 只读体检：这里报的是“需要补”的进程数，不能写成“已补”。
+  # RESULT 带 sandbox=N 时（非 dry 入口复用同一段展示）补一句重建结果。
+  _sbx=""
+  [ "$rsbox" -gt 0 ] 2>/dev/null && _sbx=" · 重建沙箱 $rsbox 个"
   if [ "$brk" -gt 0 ] 2>/dev/null; then
-    printf ' 体检   检查 %s 个隔离进程 · 需修复 %s 个进程（本轮只读，未修改挂载）\n' "$chk" "$brk"
+    printf ' 体检   检查 %s 个隔离进程 · 需修复 %s 个进程（本轮只读，未修改挂载）%s\n' "$chk" "$brk" "$_sbx"
   else
-    printf ' 体检   检查 %s 个隔离进程 · 没有需要修复的挂载（本轮只读）\n' "$chk"
+    printf ' 体检   检查 %s 个隔离进程 · 没有需要修复的挂载（本轮只读）%s\n' "$chk" "$_sbx"
   fi
   if [ -n "$skp" ]; then
     # RESULT 契约用 '+' 连接 tag；翻成中文短标签并去重
