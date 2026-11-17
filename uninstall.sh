@@ -2,6 +2,9 @@
 # 卸载：先停 supervisor 再停 daemon，最后收尾 trace 实例与数据目录。
 # 用手工 cmdline 校验代替宽泛的 pkill -f：只杀“shell 解释执行模块脚本”的进程，
 # 不会误杀编辑器 / tail / grep 之类只是参数里带文件名的无关进程（同 restart.sh）。
+case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
+MOD=${SI_MOD:-$D}
+DATA=${SI_DATA:-/data/adb/si-mount-fix}
 
 kill_pid() {   # $1=pid
   case "$1" in ''|*[!0-9]*) return 0 ;; esac
@@ -36,25 +39,63 @@ kill_script() {
   return 0
 }
 
-kill_script supervisor.sh
-kill_script si-mount-eventd.sh
-kill_script fix-si-mounts.sh
-sleep 1
-kill_script si-mount-eventd.sh
+if [ "$SI_TEST" != 1 ]; then
+  kill_script supervisor.sh
+  kill_script si-mount-eventd.sh
+  kill_script fix-si-mounts.sh
+  sleep 1
+  kill_script si-mount-eventd.sh
 
-for T in /sys/kernel/tracing /sys/kernel/debug/tracing; do
-  [ -d "$T" ] || continue
-  if [ -d "$T/instances/si_mount_fix" ]; then
-    echo 0 > "$T/instances/si_mount_fix/tracing_on" 2>/dev/null
-    echo 0 > "$T/instances/si_mount_fix/events/enable" 2>/dev/null
-    rmdir "$T/instances/si_mount_fix" 2>/dev/null
-  fi
-  for e in si_fix_pu si_fix_pm; do
-    echo "-:kprobes/$e" >> "$T/kprobe_events" 2>/dev/null
+  for T in /sys/kernel/tracing /sys/kernel/debug/tracing; do
+    [ -d "$T" ] || continue
+    if [ -d "$T/instances/si_mount_fix" ]; then
+      echo 0 > "$T/instances/si_mount_fix/tracing_on" 2>/dev/null
+      echo 0 > "$T/instances/si_mount_fix/events/enable" 2>/dev/null
+      rmdir "$T/instances/si_mount_fix" 2>/dev/null
+    fi
+    for e in si_fix_pu si_fix_pm; do
+      echo "-:kprobes/$e" >> "$T/kprobe_events" 2>/dev/null
+    done
   done
-done
+fi
 
-rm -rf /data/adb/si-mount-fix
+# 卸载前尽量恢复 SI 原版 dex；恢复不了就保留数据目录，不能把唯一备份一起删掉。
+PATCH_SCRIPT=$MOD/scripts/si-patch.sh
+PATCH_DEX=/data/adb/storage-isolation/bin/server-v355.dex
+PATCH_RESTORE_FAILED=0
+if [ -f "$PATCH_SCRIPT" ]; then
+  _chk=$(SI_DATA="$DATA" sh "$PATCH_SCRIPT" check 2>/dev/null)
+  _state=$(printf '%s\n' "$_chk" | sed -n 's/^STATE=//p' | head -1)
+  _dex=$(printf '%s\n' "$_chk" | sed -n 's/^DEX=//p' | head -1)
+  [ -n "$_dex" ] && PATCH_DEX=$_dex
+  if [ "$_state" = patched ]; then
+    _out=$(SI_DATA="$DATA" sh "$PATCH_SCRIPT" restore 2>&1)
+    _rc=$?
+    if [ "$_rc" = 0 ]; then
+      printf '%s\n' "$_out"
+      printf '卸载前已恢复 SI 原版：%s\n' "$PATCH_DEX"
+    else
+      PATCH_RESTORE_FAILED=1
+      printf '卸载前恢复补丁失败：\n%s\n' "$_out"
+    fi
+  elif [ -z "$_state" ] && [ -d "$DATA/patch-backup" ]; then
+    PATCH_RESTORE_FAILED=1
+    printf '无法确认 SI 补丁状态，先保留 %s 下的补丁备份。\n' "$DATA"
+  fi
+elif [ -d "$DATA/patch-backup" ]; then
+  PATCH_RESTORE_FAILED=1
+  printf '找不到 %s，无法确认/恢复补丁，先保留 %s。\n' "$PATCH_SCRIPT" "$DATA"
+fi
 
-log -t si-mount-fix "uninstalled"
+if [ "$PATCH_RESTORE_FAILED" = 1 ]; then
+  printf '补丁备份保留在 %s/patch-backup\n' "$DATA"
+  printf '当前 SI dex：%s\n' "$PATCH_DEX"
+  printf '请确认该 dex 已恢复原版后，再删除 %s。\n' "$DATA"
+else
+  rm -rf "$DATA"
+fi
+
+if [ "$SI_TEST" != 1 ]; then
+  log -t si-mount-fix "uninstalled"
+fi
 exit 0

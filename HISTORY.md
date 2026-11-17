@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.4.3）
+# 演化过程（1.0 → 1.5.0）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -160,6 +160,37 @@
   mount namespace，bind/umount 前重读比对，不一致报 `skipped=pid_changed` 且不碰挂载；
   扫描与动手之间的极短窗口保留在文档里说明。
 - **版本**：`v1.4.3` / `versionCode 143`。
+
+## 1.5.0 Android 17 应用列表可选补丁
+
+- **问题**：Android 17（SDK 37）上 SI 8.8.1 r3684（server-v355）的应用列表为空，
+  根因是 AIDL 返回类型 `PackageInfoList` 变更；替换 `server-v355.dex` 后列表恢复。
+- **补丁脚本**：新增 `scripts/si-patch.sh`（`check` / `apply` / `restore` / `status`）。
+  只替换 `/data/adb/storage-isolation/bin/server-v355.dex`，不碰 `main.dex`、
+  不改 SI 配置、不动 SI 的其它文件，也不自动重启 SI。
+- **安全边界**：`apply` 在 SDK 37、路径存在、SI versionName 前缀匹配且哈希为原版时执行；
+  先备份原版（600），再复制到目标目录里的临时文件，`chown root:root`、`chmod 600`、
+  校验 sha256 后原子替换；替换后再次校验目标 sha256，不符就用备份覆盖回去并报错。
+  `unknown` 哈希拒绝操作，`patched` 重复执行是 no-op；锁防并发，持锁后会重新读状态。
+- **恢复**：`restore` 从新到旧扫描备份，选第一份哈希为原版的；最新备份坏了会跳过。
+  当前是 `unknown` 但存在有效原版备份时，加 `--force`（WebUI 为「强制恢复」）显式覆盖；
+  恢复前会保存当前目标副本，失败时用副本回滚。
+- **补丁资产**：`assets/server-v355.dex`（380,692 B，sha256 `48ff195e…`），
+  由酷安用户「无所事事」提供；构建时校验 sha256，zip 自检再校验一次，保持可复现。
+- **界面**：WebUI 增加「Android 17 应用列表修复」卡片；首次检测到 `original` 时提示
+  「应用补丁 / 暂不」，写 `.patch_prompted` 防重复，手动入口保留。应用、恢复、强制恢复
+  都需二次确认，确认框显示目标 SI 版本和适用范围；`unknown` 且有有效备份时提供
+  「强制恢复」；读取失败不隐藏卡片。结果回显并提示重开 SI；`action.sh` 增加一行补丁状态，
+  不自动应用。
+- **卸载**：卸载前若当前是补丁版，先尝试恢复原版；失败时保留数据目录（含备份）并打印路径，
+  不再直接 `rm -rf` 唯一备份。
+- **发布**：`v1.5.0` / `versionCode 150`，`update.json` 同步到 lukka-hub；管理器更新日志
+  指向 `CHANGELOG.md`，只展示 1.5.0 的内容。
+- **测试**：新增 `tools/patch.test.sh`，覆盖 SDK 不符、无 SI、版本门禁、原版应用、已应用
+  no-op、unknown 拒绝、资产缺失/哈希不对、备份创建哈希、复制失败与替换后校验回滚、
+  chown、umask 022 下 600、最新备份坏/旧备份有效、备份全坏、unknown 强制恢复、
+  restore 当前副本回滚、无备份、持锁后重查、并发锁、卸载恢复/失败保留，以及 WebUI/action
+  接线。
 
 ## 兼容与边界
 

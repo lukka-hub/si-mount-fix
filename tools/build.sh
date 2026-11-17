@@ -16,6 +16,9 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
+# 第三方补丁 dex（酷安用户「无所事事」提供）：只替换 SI 的 server-v355.dex。
+PATCH_ASSET=assets/server-v355.dex
+PATCH_SHA=48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -55,6 +58,9 @@ V_CODE=$(prop_get versionCode)
 [ -n "$V_CODE" ] || die 'module.prop 缺少 versionCode'
 [ -n "$(prop_get description)" ] || die 'module.prop 缺少 description'
 [ -n "$(prop_get author)" ] || die 'module.prop 缺少 author'
+# 补丁适用版本由 module.prop 单一提供，脚本/WebUI 不写版本字面量。
+[ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用 SI 版本）'
+[ -n "$(prop_get siPatchServer)" ] || die 'module.prop 缺少 siPatchServer（补丁适用 server 名）'
 
 # ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140）----------
 VERSION=${V_PROP#v}
@@ -120,6 +126,19 @@ print('update.json：版本/versionCode/zipUrl 与 module.prop 一致')
 PY
 say "updateJson：$PROP_UJ"
 
+# ---------- 3b) 第三方补丁资产：内容不能变，sha256 必须与发布说明一致 ----------
+[ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（应由发布者提供，不要自行生成）"
+PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
+[ "$PATCH_SIZE" = 380692 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 380692 B）"
+if command -v sha256sum >/dev/null 2>&1; then
+  PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
+else
+  PATCH_GOT=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$PATCH_ASSET")
+fi
+[ "$PATCH_GOT" = "$PATCH_SHA" ] \
+  || die "补丁资产 sha256 不匹配：实际 $PATCH_GOT，应为 $PATCH_SHA（不要修改 dex 内容）"
+say "补丁资产：$PATCH_ASSET（$PATCH_SIZE B，sha256 $PATCH_GOT）"
+
 # ---------- 4) updater-script 首行必须是 #MAGISK ----------
 [ -f "$US" ] || die "$US 不存在"
 [ "$(head -1 "$US")" = '#MAGISK' ] || die "$US 首行必须是 #MAGISK（Magisk/KSU 安装器入口标记）"
@@ -168,10 +187,10 @@ for f in webroot/snapshot.js webroot/snapshot.js.* webroot/*.tmp; do
   [ -e "$f" ] && die "webroot 有守护运行期残留：$f（先 rm -f webroot/snapshot.js* webroot/*.tmp）"
 done
 
-FILES="module.prop README.md LICENSE service.sh action.sh uninstall.sh"
+FILES="module.prop README.md CHANGELOG.md LICENSE service.sh action.sh uninstall.sh"
 FILES="$FILES scripts/si-mount-eventd.sh scripts/fix-si-mounts.sh scripts/supervisor.sh"
-FILES="$FILES scripts/restart.sh scripts/list-apps.sh scripts/result.sh"
-FILES="$FILES webroot/index.html $UB $US"
+FILES="$FILES scripts/restart.sh scripts/list-apps.sh scripts/result.sh scripts/si-patch.sh"
+FILES="$FILES webroot/index.html $UB $US $PATCH_ASSET"
 for f in $FILES; do
   [ -f "$f" ] || die "缺少必需的打包文件：$f"
 done
@@ -181,7 +200,7 @@ if grep -q 'si-config\.awk' scripts/*.sh 2>/dev/null; then
   FILES="$FILES scripts/si-config.awk"
 fi
 # 白名单之外的文件一律拒绝（含 webroot/snapshot.js.bak 之类的变体）。
-for f in $(find scripts webroot META-INF -type f 2>/dev/null | sort); do
+for f in $(find scripts webroot META-INF assets -type f 2>/dev/null | sort); do
   case " $FILES " in
     *" $f "*) ;;
     *) die "白名单之外的文件不能进包：$f（运行期残留请删除）" ;;
@@ -254,12 +273,13 @@ print('built %s %d bytes' % (out, os.path.getsize(out)))
 PY
 
 # ---------- 11) 自检：条目集合、权限、关键内容 ----------
-python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" <<'PY' || die 'zip 自检失败'
-import sys, zipfile
+python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$PATCH_ASSET" "$PATCH_SHA" <<'PY' || die 'zip 自检失败'
+import hashlib, sys, zipfile
 
 z = zipfile.ZipFile(sys.argv[1])
 v_prop, v_code = sys.argv[2], sys.argv[3]
 expected = sorted(sys.argv[4].split())
+patch_asset, patch_sha = sys.argv[5], sys.argv[6]
 names = z.namelist()
 files = sorted(n for n in names if not n.endswith('/'))
 dirs = sorted(n for n in names if n.endswith('/'))
@@ -298,6 +318,11 @@ if up.splitlines()[:1] != ['#MAGISK']:
 
 if 'webroot/index.html' not in files:
     raise SystemExit('缺少 webroot/index.html')
+
+if patch_asset not in files:
+    raise SystemExit('补丁资产没有进包：' + patch_asset)
+if hashlib.sha256(z.read(patch_asset)).hexdigest() != patch_sha:
+    raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致')
 
 print('zip 自检通过：%d 个文件 + %d 个目录，脚本 755 / 其它 644' % (len(files), len(dirs)))
 PY

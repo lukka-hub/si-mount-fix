@@ -2,8 +2,9 @@
 
 给 **Storage Isolation / 存储空间隔离**（`moe.shizuku.redirectstorage`）补回丢失的共享目录挂载。
 
-支持 Android 13~17，**Magisk / KernelSU**。只补挂载：不修改 SI 的
-`configuration.json`，不联网，不收集数据。
+支持 Android 13~17，**Magisk / KernelSU**。默认只补挂载：不修改 SI 的
+`configuration.json`，不联网，不收集数据。另有一个需用户确认的 Android 17 可选补丁，
+只替换 SI 的 `server-v355.dex`（见「Android 17 应用列表修复」）。
 
 ## 问题与根因
 
@@ -74,6 +75,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
+- Android 17 可选补丁：SDK 37 下 SI 应用列表为空时，用户确认后用一个社区 dex 替换
+  `server-v355.dex`；自动备份、校验并支持恢复，不动 `main.dex` 与 SI 配置。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
 - 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录。
 
@@ -97,15 +100,86 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.4.3` 与 `versionCode=143`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.0` 与 `versionCode=150`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
-  `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。
+  `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
+  [CHANGELOG.md](CHANGELOG.md)，只放当前版本的更新内容，不把整篇演化历史展示给管理器。
 
 **打开面板**：KernelSU 管理器可在模块页打开 WebUI；Magisk 本体没有内建 WebUI，
 需安装 **KsuWebUI Standalone** 后从其中打开本模块。没有 WebUI 时，点模块的「操作」按钮
 也能看到模式、守护 PID、运行时长、体检结果和最近日志。
+
+## Android 17 应用列表修复（可选补丁）
+
+**适用**：Android 17（SDK 37）+ Storage Isolation **8.8.1 r3684**（`server-v355`）。
+其它 SI 版本不要使用。
+
+**现象**：SI 的应用列表为空（其它地方能看到已安装应用，SI 里一个都没有）。根因是
+Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` 解析不了新系统
+返回的数据。替换这个 dex 后列表恢复；本机实测从 17 个恢复到 31 个。
+
+**来源**：补丁 dex 由酷安用户「无所事事」提供，用于已停止更新的 SI 在 Android 17 上的
+善意兼容修复；本仓库只做校验、备份和分发，没有修改 dex 内容。补丁只替换
+`/data/adb/storage-isolation/bin/server-v355.dex`，不改 `main.dex`、不改 SI 配置、
+不动 SI 的其它文件。补丁在用户确认后由模块写入。
+
+**版本校验**：
+
+- 原版 `server-v355.dex`：331,520 B，sha256
+  `c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a`
+- 社区补丁：380,692 B，sha256
+  `48ff195edf6225011404b4e914ecb7f742d1b0ff01f8e6fb60469fdec6b3c679`
+
+`check` 按 sha256 判断：`original`（可应用）、`patched`（已应用）、`unknown`
+（既非原版也非补丁，拒绝操作）、`no-si`（未装/无 server）、`unsupported`
+（SDK 不是 37）。
+
+`apply` 前还会校验 SI versionName 前缀（适用版本由 `module.prop` 的 `siPatchVersion` /
+`siPatchServer` 提供，当前为 8.8.1 r3684 / server-v355）。版本不匹配时只提示、不执行，
+哈希门禁仍然保留。versionName 读不到时，以固定路径 `server-v355.dex` 作为适用范围依据。
+
+**在 WebUI 里操作**：
+
+1. 首次打开面板且状态为 `original` 时，顶部会提示「Android 17 应用列表可能为空」。
+   点「应用补丁」先进入确认（按钮需再点一次「确认应用」），确认框会显示目标 SI 版本和
+   「仅适用于 8.8.1.r3684（server-v355）」；点「暂不」不会改动任何文件。首次提示后会写
+   `/data/adb/si-mount-fix/.patch_prompted`，之后不再自动弹，手动入口在
+   「Android 17 应用列表修复」卡片里。
+2. 应用、恢复、强制恢复都是两步确认；确认后 10 秒内不操作会自动取消。
+3. 应用时先把原版备份到
+   `/data/adb/si-mount-fix/patch-backup/server-v355.dex.<时间戳>`（权限 600），
+   再把模块 `assets/server-v355.dex` 复制到目标，`chown root:root`、`chmod 600`，
+   校验 sha256 后原子替换；替换后会再校验一次，不符就用备份覆盖回去。
+4. 完成后**重新打开 SI**（不用重启手机）。已应用状态会显示「已应用，可恢复原版」。
+5. 恢复：在卡片里点「恢复原版」，或运行 `restore`。恢复会按时间从新到旧扫描备份，
+   选第一份 sha256 等于原版的；当前是 `unknown` 但存在有效原版备份时，卡片会提供
+   「强制恢复」（命令行 `restore --force`），需要显式确认。
+
+**命令行**（root）：
+
+```sh
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh check    # 机器可读状态
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh status   # 一行状态
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh apply    # 应用（已应用则 no-op）
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore  # 恢复原版
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown 时强制恢复
+```
+
+`check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_TARGET_VERSION` / `SI_TARGET_SERVER` /
+`SI_MATCH` / `DEX` / `SIZE` / `SHA` / `BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED`
+十二个 `KEY=VALUE`。任何状态都返回 0；`apply`/`restore` 失败时非 0 退出，并在 stderr
+说明原因。
+
+**注意**：
+
+- 不会自动应用：必须由用户点按钮并二次确认，或手动执行 `apply`。
+- 没有可用原版备份时，`restore` 无法回退；`check` 的 `BACKUP_OK` 会显示 0。
+- SI 更新可能覆盖 `server-v355.dex`，补丁会失效；更新后重新 `check`，按需再次应用。
+- 卸载模块时会先尝试恢复原版 dex；恢复成功才删除 `/data/adb/si-mount-fix/`。恢复失败时
+  会保留该目录（含 `patch-backup`）并打印路径，不会静默删掉备份。
+- 只支持 SDK 37；其它 Android 版本 `check` 显示 `unsupported`，`apply` 直接拒绝。
 
 ## 配置
 
@@ -243,6 +317,7 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 ## 文档
 
 - [根因分析](docs/root-cause.md)
+- [更新日志](CHANGELOG.md)
 - [演化过程](HISTORY.md)
 
 ## 作者

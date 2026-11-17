@@ -1,21 +1,10 @@
-## 1.4.3 边界收口
+# 更新日志
 
-- **按原 root 恢复回滚**：卸普通 FUSE 根前记下 `(设备号, root)`；恢复时 root=`/` 用
-  `/storage/emulated`，root=`/0` 优先从 FUSE 层 `/0` 挂回、应用 namespace 看不到时退回
-  self-bind；恢复后必须“一层、设备号等于原值、root 等于原值”才打印已挂回，否则报
-  `rollback`/`stale`。其它 root 不卸也不恢复。
-- **裁剪不误删在跑的临时文件**：`--trim-only` 只清 PID 已退出或超过 30 分钟的
-  `.si-out.dry.*` / `.si-conf.*` / `.si-parsed.*` / `.conf.cache.tmp.*`，活 PID 的新文件保留。
-- **锚点目录缺失上报**：主扫描与重建循环里 `-d` 失败不再静默跳过，报
-  `skipped=target_missing`、计入 `broken`，日志写出缺失的路径。
-- **本次修复跟随当前轮**：守护每轮成功扫描都把 `last_fixed` 更新为本轮 `fixed`（0 也归零），
-  累计值仍放在 `total_fixed`。
-- **退避与 glob**：`.repairs` 的退避改看 `/proc/uptime` 单调时间，系统时间跳变不影响；
-  旧格式（只写墙钟）的失败行按无退避处理，`retry=` 仍是剩余秒数。重建沙箱遍历
-  `rb_allow` 时关闭 glob 展开，自定义目录名里的 `*` 按字面量补挂。
-- **PID/ns 时点校验**：扫描时记录 pid 的 starttime（`/proc/<pid>/stat` 第 22 字段）、uid 与
-  mount namespace，bind/umount 前重读比对，不一致报 `skipped=pid_changed` 且不碰挂载；
-  扫描与动手之间的极短窗口保留在文档里说明。
-- **版本**：`v1.4.3` / `versionCode 143`。
+## 1.5.0
 
-##
+- Android 17（SDK 37）下 SI 应用列表为空时，可选择应用社区补丁修复。
+- 补丁只替换 SI 的 `server-v355.dex`，不改 `main.dex`，也不改 SI 配置。
+- 应用前自动备份原版并校验；失败会回滚。恢复时自动跳过损坏的备份。
+- 应用、恢复、强制恢复都需要二次确认。仅适用于 SI 8.8.1 r3684 / server-v355。
+- 卸载模块前会先尝试恢复原版；恢复失败会保留备份并提示路径。
+- 补丁由酷安用户「无所事事」提供。

@@ -228,6 +228,26 @@ details.card[open] summary{margin-bottom:8px}
   <div id="opResult" class="result" role="status" aria-live="polite" hidden></div>
 </section>
 
+<section class="card" id="patchCard" hidden>
+  <div class="card-head"><h2>Android 17 应用列表修复</h2><span class="muted small" id="patchBadge"></span></div>
+  <div id="patchHint" class="hint" hidden></div>
+  <div class="muted small" id="patchDetail">—</div>
+  <div class="row-actions" id="patchActions" hidden>
+    <button class="btn primary" id="btnPatchApply" disabled>应用补丁</button>
+    <button class="btn ghost" id="btnPatchRestore" hidden disabled>恢复原版</button>
+    <button class="btn danger" id="btnPatchForce" hidden disabled>强制恢复</button>
+  </div>
+  <div id="patchConfirm" class="result warn" role="alert" hidden>
+    <div class="r-title" id="patchConfirmTitle"></div>
+    <div class="r-body" id="patchConfirmBody"></div>
+    <div class="row-actions" style="margin-top:10px">
+      <button class="btn primary" id="btnPatchConfirmGo" disabled>确认执行</button>
+      <button class="btn ghost" id="btnPatchConfirmCancel">取消</button>
+    </div>
+  </div>
+  <div id="patchResult" class="result" role="status" aria-live="polite" hidden></div>
+</section>
+
 <section class="card">
   <div class="card-head"><h2>应用与可访问目录</h2><button class="btn tiny ghost" id="btnApps" disabled>读取</button></div>
   <div class="muted small" id="appsSum">未读取</div>
@@ -272,6 +292,8 @@ details.card[open] summary{margin-bottom:8px}
   P.fix = P.mod + '/scripts/fix-si-mounts.sh';
   P.restart = P.mod + '/scripts/restart.sh';
   P.list = P.mod + '/scripts/list-apps.sh';
+  P.patch = P.mod + '/scripts/si-patch.sh';
+  P.patchPrompt = D + '/.patch_prompted';
 
   var POLL_MS = 8000;
   var CMD_TIMEOUT = 35000;
@@ -399,7 +421,8 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   /* 多条提示合并成一个 banner：tone 取最严重的，正文一律 esc()。
-     item: {title, body, tone, action?, actionLabel?}；action 由 boot 里的委托监听处理。 */
+     item: {title, body, tone, action?, actionLabel?, actions?: [{action,label}]}；
+     action 由 boot 里的委托监听处理。 */
   var TONE_RANK = { info: 0, warn: 1, bad: 2 };
   function setBannerItems(items) {
     items = (items || []).filter(Boolean);
@@ -411,9 +434,15 @@ details.card[open] summary{margin-bottom:8px}
       if (TONE_RANK[it.tone] > TONE_RANK[tone]) { tone = it.tone; }
       var one = '<div class="b-title">' + esc(it.title) + '</div>' +
         (it.body ? '<div>' + esc(it.body) + '</div>' : '');
-      if (it.action) {
-        one += '<div style="margin-top:8px"><button type="button" class="btn tiny ghost" data-action="' +
-          esc(it.action) + '">' + esc(it.actionLabel || '重试') + '</button></div>';
+      var acts = (it.actions && it.actions.length) ? it.actions
+        : (it.action ? [{ action: it.action, label: it.actionLabel || '重试' }] : []);
+      if (acts.length) {
+        one += '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">';
+        for (var j = 0; j < acts.length; j++) {
+          one += '<button type="button" class="btn tiny ghost" data-action="' +
+            esc(acts[j].action) + '">' + esc(acts[j].label) + '</button>';
+        }
+        one += '</div>';
       }
       html.push('<div class="b-item">' + one + '</div>');
     }
@@ -577,7 +606,9 @@ details.card[open] summary{margin-bottom:8px}
     status: null, alive: null, fetchedAt: 0, mode: 'live',
     config: null, configRaw: null, snapshot: null, snapshotTs: 0,
     uid: null, noRoot: false, statusExist: null, statusSize: null,
-    apps: null, log: null, busy: false
+    apps: null, log: null, busy: false,
+    patch: null, patchError: '', patchBusy: false, patchDismissed: false,
+    patchMarked: false, patchConfirm: null, patchConfirmTimer: null
   };
 
   /* 一条命令同时取：uid（判断有没有 root）、文件是否存在/多大（区分空文件/没文件）、
@@ -853,6 +884,22 @@ details.card[open] summary{margin-bottom:8px}
       items.push({ tone: 'info', title: '配置已停用',
         body: 'config.conf 里 ENABLED=0，保存并重启守护后会停止修复。' });
     }
+    if (state.patchConfirm) {
+      items.push({ tone: 'warn', title: patchConfirmTitle(state.patchConfirm),
+        body: patchConfirmBody(state.patchConfirm) + ' 确认后才会执行，10 秒内有效。',
+        actions: [
+          { action: 'patch-confirm-go', label: patchConfirmGoLabel(state.patchConfirm) },
+          { action: 'patch-confirm-cancel', label: '取消' }
+        ] });
+    } else if (patchPromptable()) {
+      items.push({ tone: 'warn', title: 'Android 17 应用列表可能为空',
+        body: '可应用社区补丁修复。补丁只替换 SI 的 server-v355.dex，确认后才会执行；' +
+          '应用后需要重新打开 SI。之后仍可在下方「Android 17 应用列表修复」里手动应用。',
+        actions: [
+          { action: 'patch-apply', label: '应用补丁' },
+          { action: 'patch-dismiss', label: '暂不' }
+        ] });
+    }
     if (state.mode === 'snapshot' && !BR.ok) {
       items.push({ tone: 'warn', title: '没有可用的 WebUI 桥接',
         body: (BR.note || '桥接没有响应') + '。页面处于只读快照，配置只读。',
@@ -863,6 +910,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function renderStateBanner() {
     setBannerItems(bannerItemsForState());
+    if (patchPromptable()) { markPatchPrompted(); }
   }
 
   function metric(label, value, tone) {
@@ -878,10 +926,13 @@ details.card[open] summary{margin-bottom:8px}
 
   function applyPermissionLock(msg) {
     state.noRoot = true;
+    clearPatchConfirmState();
     state.status = null;
     state.alive = null;
     state.fetchedAt = Date.now();
     state.mode = 'live';
+    state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
+    renderPatch();
     renderStatus();
     lockConfig(msg || '没有 root 权限，配置只读。');
     lockActions();
@@ -963,6 +1014,287 @@ details.card[open] summary{margin-bottom:8px}
       return state.noRoot ? false : loadConfig();
     }).then(function () {
       return state.noRoot ? false : loadLog();
+    }).then(function () {
+      return state.noRoot ? false : loadPatch();
+    });
+  }
+
+  /* ============================================================
+     Android 17 可选补丁（只替换 server-v355.dex）
+     si-patch.sh check 输出 KEY=VALUE；这里只负责展示与转发，是否执行由用户点按钮决定。
+     ============================================================ */
+  function parseKv(text) {
+    var out = {};
+    String(text || '').split('\n').forEach(function (line) {
+      var i = line.indexOf('=');
+      if (i <= 0) { return; }
+      var k = line.slice(0, i).replace(/\s+$/, '');
+      if (!/^[A-Z_]+$/.test(k)) { return; }
+      out[k] = line.slice(i + 1).replace(/\s+$/, '');
+    });
+    return out;
+  }
+
+  function loadPatch() {
+    clearPatchConfirmState();
+    if (!BR.ok || state.noRoot) {
+      state.patchError = BR.ok
+        ? '没有 root 权限，无法读取或执行补丁操作。'
+        : '未连接 WebUI 桥接，暂时无法读取补丁状态。';
+      renderPatch();
+      renderStateBanner();
+      return Promise.resolve(false);
+    }
+    return run('sh ' + P.patch + ' check').then(function (res) {
+      var p = parseKv(res.stdout);
+      if (!p.STATE) { throw new Error('补丁检查没有返回 STATE'); }
+      p.state = String(p.STATE);
+      p.sdk = String(p.SDK || '');
+      p.si = String(p.SI_VERSION || '');
+      p.targetVersion = String(p.SI_TARGET_VERSION || '');
+      p.targetServer = String(p.SI_TARGET_SERVER || '');
+      p.match = toInt(p.SI_MATCH, 0) === 1;
+      p.size = toInt(p.SIZE, 0);
+      p.sha = String(p.SHA || '');
+      p.backup = toInt(p.BACKUP_COUNT, 0);
+      p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
+      p.prompted = toInt(p.PROMPTED, 0) === 1;
+      state.patch = p;
+      state.patchError = '';
+      renderPatch();
+      renderStateBanner();
+      return true;
+    }).catch(function (err) {
+      state.patchError = '补丁状态读取失败：' + String(err && err.message ? err.message : err);
+      renderPatch();
+      renderStateBanner();
+      return false;
+    });
+  }
+
+  function patchPromptable() {
+    var p = state.patch;
+    return !!(BR.ok && !state.noRoot && !state.patchError && !state.patchConfirm && p &&
+      p.state === 'original' && p.sdk === '37' && p.match &&
+      !p.prompted && !state.patchDismissed);
+  }
+
+  /* 第一次提示后写标记：本次页面仍保留提示（方便用户点按钮），下次打开不再弹。
+     手动入口在下面的补丁卡片里，不受标记影响。 */
+  function markPatchPrompted() {
+    if (state.patchMarked) { return; }
+    state.patchMarked = true;
+    run('umask 077; mkdir -p ' + D + ' && : > ' + P.patchPrompt).catch(function () {
+      state.patchMarked = false;
+    });
+  }
+
+  function dismissPatchPrompt() {
+    state.patchDismissed = true;
+    markPatchPrompted();
+    renderStateBanner();
+  }
+
+  function clearPatchConfirmTimer() {
+    if (state.patchConfirmTimer) {
+      clearTimeout(state.patchConfirmTimer);
+      state.patchConfirmTimer = null;
+    }
+  }
+
+  function clearPatchConfirmState() {
+    clearPatchConfirmTimer();
+    state.patchConfirm = null;
+  }
+
+  function cancelPatchConfirm() {
+    clearPatchConfirmState();
+    renderPatch();
+    renderStateBanner();
+  }
+
+  function patchConfirmTitle(action) {
+    if (action === 'apply') { return '确认应用社区补丁？'; }
+    if (action === 'force') { return '确认强制恢复原版？'; }
+    return '确认恢复原版？';
+  }
+
+  function patchConfirmGoLabel(action) {
+    if (action === 'apply') { return '确认应用'; }
+    if (action === 'force') { return '确认强制恢复'; }
+    return '确认恢复原版';
+  }
+
+  function patchConfirmBody(action) {
+    var p = state.patch || {};
+    var si = p.si || '版本未知';
+    var ver = p.targetVersion || '未知版本';
+    var srv = p.targetServer || 'server-v355';
+    var what;
+    if (action === 'apply') {
+      what = '把 server-v355.dex 替换为社区补丁';
+    } else if (action === 'force') {
+      what = '用有效原版备份强制覆盖当前 server-v355.dex';
+    } else {
+      what = '用有效原版备份恢复 server-v355.dex';
+    }
+    return '目标 SI：' + si + '。将' + what + '。仅适用于 ' + ver + '（' + srv + '）。';
+  }
+
+  function armPatchAction(action) {
+    if (state.patchBusy || !BR.ok || state.noRoot || state.patchError || !state.patch) { return; }
+    var p = state.patch;
+    var ok = (action === 'apply' && p.state === 'original' && p.match) ||
+      (action === 'restore' && p.state === 'patched' && p.backupOk) ||
+      (action === 'force' && p.state === 'unknown' && p.backupOk);
+    if (!ok) { return; }
+    clearPatchConfirmTimer();
+    state.patchConfirm = action;
+    state.patchConfirmTimer = setTimeout(function () {
+      state.patchConfirmTimer = null;
+      if (state.patchConfirm === action) {
+        state.patchConfirm = null;
+        renderPatch();
+        renderStateBanner();
+      }
+    }, 10000);
+    markPatchPrompted();
+    renderPatch();
+    renderStateBanner();
+  }
+
+  function confirmPatchAction() {
+    var action = state.patchConfirm;
+    if (!action || state.patchBusy) { return; }
+    clearPatchConfirmState();
+    runPatchAction(action);
+  }
+
+  function renderPatch() {
+    var card = $('patchCard');
+    var p = state.patch;
+    var err = state.patchError;
+    if (!p && !err) { card.hidden = true; return; }
+    card.hidden = false;
+
+    var applyBtn = $('btnPatchApply');
+    var restoreBtn = $('btnPatchRestore');
+    var forceBtn = $('btnPatchForce');
+    var hint = $('patchHint');
+    var bits = [];
+    var st = p ? p.state : '';
+    var badge = '';
+
+    if (err) {
+      badge = '读取失败';
+      hint.textContent = err;
+      hint.hidden = false;
+      if (p) {
+        bits.push('SI ' + (p.si || '版本未知'));
+        bits.push('上次状态：' + (st || '未知'));
+      }
+    } else if (st === 'original') {
+      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push(p.size ? (p.size + ' B') : '大小未知');
+      bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
+      if (p.match) {
+        badge = '可应用';
+        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用社区补丁修复。' +
+          '补丁只替换 server-v355.dex，确认后才会执行。';
+      } else {
+        badge = '版本不匹配';
+        hint.textContent = '当前 SI ' + (p.si || '版本未知') + '，补丁仅适用于 ' +
+          (p.targetVersion || '未知版本') + '（' + (p.targetServer || 'server-v355') + '），未动。';
+      }
+      hint.hidden = false;
+    } else if (st === 'patched') {
+      badge = '已应用';
+      hint.textContent = '';
+      hint.hidden = true;
+      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push('已应用，可恢复原版');
+      bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
+    } else if (st === 'unknown') {
+      badge = '版本不匹配';
+      hint.textContent = '版本不匹配，未动：server-v355.dex 的 sha256 既不是原版也不是补丁版。' +
+        (p.backupOk ? ' 检测到有效原版备份，可强制恢复。' : ' 也没有可用的原版备份。');
+      hint.hidden = false;
+      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
+      bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
+    } else {
+      card.hidden = true;
+      return;
+    }
+    $('patchBadge').textContent = badge;
+    $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
+
+    var canAct = !state.patchBusy && !err && BR.ok && !state.noRoot;
+    if (err) {
+      applyBtn.hidden = true;
+      restoreBtn.hidden = true;
+      forceBtn.hidden = true;
+    } else {
+      applyBtn.hidden = !(st === 'original' && p.match);
+      restoreBtn.hidden = !(st === 'patched');
+      forceBtn.hidden = !(st === 'unknown' && p.backupOk);
+    }
+    applyBtn.disabled = !canAct;
+    restoreBtn.disabled = !canAct || !p || !p.backupOk;
+    forceBtn.disabled = !canAct;
+    $('patchActions').hidden = !!(state.patchConfirm) ||
+      (applyBtn.hidden && restoreBtn.hidden && forceBtn.hidden);
+
+    var panel = $('patchConfirm');
+    if (state.patchConfirm && !state.patchBusy && !err) {
+      panel.hidden = false;
+      $('patchConfirmTitle').textContent = patchConfirmTitle(state.patchConfirm);
+      $('patchConfirmBody').textContent = patchConfirmBody(state.patchConfirm);
+      $('btnPatchConfirmGo').textContent = patchConfirmGoLabel(state.patchConfirm);
+      $('btnPatchConfirmGo').disabled = false;
+    } else {
+      panel.hidden = true;
+    }
+  }
+
+  function showPatchResult(title, body, tone) {
+    var el = $('patchResult');
+    el.className = 'result ' + (tone || '');
+    el.innerHTML = '<div class="r-title">' + esc(title) + '</div>' +
+      (body ? '<div class="r-body">' + esc(body) + '</div>' : '');
+    el.hidden = false;
+  }
+
+  function runPatchAction(action) {
+    if (state.patchBusy) { return; }
+    if (!BR.ok || !state.patch) {
+      showPatchResult('无法执行', '未连接 WebUI 桥接，补丁操作需要 root 权限。', 'bad');
+      return;
+    }
+    var isApply = action === 'apply';
+    var isForce = action === 'force';
+    var cmd = isForce ? 'restore --force' : action;
+    var title = isApply ? '补丁已应用' : (isForce ? '已强制恢复原版' : '已恢复原版');
+    state.patchBusy = true;
+    renderPatch();
+    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…', '请稍候，不要关闭页面。', '');
+    run('sh ' + P.patch + ' ' + cmd).then(function (res) {
+      var parts = [];
+      if (String(res.stdout || '').trim()) { parts.push(String(res.stdout).trim()); }
+      if (String(res.stderr || '').trim()) { parts.push(String(res.stderr).trim()); }
+      var text = parts.join('\n');
+      if (res.errno !== 0) {
+        showPatchResult(isApply ? '补丁应用失败' : '恢复失败', text || ('退出码 ' + res.errno), 'bad');
+      } else {
+        showPatchResult(title + '，请重开 SI 生效', text, 'good');
+      }
+    }).catch(function (err) {
+      showPatchResult(isApply ? '补丁应用失败' : '恢复失败',
+        String(err && err.message ? err.message : err), 'bad');
+    }).then(function () {
+      state.patchBusy = false;
+      markPatchPrompted();
+      return loadPatch();
     });
   }
 
@@ -972,6 +1304,13 @@ details.card[open] summary{margin-bottom:8px}
   function snapshotMode() {
     var snap = window.__SI_SNAPSHOT__;
     state.mode = 'snapshot';
+    clearPatchConfirmState();
+    if (state.patch) {
+      state.patchError = '未连接 WebUI 桥接，补丁操作不可用；以下是上次读取的状态。';
+    } else {
+      state.patchError = '';
+    }
+    renderPatch();
     if (!snap || !snap.status) {
       state.snapshot = null; state.snapshotTs = 0;
       state.status = null; state.alive = null; state.fetchedAt = 0;
@@ -1544,10 +1883,15 @@ details.card[open] summary{margin-bottom:8px}
       var dirty = refreshDirty();
       refreshStatus().then(function () {
         return dirty ? true : loadConfig();
-      }).then(loadLog).then(function () { toast('已刷新'); });
+      }).then(loadLog).then(loadPatch).then(function () { toast('已刷新'); });
     });
     $('btnCheck').addEventListener('click', function () { runFix(true); });
     $('btnFix').addEventListener('click', function () { runFix(false); });
+    $('btnPatchApply').addEventListener('click', function () { armPatchAction('apply'); });
+    $('btnPatchRestore').addEventListener('click', function () { armPatchAction('restore'); });
+    $('btnPatchForce').addEventListener('click', function () { armPatchAction('force'); });
+    $('btnPatchConfirmGo').addEventListener('click', confirmPatchAction);
+    $('btnPatchConfirmCancel').addEventListener('click', cancelPatchConfirm);
     $('btnRestart').addEventListener('click', function () {
       if (this.getAttribute('data-armed') === '1') {
         this.removeAttribute('data-armed');
@@ -1583,6 +1927,10 @@ details.card[open] summary{margin-bottom:8px}
       var act = t.getAttribute('data-action');
       if (act === 'retry-bridge') { retryBridge(); }
       else if (act === 'reload-page') { location.reload(); }
+      else if (act === 'patch-apply') { armPatchAction('apply'); }
+      else if (act === 'patch-dismiss') { dismissPatchPrompt(); }
+      else if (act === 'patch-confirm-go') { confirmPatchAction(); }
+      else if (act === 'patch-confirm-cancel') { cancelPatchConfirm(); }
     });
 
     var segs = $('cfgMode').getElementsByTagName('button');
