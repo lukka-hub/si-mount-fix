@@ -8,7 +8,7 @@
 ## SI 的挂载模型
 
 Storage Isolation（`moe.shizuku.redirectstorage`）的增强模式会为每个被隔离应用
-创建独立的 mount namespace，并在其中重新挂载存储：
+创建各自的 mount namespace，并在其中重新挂载存储：
 
 ```text
 /storage/emulated/0
@@ -130,7 +130,7 @@ grep ' /storage/emulated/0 ' /proc/<pid>/mountinfo
 peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和应用里的沙箱、
 共享目录都带这一项；上游一重挂，这些 slave 副本就没了。
 
-### 1.4.1 的处理
+### 1.4.1 / 1.4.2 的处理
 
 沙箱没了也要能识别，所以模块在状态目录记一份 `.sandbox_seen`：哪些包曾经有过
 沙箱。扫描时如果授权包在运行、却找不到沙箱挂载：
@@ -139,36 +139,66 @@ peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和
    到 `/storage/emulated/0`；
 2. 再复用原来的共享目录修复逻辑，从 FUSE 层补 DCIM、Download 等目录；
 3. 重建失败（bind 失败或校验不通过）只报 `skipped=sandbox_gone`，不杀进程，
-   不动其它挂载，失败后 180 秒内不再重试。
+   不动其它挂载。
 
 沙箱恢复后隔离重新生效，识别锚点也回来了，后续修复才有对象。
 
-1.4.2 起收紧了这条路径：没有本 boot 同 namespace 的 `.sandbox_seen` 证据时，普通
-FUSE 根不卸不 bind（报 `sandbox_skip`）；沙箱 `umount` 没卸干净或原 FUSE 根恢复失败时
-按 `rollback`/`sandbox_stale` 上报并等应用重启，不谎报已回滚，避免应用看到整块存储。
-目标被别的挂载层占用（例如残留的 f2fs bind）同样报 `sandbox_skip`，不进入 180 秒重试。
+1.4.2 起收紧了这条路径。主扫描要求 `/storage/emulated/0` 的栈顶就是本包沙箱、
+且只有一层：叠层（`n>1`）报 `rollback`，栈顶被别的层盖住（`n=1` 但不是本包）
+报 `sandbox_stale`，都不登记 `.sandbox_seen`，提示重启应用。没有本 boot、同
+namespace 的 `.sandbox_seen` 证据时，普通 FUSE 根（root=`/` 或 `/0`）不卸不
+bind，报 `sandbox_skip`；目标被别的挂载层占用（例如残留的 f2fs bind）同样
+`sandbox_skip`，不写失败行，也不进入 180 秒重试。沙箱 `umount` 没卸干净、回滚
+失败或原 FUSE 根恢复失败时按 `rollback`/`sandbox_stale` 上报并保留现状，不再
+把父根叠在残留沙箱上，也不谎报可重试的 `sandbox_gone`。
 
-两种故障态要分开看：
+重建沙箱和 `repair_one` 共用 `.repairs` 的失败退避：同包同目标 180 秒内不重试，
+key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT` 带 `retry=`。
+进程匹配按 `ps args` 的基础包名，`pkg:push` 这类子进程同样按基础包名查配置和
+身份，并按所在 namespace 与主进程分别处理。应用视图回退（ALT）已删除：1.4.2 起
+不再拿应用内 `/storage/emulated/0/...` 当源，应用 ns 看不到 `/mnt` 时直接失败，
+避免在源不可见时静默禁用预检。
+
+几种故障态要分开看：
 
 - **可重建（`sandbox_gone`）**：应用 namespace 里已经没有沙箱挂载，但还能看到宿主
   重挂后的新 FUSE（`/mnt/user/0/emulated` 或 `/storage/emulated` 的设备号等于宿主）。
   模块按上面的步骤重新 bind 沙箱，再补共享目录。源只从宿主
-  `/mnt/user/0/emulated/0/...` 取；应用 ns 看不到该源时直接失败，不再回退到应用视图
-  （1.4.2 删除了 ALT 回退，避免在 `/mnt` 不可见时静默禁用预检）。
-  升级/首次扫描没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，
-  也会按“曾经隔离过”重建，但只限目标本来没有挂载（n=0）；普通 FUSE 根不拆（`sandbox_skip`）。
+  `/mnt/user/0/emulated/0/...` 取；应用 ns 看不到该源时直接失败。升级/首次扫描
+  没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，也会按
+  “曾经隔离过”重建，但只限目标本来没有挂载（n=0）；普通 FUSE 根（n>0）不拆，
+  报 `sandbox_skip`。
   `.sandbox_seen` 记录 `pkg|boot|ns|SB`：同 boot 同 ns 直接通过；只有该包只剩别的 boot
   的旧行、本 boot 一行都没有时才拒绝兜底；本 boot 有任意 ns 行（应用重启换了 ns）时
   允许 n=0 的“源+属主”回落。
   注意：如果共享目录源在应用 ns 里不可见，模块会把刚 bind 的沙箱回滚，不会留下空沙箱。
+- **安全跳过（`sandbox_skip`）**：没有本 boot、同 namespace 的 `.sandbox_seen` 证据，
+  而目标 `/storage/emulated/0` 仍是普通 FUSE 根（root=`/` 或 `/0`）；或目标已经被别的
+  挂载层/残留沙箱占用。此时拆根或重建可能挂错目录，模块不卸不 bind，不写失败行，也不会
+  在 180 秒后重试；重启该应用让 SI 重建 namespace，下一次健康扫描登记证据后再丢沙箱
+  才会自动重建。
+- **回滚/叠层残留（`skipped=rollback` / `status.json` 的 `sandbox_rollback`）**：沙箱 `umount`
+  没卸干净、原 FUSE 根恢复失败，或主扫描发现 target 叠了多层；模块保留残留挂载，不把父根
+  叠回去，也不谎报可重试的 `sandbox_gone`。重启该应用收敛。
 - **僵死（`sandbox_stale`）**：应用 namespace 里的沙箱还是旧设备号（实测 `0:286`），
   宿主已经是新设备号（`0:318`）；应用内读 `/storage/emulated/0/...` 报
   `Transport endpoint is not connected`。旧 FUSE 会话已经不存在，跨 namespace bind
   会 `EINVAL`，卸掉旧挂载也拿不到新 FUSE；模块只能报 `skipped=sandbox_stale`，
-  不碰挂载，需要重启该应用让 SI 重建 namespace。扫描时只有“沙箱本身是 FUSE 且
-  设备号在宿主 `/proc/1/mountinfo` 里查不到”才会判僵死，真正挂在别的层的沙箱
-  仍报 `skipped=layer`。回滚失败/原根恢复失败也归到这里（`sandbox_stale`/`rollback`），
-  不再混报可重试的 `sandbox_gone`。
+  不碰挂载，需要重启该应用让 SI 重建 namespace。扫描时沙箱本身是 FUSE 且设备号在宿主
+  `/proc/1/mountinfo` 里查不到，或者主扫描发现 target 栈顶不是本包沙箱、回滚/原根恢复
+  失败，都会归到这里；真正挂在别的层的健康沙箱仍报 `skipped=layer`。
+
+### 仍未覆盖的边界
+
+以下问题在 1.4.2 之后仍然存在，留到 1.4.3：
+
+- 普通根 root=`/0` 的回滚恢复：真机上 user 0 的 `/0` 普通根不可达，恢复分支走不到；
+- `--trim-only` 裁剪与扫描同时发生时的窄竞态；
+- 沙箱锚点目录缺失时还没有上报，`last_fixed` 也不会归零；
+- `.repairs` 在系统时间跳变时的退避判断，以及 `rb_allow` 的 glob 展开；
+- 检查 PID/namespace 与真正执行 mount/umount 之间的 TOCTOU 窗口。
+
+以上都留到 1.4.3 处理。
 
 ### 不是 ColorOS 专有
 

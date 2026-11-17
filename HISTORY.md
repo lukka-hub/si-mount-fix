@@ -1,7 +1,7 @@
 # 演化过程（1.0 → 1.4.2）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
-> 1.3.2 起是真实代码提交。1.3.3 未形成独立发布 tag，1.3.4 接续。
+> 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
 
 ## 1.0 第一代：纯脚本补挂载
 
@@ -16,7 +16,7 @@
 
 ## 1.2 事件驱动 + 扫描提速
 
-- `si-mount-eventd.sh`：kprobe(path_mount/path_umount) + 独立 trace 实例 +
+- `si-mount-eventd.sh`：kprobe(path_mount/path_umount) + 单独的 trace 实例 +
   `trace_pipe` 阻塞读；
 - 内核 filter 排除 nsenter/magiskd，防止部分自触发；mount/umount 自身的事件靠事件 drain 吸收（1.4.0 起 filter 再补这两类）；
 - 先按授权包名筛候选进程，扫描从 7.5s 降到约 0.23s；
@@ -84,7 +84,7 @@
 - **打包**：版本号与包内文件白名单、可执行位等做前置校验，校验失败不产出半成品。
 - **发布**：推送 `v*` tag 时校验版本一致并自动发布 Release。
 - **测试与卸载**：修复脚本与守护之间的 RESULT 行格式收敛到一处，配置解析、状态优先级等
-  补了回归用例；`uninstall.sh` 改为按 cmdline 精确匹配，不再宽泛 `pkill -f`。
+  补了用例；`uninstall.sh` 改为按 cmdline 精确匹配，不再宽泛 `pkill -f`。
 - **WebUI / 操作**：状态展示统一走 `reason_text`，`churn`/`blind`/停用场景正确呈现；
   桥接失败会重置并回退只读快照（重新探测复用同一个 Promise，避免并发探测的旧结果把界面
   打回只读）；配置写入保留未知行并原子替换；补齐可访问性（`h1`、`aria-live`、
@@ -101,8 +101,8 @@
   从未见过沙箱的包保持静默。`.fuse_dev` 记录本轮 FUSE 设备号供排障。
 - **僵死区分**：沙箱本身是 FUSE、设备号不等于宿主 FUSE、且旧设备已不在宿主 mountinfo 时判为
   `sandbox_stale`，只提示重启应用，绝不 umount/bind；真正的层不同仍报 `skipped=layer`。
-  可重建时若应用 ns 看不到 `/mnt/user/0/emulated`，源回退到应用视图
-  `/storage/emulated/0/...`。
+  可重建时若应用 ns 看不到 `/mnt/user/0/emulated`，当时会改用应用内
+  `/storage/emulated/0/...` 作源（1.4.2 已删除该路径）。
 - **安全边界**：宿主基准改用 `/proc/1/mountinfo` 的 `/mnt/user/0/emulated` 设备，
   逐进程比对应用 `/storage/emulated` 设备，分叉直接判 stale；`.sandbox_seen` 记录 `pkg|boot|ns|SB`，换 boot 后旧证据
   不再作为重建资格；重建子目录前先做层判定，别层挂载绝不 umount；共享目录源不可见时
@@ -116,12 +116,11 @@
   保留现状并报 `skipped=rollback`，不再把父根叠在残留沙箱上（避免应用看到整块存储）。
   回滚失败/原根恢复失败归为 `sandbox_stale`，不再混报可重试的 `sandbox_gone`。
   目标被别的挂载层占用时报 `sandbox_skip`（需重启应用），不再每 180 秒无效重试。
-- **子进程名**：`ps args` 为 `pkg:push` 时按基础包名 `pkg` 查配置、身份和 seen；
-  `checked` 只统计配置里真实启用的包；同包不同 namespace 的修复分别计数。
+- **子进程**：`ps args` 为 `pkg:push` 时按基础包名 `pkg` 查配置、身份和 seen；
+  `checked` 只统计配置里真实启用的进程；同包不同 namespace 分别处理。
 - **dry-run 只读**：`-n` 不再清理/改写已有 `.sandbox_seen`（旧格式与空 ns 行只在非 `-n`
   持锁运行中清理）；沙箱退避键改用 `@sandbox`，避免和名为 sandbox 的自定义共享目录撞键。
-- **daemon 报告去重**：`.sandbox_report` 的逐行日志改在当前 shell 读取，
-  同一份报告连续多轮只记一次日志。
+- **日志去重**：同一份沙箱报告连续多轮只记一次日志，不再每轮刷重复行。
 - **主扫描校验挂载栈**：`/storage/emulated/0` 必须“栈顶是本包沙箱且只有一层”才算健康；
   叠层/被其他层盖住时按 `rollback` / `sandbox_stale` 上报并提示重启应用，残留非本包沙箱
   不再登记为健康证据（K）。
@@ -131,18 +130,15 @@
 - **普通根 fail-closed**：没有本 boot、同 namespace 的 seen 证据时，普通 FUSE 根
   （root=`/` 或 `/0`）一律不卸不 bind，报 `sandbox_skip`（与可重试的 `sandbox_gone` 区分）；
   目标没有挂载（n=0）时仍可凭“源存在+属主匹配”重建。同 boot 异 namespace 回落同一条兜底规则，
-  只有目标 n=0 才动手；本 boot 有任意 namespace 的行即可回落，只有该包只剩旧 boot 行时才拒绝。
-  K 时读不到 namespace 不写空行。
-- **删除应用视图回退（ALT）**：真机隔离应用的应用内视图都能看到 `/mnt`，ALT 分支在源不可见时
-  只会静默禁用预检；`sb_to_alt`/`sp_alt` 及相关测试一并移除。
+  只有目标 n=0 才动手；本 boot 有任意 namespace 的行（或完全没有历史记录）即可回落，只有该包
+  只剩旧 boot 行时才拒绝。
+- **删除应用视图回退（ALT）**：应用 ns 看不到 `/mnt` 时直接失败，不再拿应用内
+  `/storage/emulated/0/...` 当源；`sb_to_alt`/`sp_alt` 及相关用例一并移除。
 - **状态与文案**：`status.json` 增加 `sandbox_rollback`/`sandbox_skip`，WebUI 主状态卡/banner、
-  「操作」按钮直接显示这四项沙箱状态（最近一轮 fix 报错时标注为上次记录）；`rollback`、
-  `sandbox_skip`、identity 残留补齐 action/WebUI 词表与 README，并加真实 daemon 链路测试。
+  「操作」按钮直接显示这四项沙箱状态（最近一轮 fix 报错时标注为上次记录）。
 - **action 健壮性**：体检加 `timeout 40`；拿不到 `RESULT` 行（空输出/前缀不对/超时/被 OOM）
   报“执行失败（无结果行）”，不再显示“没有需要修复”；fix 建锁失败改报 `error=datadir`。
-- **发布链路**：CI 只构建一次并上传 artifact，release 下载同一个 zip 发布；删除 tag-SHA 自证，
-  改为“tag 提交必须是 main 祖先 + 发布后重新下载资产校验 sha256”，发布前确认 main 已含本版
-  `update.json`。
+- **发布**：用同一构建产物发布并校验资产 sha256（v1.4.2 资产前 8 位 `0201d2a2`）。
 - **版本**：`v1.4.2` / `versionCode 142`。
 
 ## 兼容与边界
