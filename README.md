@@ -120,7 +120,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` 解析不了新系统
 返回的数据。替换这个 dex 后列表恢复；本机实测从 17 个恢复到 31 个。
 
-**鸣谢**：思路由酷安用户「无所事事」提供。
+**鸣谢**：酷安用户「无所事事」提供了 Android 17 下 SI「无法读取应用列表」的解决思路。
 
 **来源**：模块内的 `assets/server-v355.dex` 由本模块对官方 SI v355 的
 `server-v355.dex` 自行反编译并重打。补丁只替换
