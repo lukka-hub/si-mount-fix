@@ -103,6 +103,10 @@
   `sandbox_stale`，只提示重启应用，绝不 umount/bind；真正的层不同仍报 `skipped=layer`。
   可重建时若应用 ns 看不到 `/mnt/user/0/emulated`，源回退到应用视图
   `/storage/emulated/0/...`。
+- **安全边界**：宿主基准改用 `/proc/1/mountinfo`，逐进程比对应用 `/storage/emulated`
+  设备，分叉直接判 stale；`.sandbox_seen` 记录 `pkg|boot|ns|SB`，换 boot 后旧证据
+  不再作为重建资格；重建子目录前先做层判定，别层挂载绝不 umount；共享目录源不可见时
+  回滚刚 bind 的沙箱，不留下空沙箱。dry-run 不写任何状态文件。
 - **配套**：新增 `tools/sandbox.test.sh`；`action.sh` / WebUI 增加沙箱丢失/僵死标签与体检文案；
   根因文档补充 vold 重挂 FUSE（MediaProvider 被杀）一节。
 

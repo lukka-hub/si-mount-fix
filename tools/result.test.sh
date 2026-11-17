@@ -59,6 +59,11 @@ line=$(result_line 0 0 0 0 churn=2 retry=30 skipped=dir_space+identity defer=fus
   && ok "daemon 解析 skipped=dir_space+identity" || bad "skipped 解析失败：$line"
 [ "$(field defer "$line")" = fuse ] && ok "daemon 解析 defer=fuse" || bad "defer 解析失败：$line"
 
+line=$(result_line 0 1 2 0 sandbox=1 skipped=sandbox_stale)
+[ "$(field sandbox "$line")" = 1 ] && ok "daemon 解析 sandbox=1" || bad "sandbox 解析失败：$line"
+[ "$(field skipped "$line")" = sandbox_stale ] \
+  && ok "daemon 解析 skipped=sandbox_stale" || bad "stale 解析失败：$line"
+
 line=$(result_line 0 0 0 0 error=config)
 [ "$(field error "$line")" = config ] && ok "daemon 解析 error=config" || bad "error 解析失败：$line"
 line=$(result_line 0 0 0 0 skipped=locked)

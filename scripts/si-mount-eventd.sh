@@ -127,7 +127,8 @@ fi
 
 SINCE=$(now_s)
 TOTAL=$(cat "$DATA/.total" 2>/dev/null); case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
-MODE=starting; REASON=boot; LAST_EVENT=0; LAST_FIX=0; LAST_FIXED=0; LAST_CHECK=0; PROCS=0; TRACEFS=""
+TOTAL_SANDBOX=$(cat "$DATA/.total_sandbox" 2>/dev/null); case "$TOTAL_SANDBOX" in ''|*[!0-9]*) TOTAL_SANDBOX=0 ;; esac
+MODE=starting; LAST_EVENT=0; LAST_FIX=0; LAST_FIXED=0; LAST_CHECK=0; PROCS=0; TRACEFS=""
 INST=""
 PIPE_DEGRADED=0     # 1=trace_pipe 被占/打不开，轮询期间定期重探
 PIPE_REASON=""      # 降级原因，run_fix 后恢复，避免 status 被洗成 ok
@@ -137,6 +138,7 @@ LAST_MODE_FILE=$DATA/.last_mode
 FIX_ERR_LOGGED=""
 PUB_KEY=""; PUB_AT=0
 CHURN=0; BLIND=0; BLIND_SINCE=0
+LAST_SANDBOX=0; SAND_GONE=0; SAND_STALE=0; SAND_REPORT_LAST=""
 LAST_FIX_MS=0
 DEFER_COUNT=0; FUSE_GRACE=180; FUSE_BACKOFF_MAX=30; FUSE_RETRY=60
 EVENT_RETRY_AT=0          # kprobe/selftest 失败后，多久再尝试切回事件模式（秒）
@@ -205,7 +207,7 @@ _reason_base() {
 write_status() {
   tmp="$STATUS.$$.tmp"
   cat > "$tmp" <<EOF
-{"mode":"$MODE","reason":"$REASON","reason_text":"$(reason_label)","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
+{"mode":"$MODE","reason":"$REASON","reason_text":"$(reason_label)","pid":$$,"since":$SINCE,"last_event":$LAST_EVENT,"last_check":$LAST_CHECK,"last_fix":$LAST_FIX,"last_fixed":$LAST_FIXED,"total_fixed":$TOTAL,"interval":$POLL_INTERVAL,"min_age":$MIN_AGE,"procs":$PROCS,"tracefs":"$TRACEFS","churn":$CHURN,"sandbox":$LAST_SANDBOX,"last_sandbox":$LAST_SANDBOX,"total_sandbox":$TOTAL_SANDBOX,"sandbox_gone":$SAND_GONE,"sandbox_stale":$SAND_STALE,"blind":$BLIND,"blind_since":$BLIND_SINCE,"version":"$VERSION","ts":$(now_s)}
 EOF
   mv -f "$tmp" "$STATUS" 2>/dev/null
   old=$(cat "$LAST_MODE_FILE" 2>/dev/null)
@@ -362,10 +364,12 @@ run_fix() {
   skip=$(echo "$out"    | sed -n 's/.*skipped=\([A-Za-z0-9_+.-]*\).*/\1/p' | tail -1)
   churn=$(echo "$out"   | sed -n 's/.*churn=\([0-9]*\).*/\1/p' | tail -1)
   retry=$(echo "$out"   | sed -n 's/.*retry=\([0-9]*\).*/\1/p' | tail -1)
+  sbx=$(echo "$out"     | sed -n 's/.*sandbox=\([0-9]*\).*/\1/p' | tail -1)
   defer=$(echo "$out"   | sed -n 's/.*defer=\([A-Za-z0-9_+.-]*\).*/\1/p' | tail -1)
   [ -n "$fixed" ] || fixed=0
   case "$churn" in ''|*[!0-9]*) churn=0 ;; esac
   case "$retry" in ''|*[!0-9]*) retry=0 ;; esac
+  case "$sbx" in ''|*[!0-9]*) sbx=0 ;; esac
 
   # FUSE 未就绪不是错误：宽限期内只写 boot_wait，宽限后才报 fuse_missing（仍 fail-closed）。
   if [ "$defer" = "fuse" ]; then
@@ -442,6 +446,28 @@ run_fix() {
       LAST_RUN=0
       LAST_FIX_MS=$(date +%s%3N 2>/dev/null)
       case "$LAST_FIX_MS" in ''|*[!0-9]*) LAST_FIX_MS=0 ;; esac
+    fi
+    LAST_SANDBOX=$sbx
+    case "+$skip+" in *"+sandbox_gone"*) SAND_GONE=1 ;; *) SAND_GONE=0 ;; esac
+    case "+$skip+" in *"+sandbox_stale"*) SAND_STALE=1 ;; *) SAND_STALE=0 ;; esac
+    if [ "$sbx" -gt 0 ]; then
+      TOTAL_SANDBOX=$((TOTAL_SANDBOX + sbx))
+      echo "$TOTAL_SANDBOX" > "$DATA/.total_sandbox" 2>/dev/null
+    fi
+    # 沙箱报告文件只列“变化过”的包，避免每轮刷日志。
+    _srep=$(cat "$DATA/.sandbox_report" 2>/dev/null)
+    if [ -z "$_srep" ]; then
+      SAND_REPORT_LAST=""
+    elif [ "$_srep" != "$SAND_REPORT_LAST" ]; then
+      printf '%s\n' "$_srep" | while IFS=' ' read -r _skind _spkg; do
+        [ -n "$_spkg" ] || continue
+        case "$_skind" in
+          rebuilt) log "沙箱重建: $_spkg" ;;
+          gone)    log "沙箱丢失: $_spkg（下一轮重试）" ;;
+          stale)   log "沙箱僵死: $_spkg（需重启应用）" ;;
+        esac
+      done
+      SAND_REPORT_LAST=$_srep
     fi
   fi
 

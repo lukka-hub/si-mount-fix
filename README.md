@@ -166,13 +166,18 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 
 - 微信仍提示文件不存在：先看 `status.json` 的 `reason` 和 `procs`；若 `procs=0` 或体检 `checked=0`，确认设备是
   FUSE 存储、SI 增强模式已启用、应用在主用户下；再跑 `fix-si-mounts.sh -n -v` 看允许目录是否解析正确。
-- 视频/图片突然读不到，且体检或 `status.json` 出现 `skipped=*sandbox_gone*`：ColorOS 上 MediaProvider 被杀后
-  vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮自动重建沙箱并补回挂载，
-  不需要重启应用；若这个标记持续出现，说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上
-  `daemon.log`、`status.json` 反馈。
+- 视频/图片突然读不到，且体检出现 `skipped=*sandbox_gone*`：ColorOS 上 MediaProvider 被杀后
+  vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮**尝试**重建沙箱并补回挂载
+  （源目录存在且属主匹配才动手）；重建成功后 WebUI 的修复结果会显示“重建沙箱 N 个”。升级到 1.4.1 后首次扫描
+  不需要等 `.sandbox_seen`，凭沙箱目录和属主就会补。若这个标记持续出现，说明 MediaProvider 被反复杀，
+  检查系统的省电/后台策略，并附上 `daemon.log`、`status.json` 反馈。
 - 出现 `skipped=*sandbox_stale*`：应用 namespace 里还是旧 FUSE 的僵死挂载（宿主设备号已变、旧会话不存在，
   应用内读目录会报 `Transport endpoint is not connected`）。跨 namespace 无法修复，模块不会动挂载；
-  重启该应用，让 SI 重建 namespace 即可。`sandbox_gone` 可以自动重建，两者不要混为一谈。
+  重启该应用，让 SI 重建 namespace 即可。`sandbox_gone` 会尝试重建，`sandbox_stale` 只能重启应用，
+  两者不要混为一谈。
+- 排查沙箱问题以模块「操作」按钮/体检输出为准（含包名和跳过原因）；`status.json` 只提供
+  `last_sandbox`/`total_sandbox`/`sandbox_gone`/`sandbox_stale` 等计数与最近状态。
+- `-n` 是只读体检：不写 `.sandbox_seen`/`.fuse_dev`，不改挂载；升级/重启后的第一次自动扫描才会登记身份。
 - 面板打不开：Magisk 需 KsuWebUI Standalone；没有桥接时面板会显示只读快照。也可直接用模块「操作」按钮。
 - `blind=1`：重启手机恢复事件投递；重启后仍是 `blind`，把 `daemon.log` 和 `status.json` 一起反馈。
 - `churn>0`：等 10 分钟自动重试，或点「重启守护」清除熔断状态；仍反复出现说明 SI 在持续重挂，

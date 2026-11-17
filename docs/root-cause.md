@@ -149,6 +149,11 @@ peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和
   重挂后的新 FUSE（`/mnt/user/0/emulated` 或 `/storage/emulated` 的设备号等于宿主）。
   模块按上面的步骤重新 bind 沙箱，再补共享目录；应用 ns 里没有
   `/mnt/user/0/emulated` 时，回退用应用自己的 `/storage/emulated/0/...` 视图作源。
+  升级/首次扫描没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，
+  也会按“曾经隔离过”重建。`.sandbox_seen` 记录 `pkg|boot|ns|SB`；换 boot 后旧证据
+  不再作为资格，避免用户关掉 SI 后把真实存储换成旧沙箱。
+  注意：回退源只能安全恢复沙箱根；如果连共享目录源在应用 ns 里也不可见，模块会把
+  刚 bind 的沙箱回滚并报 `sandbox_gone`，不会留下一个空沙箱。
 - **僵死（`sandbox_stale`）**：应用 namespace 里的沙箱还是旧设备号（实测 `0:286`），
   宿主已经是新设备号（`0:318`）；应用内读 `/storage/emulated/0/...` 报
   `Transport endpoint is not connected`。旧 FUSE 会话已经不存在，跨 namespace bind

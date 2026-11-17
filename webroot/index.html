@@ -320,7 +320,7 @@ details.card[open] summary{margin-bottom:8px}
     source: '源目录不存在',
     source_ns: '应用内看不到源',
     bindfail: '绑定挂载失败',
-    sandbox_gone: '沙箱丢失（可重建）',
+    sandbox_gone: '沙箱丢失（会尝试重建）',
     sandbox_stale: '沙箱僵死（需重启应用）',
     churn: '频繁被拆已熔断',
     template: '未知模板 id',
@@ -1309,6 +1309,7 @@ details.card[open] summary{margin-bottom:8px}
       var young = toInt(r.young, 0);
       var churn = toInt(r.churn, 0);
       var retry = toInt(r.retry, 0);
+      var sandbox = toInt(r.sandbox, 0);
       /* broken 是"需要修复的进程数"，fixed 是"补上的挂载条数"，单位不能混 */
       var title = dry
         ? (broken > 0 ? ('发现 ' + broken + ' 个进程需要修复') : '一切正常')
@@ -1317,6 +1318,7 @@ details.card[open] summary{margin-bottom:8px}
       var body = '检查 ' + checked + ' 个已隔离进程' +
         (broken ? ' · 需修复 ' + broken + ' 个进程' : '') +
         (young ? ' · ' + young + ' 个进程太年轻，已跳过' : '') +
+        (sandbox ? ' · 重建沙箱 ' + sandbox + ' 个' : '') +
         (r.skipped ? ' · 跳过：' + skipText(r.skipped) : '') +
         (churn ? ' · 熔断跳过 ' + churn + ' 个目标' : '') +
         (retry ? ' · 约 ' + retry + ' 秒后重试' : '') +
