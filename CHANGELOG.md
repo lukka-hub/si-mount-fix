@@ -7,4 +7,13 @@
 - 应用前自动备份原版并校验；失败会回滚。恢复时自动跳过损坏的备份。
 - 应用、恢复、强制恢复都需要二次确认。仅适用于 SI 8.8.1 r3684 / server-v355。
 - 卸载模块前会先尝试恢复原版；恢复失败会保留备份并提示路径。
-- 补丁由酷安用户「无所事事」提供。
+- 思路由酷安用户「无所事事」提供。
+
+### 反编译改动
+
+对 SI 的 `server-v355.dex`（8.8.1 r3684）做反编译，只改 6 处类型引用：
+- `IPackageManager.getInstalledPackages(JI)` 与 `(II)` 的返回类型 `ParceledListSlice` → `PackageInfoList`（2 处）；
+- 两处 `ParceledListSlice.getList()` → `PackageInfoList.getList()`；
+- 补 `PackageInfoList` 类型引用与方法引用。
+
+其余 386 个类、1635 个方法、806 个字段不变；新增字符串只有 `Landroid/content/pm/PackageInfoList;`。
