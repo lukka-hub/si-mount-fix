@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# 运行全部回归测试：动态发现 tools/*.test.sh（新增测试不用改这里）。
+# 运行全部测试：动态发现 tools/*.test.sh（新增测试不用改这里）。
 #
 # 用法：
 #   sh tools/run-tests.sh                 # 全部

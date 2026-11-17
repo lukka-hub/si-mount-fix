@@ -36,10 +36,20 @@
 #  47) 窗口里 SI 挂回普通根：第二道守卫仍拒绝（不拆不 bind）
 #  48) P1 混合 seen（本 boot 旧 ns + 旧 boot）n=0：允许回落重建
 #  49) P2 目标被别层占用：报 sandbox_skip（需重启应用），不报 gone/不重试
-#  50) 子进程 pkg:push 独立 ns：按基础包名查配置，两个 ns 都重建
+#  50) 子进程 pkg:push 单独 ns：按基础包名查配置，两个 ns 都重建
 #  51) custom_dirs 含 sandbox + 沙箱失败：目录失败行不撞沙箱退避键
 #  52) dry-run 不清理/不改写已有 old-format .sandbox_seen
 #  53) 没有 mount_dirs 的 app（Q 有 P 无）不计入 checked
+#  54) 退避只看单调时钟：系统时间跳变不改变退避
+#  55) 旧格式（只有墙钟）的失败行不参与退避
+#  56) custom_dirs 里的 * 是字面量（不展开 glob），含 * 的目录照样补挂
+#  57) 锚点目录缺失：主扫描报 target_missing + broken，不 bind
+#  58) 锚点目录缺失：重建循环报 target_missing，沙箱仍然重建
+#  59) 普通根 root=/0：回滚按原 root 挂回并校验
+#  60) 普通根 root=/0：恢复后 root 不符 → rollback，不谎报已挂回
+#  61) 普通根 root=/0：umount 未生效 → 不 restore
+#  62) 扫描后进程变化（重建路径）：不 bind/umount，报 pid_changed
+#  63) 扫描后进程变化（T 路径）：不 bind/umount，报 pid_changed
 #
 # 用法：sh tools/sandbox.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
@@ -59,7 +69,8 @@ if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" 
 fi
 
 T=${TMPDIR:-/tmp}/si-sandbox-test.$$
-trap 'rm -rf "$T"' EXIT INT TERM HUP
+# zzg 是 * 字面量用例故意放在当前目录的干扰文件，防止中断后留在仓库里。
+trap 'rm -rf "$T"; rm -f zzg' EXIT INT TERM HUP
 P=$T/proc; BIN=$T/bin; DATA=$T/data; SRC=$T/mnt/user/0/emulated
 MI=$P/123/mountinfo
 mkdir -p "$P/self" "$P/123" "$BIN" "$DATA" "$SRC" || exit 1
@@ -89,6 +100,22 @@ TEST_BOOT=testboot
 TEST_NS='mnt:[4026532001]'
 mkdir -p "$P/123/ns" || exit 1
 ln -sf "$TEST_NS" "$P/123/ns/mnt"
+# 每个可能被修复的 pid 都要有 /proc/pid/stat（第 22 字段 starttime）与
+# /proc/pid/status（Uid）；动手前的 pid_check 拿它们和扫描时的值比对，缺失按已变化处理。
+mkstatline() {   # $1=pid $2=starttime
+  _i=0; _f=""
+  while [ "$_i" -lt 18 ]; do _f="$_f 0"; _i=$((_i + 1)); done
+  printf '%s (com.victim) S%s %s\n' "$1" "$_f" "$2"
+}
+mkstatus() {   # $1=pid
+  printf 'Name:\tcom.victim\nUid:\t%s\t%s\t%s\t%s\n' "$TEST_UID" "$TEST_UID" "$TEST_UID" "$TEST_UID" \
+    > "$P/$1/status"
+}
+mkproc() {   # $1=pid $2=starttime
+  mkstatline "$1" "$2" > "$P/$1/stat"
+  mkstatus "$1"
+}
+mkproc 123 1000
 
 cat > "$T/conf.json" <<'J'
 {"mount_dirs_templates":[{"id":"t1","list":["DCIM"]}],"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":true,"template_ids":["t1"]},{"package_name":"shared-com.shared","enabled":true,"mount_dirs":true,"template_ids":["t1"]},{"package_name":"com.good","enabled":true,"mount_dirs":true,"template_ids":["t1"]}]}
@@ -141,6 +168,11 @@ case "$1" in
       case "$_p" in "$SI_TEST_NS_HIDE_PREFIX"*) exit 1 ;; esac
     fi
     if [ "$SI_TEST_NS_TARGET_UNREADABLE" = 1 ] && [ "$_op" = "-r" ] && [ "$_p" = "/storage/emulated/0" ]; then exit 1; fi
+    # 模拟“扫描之后、动手之前进程被重启”：命中指定路径时改写 pid 的 stat（starttime）。
+    if [ -n "$SI_TEST_STAT_FLIP" ] && [ "$_op" = "-d" ] && [ "$_p" = "$SI_TEST_STAT_FLIP" ] \
+       && [ -n "$SI_TEST_STAT_FILE" ] && [ -n "$SI_TEST_STAT_CHANGED" ]; then
+      cp -f "$SI_TEST_STAT_CHANGED" "$SI_TEST_STAT_FILE" 2>/dev/null
+    fi
     # 模拟 SI 在“资格检查→拆根”的窗口里把普通 FUSE 根挂回来（测第二道守卫）。
     if [ "$SI_TEST_NS_PLANT_ROOT" = 1 ] && [ "$_op" = "-d" ] && [ -n "$SI_TEST_MI" ]; then
       grep -q ' / /storage/emulated/0 ' "$SI_TEST_MI" 2>/dev/null \
@@ -177,6 +209,12 @@ case "$src" in
   */storage/emulated/*) root=/${src#*/storage/emulated/} ;;
   *) root=$src ;;
 esac
+# 模拟“恢复普通根时挂上来的 root 和原 root 不一致”（恢复后必须校验 root）。
+if [ "$SI_TEST_RESTORE_BAD_ROOT" = 1 ]; then
+  case "$src" in
+    "$SI_TEST_SRC/0"|/storage/emulated|"$tgt") root=/9 ;;
+  esac
+fi
 printf '300 1 %s %s %s rw - fuse /dev/fuse rw\n' "$dev" "$root" "$tgt" >> "$mi"
 # 并发挂载：同 target 再叠一条，模拟 SI 同时 bind。
 [ "$SI_TEST_BIND_EXTRA" = 1 ] && printf '301 1 %s %s %s rw - fuse /dev/fuse rw\n' "$dev" "$root" "$tgt" >> "$mi"
@@ -284,6 +322,7 @@ NS_HIDE=""; NS_HIDE_PREFIX=""; NS_TARGET_UNREADABLE=0
 PS_PKG=""; PS_TWO=0; BIND_WRONG_SRC=0; UMOUNT_FAIL=0; BIND_FAIL_TGT=""; RUN_FIX=$FIX; TEST_NOW=""
 MKDIR_FAIL_LOCK=""; MKDIR_COUNT=""; BIND_EXTRA=0; RESTORE_FAIL=0; PLANT_ROOT=0
 CONF_FILE=$T/conf.json; PS_SUB=0; PS_NODIRS=0
+TEST_MONO=""; RESTORE_BAD_ROOT=0; STAT_FLIP=""; STAT_FILE=""
 run_fix() {   # $1=数据目录 $2=1 表示 dry-run
   _d=$1; _dry=$2
   rm -f "$T/mount.log" "$T/nsenter.log" "$T/umount.log"
@@ -295,11 +334,13 @@ run_fix() {   # $1=数据目录 $2=1 表示 dry-run
     SI_TEST_BIND_BAD="$BIND_BAD" SI_TEST_BIND_WRONG_SRC="$BIND_WRONG_SRC" SI_TEST_BIND_FAIL_TGT="$BIND_FAIL_TGT" \
     SI_TEST_NS_HIDE="$NS_HIDE" SI_TEST_NS_HIDE_PREFIX="$NS_HIDE_PREFIX" SI_TEST_UMOUNT_FAIL="$UMOUNT_FAIL" \
     SI_TEST_NS_TARGET_UNREADABLE="$NS_TARGET_UNREADABLE" \
-    SI_TEST_APP_UID="$TEST_UID" SI_TEST_BOOT="$TEST_BOOT" SI_TEST_NOW="$TEST_NOW" \
+    SI_TEST_APP_UID="$TEST_UID" SI_TEST_BOOT="$TEST_BOOT" SI_TEST_NOW="$TEST_NOW" SI_TEST_MONO="$TEST_MONO" \
     SI_TEST_MOUNT_LOG="$T/mount.log" SI_TEST_NSENTER_LOG="$T/nsenter.log" \
     SI_TEST_UMOUNT_LOG="$T/umount.log" \
     SI_TEST_MKDIR_FAIL_LOCK="$MKDIR_FAIL_LOCK" SI_TEST_MKDIR_COUNT="$MKDIR_COUNT" \
     SI_TEST_BIND_EXTRA="$BIND_EXTRA" SI_TEST_RESTORE_FAIL="$RESTORE_FAIL" \
+    SI_TEST_RESTORE_BAD_ROOT="$RESTORE_BAD_ROOT" \
+    SI_TEST_STAT_FLIP="$STAT_FLIP" SI_TEST_STAT_FILE="$STAT_FILE" SI_TEST_STAT_CHANGED="$T/stat.changed" \
     SI_TEST_NS_PLANT_ROOT="$PLANT_ROOT" \
     "$TEST_SH" "$RUN_FIX"
   [ "$_dry" = 1 ] && set -- "$@" -n
@@ -430,6 +471,7 @@ has "$r" 'broken=1' && ok "dry-run 仍指出需要重建（broken=1）" || bad "
 D7=$T/data7; seed_seen "$D7" || exit 1
 mkdir -p "$P/124/ns" || exit 1
 ln -sf "$TEST_NS" "$P/124/ns/mnt"
+mkproc 124 1100
 base_mi2; setup_src || exit 1
 MI_DIR_OVERRIDE=$P; PS_EXTRA=1
 out=$(run_fix "$D7" 0); r=$(result "$out")
@@ -849,42 +891,42 @@ ln -sf "$TEST_NS" "$P/123/ns/mnt"
 # ---------- 40) R2 沙箱失败退避：同 dev/boot/ns 不重试，时间到/换 dev 才重试 ----------
 D40=$T/data40; seed_seen "$D40" || exit 1
 base_mi; setup_src || exit 1
-NS_HIDE_PREFIX="$SRC/0"; TEST_NOW=1000
+NS_HIDE_PREFIX="$SRC/0"; TEST_NOW=1000; TEST_MONO=5000
 out=$(run_fix "$D40" 0); r=$(result "$out"); n1=$(wc -l < "$T/nsenter.log" 2>/dev/null)
 has "$r" 'sandbox_gone' && ok "R2 首轮失败报 gone" || bad "R2 首轮没有失败：$r"
 [ "${n1:-0}" -gt 0 ] && ok "R2 首轮实际探测过（nsenter $n1 次）" || bad "R2 首轮没探测"
-TEST_NOW=1100
+TEST_NOW=1100; TEST_MONO=5100
 out=$(run_fix "$D40" 0); r=$(result "$out")
 has "$r" 'sandbox_gone' && ok "R2 退避期仍上报 gone（状态不丢）" || bad "R2 退避期状态丢了：$r"
 has "$r" 'retry=' && ok "R2 退避期 RESULT 带 retry=" || bad "R2 退避期没有 retry：$r"
 [ ! -s "$T/nsenter.log" ] && [ ! -s "$T/mount.log" ] \
   && ok "R2 退避期不再 nsenter/mount" || bad "R2 退避期仍探测：$(cat "$T/nsenter.log" "$T/mount.log" 2>/dev/null)"
-TEST_NOW=1250
+TEST_NOW=1250; TEST_MONO=5250
 out=$(run_fix "$D40" 0); r=$(result "$out")
 [ -s "$T/nsenter.log" ] && ok "R2 时间到期后重新探测" || bad "R2 时间到期仍不重试"
 ln -sf 'mnt:[4026532002]' "$P/123/ns/mnt"
-TEST_NOW=1260
+TEST_NOW=1260; TEST_MONO=5260
 out=$(run_fix "$D40" 0); r=$(result "$out")
 [ -s "$T/nsenter.log" ] && ok "R2 换 namespace 后立即失效退避" || bad "R2 换 ns 后仍退避"
 ln -sf "$TEST_NS" "$P/123/ns/mnt"
-TEST_NOW=""; NS_HIDE_PREFIX=""
+TEST_NOW=""; TEST_MONO=""; NS_HIDE_PREFIX=""
 
 # ---------- 41) R2 repair_one 退避：source/bindfail 不每轮重试 ----------
 D41=$T/data41; seed_seen "$D41" || exit 1
 sandbox_ok_mi; setup_src || exit 1
 mkdir -p "$DATA/media/0/Android/data/com.victim/sdcard/DCIM" || exit 1
-BIND_FAIL_TGT=/storage/emulated/0/DCIM; TEST_NOW=2000
+BIND_FAIL_TGT=/storage/emulated/0/DCIM; TEST_NOW=2000; TEST_MONO=6000
 out=$(run_fix "$D41" 0); r=$(result "$out")
 has "$out" '失败 DCIM' && ok "R2 repair 首轮 bind 失败" || bad "R2 repair 首轮没有失败：$out"
 [ -s "$T/mount.log" ] && ok "R2 repair 首轮实际 bind" || bad "R2 repair 首轮没 bind"
-TEST_NOW=2100
+TEST_NOW=2100; TEST_MONO=6100
 out=$(run_fix "$D41" 0); r=$(result "$out")
 has "$r" 'retry=' && ok "R2 repair 退避期带 retry=" || bad "R2 repair 退避期没有 retry：$r"
 [ ! -s "$T/mount.log" ] && ok "R2 repair 退避期不再 bind" || bad "R2 repair 退避期仍 bind：$(cat "$T/mount.log")"
-TEST_NOW=2200
+TEST_NOW=2200; TEST_MONO=6200
 out=$(run_fix "$D41" 0); r=$(result "$out")
 [ -s "$T/mount.log" ] && ok "R2 repair 时间到期后重新 bind" || bad "R2 repair 到期仍不重试"
-BIND_FAIL_TGT=""; TEST_NOW=""
+BIND_FAIL_TGT=""; TEST_NOW=""; TEST_MONO=""
 
 # ---------- 42) 锁目录建不出来 → error=datadir，而不是静默 exit 0 ----------
 D42=$T/data42; rm -rf "$D42"; mkdir -p "$D42/.si-fix.lock"
@@ -1006,11 +1048,12 @@ has "$r" 'retry=' && bad "第二轮出现无效重试：$r" || ok "第二轮没�
 [ ! -s "$T/mount.log" ] && [ ! -s "$T/umount.log" ] \
   && ok "第二轮仍不动挂载" || bad "第二轮动了挂载"
 
-# ---------- 50) 子进程 pkg:push 独立 ns：按基础包名查配置 ----------
+# ---------- 50) 子进程 pkg:push 单独 ns：按基础包名查配置 ----------
 D50=$T/data50; seed_seen "$D50" || exit 1
 base_mi; setup_src || exit 1
 mkdir -p "$P/124" "$P/124/ns" || exit 1
 ln -sf 'mnt:[4026532002]' "$P/124/ns/mnt"
+mkproc 124 1200
 cat > "$P/124/mountinfo" <<'M'
 101 100 0:50 / /mnt/user/0/emulated rw - fuse /dev/fuse rw
 102 100 0:50 / /storage/emulated rw - fuse /dev/fuse rw
@@ -1033,7 +1076,7 @@ mkdir -p "$DATA/media/0/Android/data/com.victim/sdcard/sandbox" "$SRC/0/sandbox"
 cat > "$T/conf51.json" <<'J'
 {"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":{"custom_dirs":["sandbox"]}}]}
 J
-CONF_FILE=$T/conf51.json; BIND_FAIL_TGT=/storage/emulated/0/sandbox; TEST_NOW=3000
+CONF_FILE=$T/conf51.json; BIND_FAIL_TGT=/storage/emulated/0/sandbox; TEST_NOW=3000; TEST_MONO=7000
 out=$(run_fix "$D51" 0); r=$(result "$out")
 BIND_FAIL_TGT=""
 grep -q ' com.victim sandbox failed' "$D51/.repairs" 2>/dev/null \
@@ -1049,7 +1092,7 @@ grep -q ' com.victim @sandbox failed' "$D51/.repairs" 2>/dev/null \
 out=$(run_fix "$D51" 0); r=$(result "$out")
 has "$r" 'retry=' && ok "@sandbox 自己的退避生效" || bad "@sandbox 退避没有生效：$r"
 [ ! -s "$T/nsenter.log" ] && ok "@sandbox 退避期不再探测" || bad "退避期仍探测"
-CONF_FILE=$T/conf.json; NS_HIDE_PREFIX=""; TEST_NOW=""; BIND_FAIL_TGT=""
+CONF_FILE=$T/conf.json; NS_HIDE_PREFIX=""; TEST_NOW=""; TEST_MONO=""; BIND_FAIL_TGT=""
 
 # ---------- 52) dry-run 不清理已有 old-format .sandbox_seen ----------
 D52=$T/data52; mkdir -p "$D52"
@@ -1077,6 +1120,158 @@ has "$r" 'checked=1' && ok "无 mount_dirs 的包不算已隔离进程（checked
   || bad "checked 把无配置的包算进去了：$r"
 has "$r" 'sandbox_gone' && ok "com.victim 仍按丢失上报" || bad "com.victim 没上报：$r"
 rm -rf "$P/125"
+
+# ---------- 54) 退避只看单调时钟：系统时间跳变不改变退避 ----------
+D54=$T/data54; seed_seen "$D54" || exit 1
+base_mi; setup_src || exit 1
+NS_HIDE_PREFIX="$SRC/0"; TEST_NOW=1000; TEST_MONO=5000
+out=$(run_fix "$D54" 0); r=$(result "$out")
+has "$r" 'sandbox_gone' && ok "时间跳变用例首轮失败" || bad "时间跳变用例首轮没失败：$r"
+# 墙钟向前跳 20 年，单调只走 50 秒：仍应在 180 秒退避期里。
+TEST_NOW=650000000; TEST_MONO=5050
+out=$(run_fix "$D54" 0); r=$(result "$out")
+has "$r" 'retry=130' && ok "墙钟前跳但单调未到期：retry 仍按单调剩余秒数" \
+  || bad "墙钟跳变影响了退避：$r"
+[ ! -s "$T/nsenter.log" ] && [ ! -s "$T/mount.log" ] \
+  && ok "墙钟跳变期间不探测、不动挂载" || bad "墙钟跳变期间仍探测：$(cat "$T/nsenter.log" "$T/mount.log" 2>/dev/null)"
+# 墙钟跳回，单调到期：允许重试。
+TEST_NOW=900; TEST_MONO=5200
+out=$(run_fix "$D54" 0); r=$(result "$out")
+[ -s "$T/nsenter.log" ] && ok "单调时间到期后才重试（不受墙钟回跳影响）" \
+  || bad "单调时间到期仍不退避"
+NS_HIDE_PREFIX=""; TEST_NOW=""; TEST_MONO=""
+
+# ---------- 55) 旧格式（只有墙钟）失败行不参与退避 ----------
+D55=$T/data55; seed_seen "$D55" || exit 1
+base_mi; setup_src || exit 1
+printf '1000.000 com.victim @sandbox failed ctx=0:50@testboot@%s\n' "$TEST_NS" > "$D55/.repairs"
+TEST_NOW=1000; TEST_MONO=9000
+out=$(run_fix "$D55" 0); r=$(result "$out")
+TEST_NOW=""; TEST_MONO=""
+has "$r" 'sandbox=1' && ok "旧格式失败行按无退避处理，沙箱照常重建" || bad "旧格式行挡住了重建：$r"
+grep -q ' mono=9000' "$D55/.repairs" 2>/dev/null \
+  && ok "新写入的 .repairs 行带单调时间戳" || bad "新行没有 mono 时间戳：$(cat "$D55/.repairs" 2>/dev/null)"
+
+# ---------- 56) custom_dirs 里的 * 不展开 glob，照样补挂 ----------
+D56=$T/data56; seed_seen "$D56" || exit 1
+base_mi; setup_src || exit 1
+cat > "$T/conf56.json" <<'J'
+{"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":{"custom_dirs":["zz*g"]}}]}
+J
+mkdir -p "$SRC/0/Android/data/com.victim/sdcard/zz*g" "$SRC/0/zz*g" || exit 1
+: > zzg   # 当前目录里造一个能被 zz*g 匹配的文件：老写法会把目录名展开成它
+CONF_FILE=$T/conf56.json
+out=$(run_fix "$D56" 0); r=$(result "$out")
+CONF_FILE=$T/conf.json; rm -f zzg
+has "$r" 'sandbox=1' && ok "* 目录用例仍重建沙箱" || bad "含 * 目录的沙箱没重建：$r"
+grep -qF '/zz*g /storage/emulated/0/zz*g' "$T/mount.log" 2>/dev/null \
+  && ok "含 * 的自定义目录按字面量补挂（未被 glob 展开）" \
+  || bad "含 * 的目录没有补挂：$(cat "$T/mount.log" 2>/dev/null)"
+grep -qF ' /0/zz*g /storage/emulated/0/zz*g ' "$MI" 2>/dev/null \
+  && ok "fake mountinfo 出现含 * 的目标" || bad "含 * 的目标没有落到 mountinfo"
+
+# ---------- 57) 锚点目录缺失：主扫描报 target_missing + broken，不 bind ----------
+D57=$T/data57; seed_seen "$D57" || exit 1
+sandbox_ok_mi; setup_src || exit 1
+mkdir -p "$DATA/media/0/Android/data/com.victim/sdcard/Android/data" \
+         "$DATA/media/0/Android/data/com.victim/sdcard/Android/media" \
+         "$DATA/media/0/Android/data/com.victim/sdcard/Android/obb" || exit 1
+rm -rf "$DATA/media/0/Android/data/com.victim/sdcard/DCIM"
+out=$(run_fix "$D57" 0); r=$(result "$out")
+has "$r" 'target_missing' && ok "锚点缺失报 skipped=target_missing" || bad "锚点缺失被静默跳过：$r"
+has "$r" 'broken=1' && ok "锚点缺失计入 broken" || bad "锚点缺失没计入 broken：$r"
+has "$r" 'fixed=0' && ok "锚点缺失不计 fixed" || bad "锚点缺失仍计 fixed：$r"
+case "$out" in
+  *"$DATA/media/0/Android/data/com.victim/sdcard/DCIM"*) ok "日志说明缺的是哪个目录" ;;
+  *) bad "日志没写缺失目录：$out" ;;
+esac
+[ ! -s "$T/mount.log" ] && ok "锚点缺失时不 bind" || bad "锚点缺失仍 bind：$(cat "$T/mount.log")"
+mkdir -p "$DATA/media/0/Android/data/com.victim/sdcard/DCIM"   # 复原，供后面的 T 路径用例
+
+# ---------- 58) 锚点目录缺失：重建循环报 target_missing，沙箱仍重建 ----------
+D58=$T/data58; seed_seen "$D58" || exit 1
+base_mi; setup_src || exit 1
+rm -rf "$SRC/0/Android/data/com.victim/sdcard/DCIM"
+out=$(run_fix "$D58" 0); r=$(result "$out")
+has "$r" 'target_missing' && ok "重建循环报 target_missing" || bad "重建循环静默跳过缺失锚点：$r"
+has "$r" 'sandbox=1' && ok "缺失共享目录不影响重建沙箱根" || bad "缺共享目录导致沙箱没重建：$r"
+has "$r" 'broken=1' && ok "重建循环的锚点缺失仍计入 broken" || bad "重建循环 broken 不对：$r"
+case "$out" in
+  *"$SRC/0/Android/data/com.victim/sdcard/DCIM"*) ok "重建日志说明缺的是哪个目录" ;;
+  *) bad "重建日志没写缺失目录：$out" ;;
+esac
+
+# ---------- 59) 普通根 root=/0：回滚按原 root 挂回并校验 ----------
+D59=$T/data59; seed_seen "$D59" || exit 1
+base_mi
+printf '103 100 0:50 /0 /storage/emulated/0 rw - fuse /dev/fuse rw\n' >> "$MI"
+setup_src || exit 1
+BIND_WRONG_SRC=1
+out=$(run_fix "$D59" 0); r=$(result "$out")
+BIND_WRONG_SRC=0
+has "$out" '已把原 FUSE 根挂回' && ok "root=/0 回滚后挂回原根" || bad "root=/0 没挂回：$out"
+grep -q ' 0:50 /0 /storage/emulated/0 ' "$MI" 2>/dev/null \
+  && ok "挂回后 root 仍是原 root /0" || bad "挂回后 root 不是 /0：$(cat "$MI")"
+has "$r" 'sandbox_gone' && ok "root=/0 回滚完成按 gone 上报" || bad "root=/0 回滚状态不对：$r"
+
+# ---------- 60) 普通根 root=/0：恢复后 root 不符 → rollback，不谎报 ----------
+D60=$T/data60; seed_seen "$D60" || exit 1
+base_mi
+printf '103 100 0:50 /0 /storage/emulated/0 rw - fuse /dev/fuse rw\n' >> "$MI"
+setup_src || exit 1
+BIND_WRONG_SRC=1; RESTORE_BAD_ROOT=1
+out=$(run_fix "$D60" 0); r=$(result "$out")
+BIND_WRONG_SRC=0; RESTORE_BAD_ROOT=0
+has "$out" '原 FUSE 根恢复失败' && ok "恢复后 root 不符会报恢复失败" || bad "root 不符没报失败：$out"
+has "$out" '已把原 FUSE 根挂回' && bad "root 不符却宣称已挂回：$out" || ok "root 不符不谎报已挂回"
+has "$r" 'rollback' && ok "root 不符打 rollback tag" || bad "root 不符没有 rollback：$r"
+has "$r" 'sandbox_stale' && ok "root 不符按 sandbox_stale 上报" || bad "root 不符没有报 stale：$r"
+
+# ---------- 61) 普通根 root=/0：umount 未生效 → 不 restore ----------
+D61=$T/data61; seed_seen "$D61" || exit 1
+base_mi
+printf '103 100 0:50 /0 /storage/emulated/0 rw - fuse /dev/fuse rw\n' >> "$MI"
+setup_src || exit 1
+UMOUNT_FAIL=3
+out=$(run_fix "$D61" 0); r=$(result "$out")
+UMOUNT_FAIL=0
+has "$out" 'umount 未生效' && ok "root=/0 umount 未生效有明确日志" || bad "root=/0 日志没说明 umount 未生效：$out"
+has "$out" '已把原 FUSE 根挂回' && bad "umount 未生效却尝试恢复原根：$out" || ok "umount 未生效不 restore"
+[ ! -s "$T/mount.log" ] && ok "umount 未生效时没有 bind（含 restore）" || bad "umount 未生效仍 bind：$(cat "$T/mount.log")"
+has "$r" 'sandbox_gone' && ok "root=/0 umount 未生效按 gone 上报" || bad "root=/0 状态不对：$r"
+grep -q ' /0 /storage/emulated/0 ' "$MI" 2>/dev/null && ok "root=/0 普通根保持原样" || bad "root=/0 普通根被动了"
+
+# ---------- 62) 扫描后进程变化（重建路径）：不 bind/umount，报 pid_changed ----------
+D62=$T/data62; seed_seen "$D62" || exit 1
+base_mi; setup_src || exit 1
+mkproc 123 3000
+mkstatline 123 4000 > "$T/stat.changed"
+STAT_FLIP="$SRC/0/Android/data/com.victim/sdcard"; STAT_FILE=$P/123/stat
+out=$(run_fix "$D62" 0); r=$(result "$out")
+STAT_FLIP=""; STAT_FILE=""
+mkproc 123 1000
+has "$r" 'pid_changed' && ok "扫描后 starttime 变化 → skipped=pid_changed" || bad "进程变化被忽略：$r"
+has "$r" 'fixed=0' && ok "进程变化时不计 fixed" || bad "进程变化仍计 fixed：$r"
+has "$out" '进程已变化' && ok "日志说明进程已变化" || bad "日志没有进程变化说明：$out"
+has "$r" 'sandbox=' && bad "进程变化仍报 sandbox=：$r" || ok "进程变化时不重建沙箱"
+[ ! -s "$T/mount.log" ] && [ ! -s "$T/umount.log" ] \
+  && ok "进程变化时不 bind/umount" || bad "进程变化仍动挂载：$(cat "$T/mount.log" "$T/umount.log" 2>/dev/null)"
+
+# ---------- 63) 扫描后进程变化（T 路径）：不 bind/umount，报 pid_changed ----------
+D63=$T/data63; seed_seen "$D63" || exit 1
+sandbox_ok_mi; setup_src || exit 1
+mkproc 123 3000
+mkstatline 123 4000 > "$T/stat.changed"
+STAT_FLIP="$SRC/0/DCIM"; STAT_FILE=$P/123/stat
+out=$(run_fix "$D63" 0); r=$(result "$out")
+STAT_FLIP=""; STAT_FILE=""
+mkproc 123 1000
+has "$r" 'pid_changed' && ok "T 路径扫描后变化 → skipped=pid_changed" || bad "T 路径进程变化被忽略：$r"
+has "$r" 'fixed=0' && ok "T 路径进程变化不计 fixed" || bad "T 路径进程变化仍计 fixed：$r"
+grep -q ' /storage/emulated/0/DCIM ' "$MI" 2>/dev/null \
+  && bad "进程变化后仍挂上了 DCIM：$(cat "$MI")" || ok "进程变化后 DCIM 没有被挂上"
+[ ! -s "$T/mount.log" ] && [ ! -s "$T/umount.log" ] \
+  && ok "T 路径进程变化时不 bind/umount" || bad "T 路径进程变化仍动挂载"
 
 echo
 [ "$fail" = 0 ] && { echo "sandbox.test: PASS"; exit 0; }

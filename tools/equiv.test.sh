@@ -94,6 +94,18 @@ S
 chmod 755 "$T/failbin/cp"
 
 mkdir -p "$P/101" "$P/102" "$P/103" "$P/104" "$P/105" "$P/106" "$P/107" "$P/108" "$P/109" "$P/111" "$P/113"
+# 动手前会再读 pid 的 starttime/uid/ns：给这些 pid 造 stat/status，否则修复会被跳过。
+mkproc() {   # $1=pid $2=starttime
+  _i=0; _f=""
+  while [ "$_i" -lt 18 ]; do _f="$_f 0"; _i=$((_i + 1)); done
+  printf '%s (com.pkg) S%s %s\n' "$1" "$_f" "$2" > "$P/$1/stat"
+  printf 'Name:\tcom.pkg\nUid:\t0\t0\t0\t0\n' > "$P/$1/status"
+}
+for _pid in 101 102 103 104 105 106 107 108 109 111 113; do
+  mkproc "$_pid" 1000
+  mkdir -p "$P/$_pid/ns"
+  ln -sf "mnt:[40265320$_pid]" "$P/$_pid/ns/mnt"
+done
 
 # 101 com.enabled：DCIM 叠两层、Pictures 正常、Download 别的层、
 #     Music/Documents 缺失、Android data 正常、media/obb 缺失。
@@ -147,7 +159,7 @@ cat > "$P/113/mountinfo" <<'M'
 M
 
 # 假源目录：$DATA/media/0/... 与 $SRC/0/...
-for pkg in com.enabled com.disabled com.young com.shared com.sub; do
+for pkg in com.enabled com.disabled com.young com.shared com.sub shared-com.shared; do
   root=$DATA/media/0/Android/data/$pkg/sdcard
   mkdir -p "$root/DCIM" "$root/Music" "$root/Pictures" "$root/Download" "$root/Documents" \
            "$root/Android/data" "$root/Android/media" "$root/Android/obb" 2>/dev/null

@@ -29,6 +29,19 @@ T=${TMPDIR:-/tmp}/si-churn-test.$$
 trap 'rm -rf "$T"' EXIT INT TERM HUP
 P=$T/proc; BIN=$T/bin; DATA=$T/data; SRC=$T/mnt/user/0/emulated
 mkdir -p "$P/self" "$P/101" "$P/102" "$BIN" "$DATA" "$SRC" || exit 1
+# 动手前会再读 pid 的 starttime/uid/ns：给被修复的 pid 造 stat/status。
+mkproc() {   # $1=pid $2=starttime
+  _i=0; _f=""
+  while [ "$_i" -lt 18 ]; do _f="$_f 0"; _i=$((_i + 1)); done
+  printf '%s (com.churn) S%s %s\n' "$1" "$_f" "$2" > "$P/$1/stat"
+  printf 'Name:\tcom.churn\nUid:\t0\t0\t0\t0\n' > "$P/$1/status"
+}
+mkproc 101 1000
+mkproc 102 1001
+# 动手前还要比对 namespace：给两个 pid 造 ns/mnt 链接。
+mkdir -p "$P/101/ns" "$P/102/ns" || exit 1
+ln -sf 'mnt:[4026532101]' "$P/101/ns/mnt"
+ln -sf 'mnt:[4026532101]' "$P/102/ns/mnt"
 
 cat > "$P/self/mountinfo" <<'M'
 100 1 0:50 / / rw - ext4 /dev/root rw
@@ -98,27 +111,27 @@ multi_healthy_mi() {
 M
 }
 
-run2() {   # 独立数据目录，$1=now $2=bind-fail
+run2() {   # 单独数据目录，$1=now $2=bind-fail
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA2 \
-    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
+    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=$2 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
     PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 run() {   # $1=now $2=bind-fail
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA \
-    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
+    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=$2 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
     PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 run_dry() {
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$DATA \
-    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
+    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
     SI_TEST_MI=$MI SI_TEST_BIND_FAIL=0 SI_MIN_AGE=5 SI_FUSE_WAIT=1 \
     PATH=$BIN:$PATH "$TEST_SH" "$FIX" -n -q 2>&1
 }
 run_multi() {   # $1=now $2=数据目录；ps 多报同包 PID 102，bind 改各自 mountinfo
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$2 \
-    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 \
+    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
     SI_TEST_MI=$MI SI_TEST_MI_DIR=$P SI_TEST_PS_EXTRA=1 SI_TEST_BIND_FAIL=0 \
     SI_MIN_AGE=5 SI_FUSE_WAIT=1 PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }

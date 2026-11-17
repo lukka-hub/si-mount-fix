@@ -36,7 +36,9 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
   源目录在宿主机和应用 namespace 里都必须可见。任何一条不满足就跳过，不猜着挂。
 - **先验后拆、失败回滚**：修复前确认目标现状，bind 后校验设备号与挂载条数；
   校验不通过立即 umount 回滚，不留下“看起来挂上了”的坏状态。只有沙箱确实卸干净
-  才会恢复临时卸下的普通 FUSE 根，卸不干净就保留现状并报 `rollback`。
+  才会恢复临时卸下的普通 FUSE 根，且按原 root 恢复（root=`/` 用 `/storage/emulated`，
+  root=`/0` 优先从 FUSE 层 `/0` 挂回），校验“一层、设备号、root”都等于原值才算挂回；
+  卸不干净或恢复后对不上就保留现状并报 `rollback`。
 - **重建沙箱的边界**：主扫描只在 `/storage/emulated/0` 栈顶是本包沙箱且只有一层时才认为
   健康；叠层/被其他层盖住会报 `rollback`/`sandbox_stale` 并提示重启应用。拆普通 FUSE 根
   只认本 boot、同 namespace 的 `.sandbox_seen` 证据；没有同 ns 证据（升级后首次、同 boot
@@ -45,8 +47,13 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
   本 boot 有该包任意 namespace 的行（或完全没有历史记录）时，才允许这条“源存在+属主匹配”
   的回落；只有全部是别的 boot 的旧行才拒绝回落。
 - **失败退避**：修复失败按 (包, 目标) 记在 `.repairs`，180 秒内不再重试；key 带 FUSE 设备号、
-  boot 和 namespace，任一变化立即失效。沙箱重建与共享目录修复共用这套退避，RESULT 带
-  `retry=`，不会因为一次坏包每轮重复 bind/回滚。
+  boot 和 namespace，任一变化立即失效。退避计时用 `/proc/uptime` 的单调时钟，系统时间被
+  修改不会让退避提前到期或无限延长；旧版本只写墙钟的失败行按“无退避”处理。沙箱重建与
+  共享目录修复共用这套退避，RESULT 带 `retry=`（仍是剩余秒数），不会因为一次坏包每轮
+  重复 bind/回滚。
+- **PID/ns 再校验**：扫描时记下进程的 starttime（`/proc/<pid>/stat` 第 22 字段）、uid 和
+  mount namespace；真正 bind/umount 前再读一次，任一不一致就跳过（`skipped=pid_changed`），
+  不碰挂载。扫描到动手之间的极短窗口仍无法完全消除。
 - **fail-closed**：配置读不出、FUSE 未就绪、目标在其他层时一律不动挂载；
   宁可这轮不修，也不把错误目录挂进应用。
 - **FUSE 晚到 defer**：修复脚本取不到 FUSE 设备号时立即返回 `defer=fuse`，
@@ -90,7 +97,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.4.2` 与 `versionCode=142`
+- 版本只有一个来源：`module.prop` 的 `version=v1.4.3` 与 `versionCode=143`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -134,7 +141,8 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 旧版守护没有该字段时，两端保留一份兜底词表）。无桥接时用的只读快照 `webroot/snapshot.js` 里另带
 `config{enabled,mode,interval,min_age}`，面板据此渲染配置。另有 `sandbox_gone` / `sandbox_stale` /
 `sandbox_rollback` / `sandbox_skip` 四个 0/1 字段，表示最近一轮扫描的沙箱问题；最近一轮 fix
-报错时可能仍是上一次的值。
+报错时可能仍是上一次的值。`last_fixed` 是“本次修复”的条数，每轮成功扫描都会按本轮 `fixed`
+覆盖（0 也归零），累计值看 `total_fixed`。
 
 `status.json` 的 `reason`：
 
@@ -180,7 +188,9 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 9. **沙箱问题需重启应用**：`sandbox_stale`/`sandbox_rollback`/`sandbox_skip` 分别表示僵死、
    回滚或叠层残留、安全跳过；模块不会原地强拆，重启该应用让 SI 重建 namespace 即可收敛。
 10. **root=`/0` 的普通根**：少数设备的 `/storage/emulated/0` 普通 FUSE 根，mountinfo 里的
-    root 是 `/0`；这类根的回滚恢复当前还没有真机覆盖，遇到异常时重启该应用。
+    root 是 `/0`；回滚时会按原 root（`/` 用 `/storage/emulated`，`/0` 优先从 FUSE 层
+    `/0` 挂回、应用看不到时退回 self-bind）恢复，并校验层数、设备号与 root 都与原值一致，
+    不一致就按 `rollback` 保留现状，不会谎报已恢复。
 11. **禁用模块不等于立即停止**：已运行的守护要到下次重启才消失；要立刻停止请卸载或手动结束进程。
 
 ## 排障
@@ -200,6 +210,11 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 - 出现 `skipped=*rollback*`：沙箱 `umount` 没卸干净、原 FUSE 根恢复失败，或主扫描发现
   `/storage/emulated/0` 叠了多层。模块保留残留挂载，不会为了“看起来修好了”把父根叠回去，
   也不会自动重试。**重启该应用**即可收敛；不要反复点修复。
+- 出现 `skipped=*target_missing*`：沙箱锚点目录或目标目录不存在（`/data/media` 下的沙箱副本、
+  或 `Android/{data,media,obb}` 目标），模块不会硬 bind，会说明缺的是哪个路径并计入需修复。
+  多为 SI 的沙箱目录被清掉，重启该应用让 SI 重建后再看。
+- 出现 `skipped=*pid_changed*`：扫描之后、动手之前进程重启或换了 namespace；模块跳过本轮、
+  不 bind/umount，下一轮按新进程重新扫描即可。
 - 出现 `skipped=*sandbox_stale*`：应用 namespace 里还是旧 FUSE 的僵死挂载（宿主设备号已变、旧会话不存在，
   应用内读目录会报 `Transport endpoint is not connected`），或 target 栈顶被别的层盖住（不是本包沙箱）；
   回滚/原根恢复失败也归到这里。跨 namespace 无法修复，模块不会动挂载；重启该应用，让 SI 重建

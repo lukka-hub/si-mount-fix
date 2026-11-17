@@ -432,13 +432,14 @@ run_fix() {
     LAST_FIX=$LAST_CHECK
     REASON=ok
     CHURN=$churn
+    # “本次修复”只代表当前这一轮：成功扫描后按本轮 fixed 覆盖，fixed=0 也要归零。
+    LAST_FIXED=$fixed
     if [ "$DEFER_COUNT" -gt 0 ] || [ "$FUSE_MISSING_LOGGED" = 1 ]; then
       log "FUSE 层已就绪，恢复扫描"
     fi
     DEFER_COUNT=0
     FUSE_MISSING_LOGGED=0
     if [ "$fixed" -gt 0 ]; then
-      LAST_FIXED=$fixed
       TOTAL=$((TOTAL + fixed))
       echo "$TOTAL" > "$DATA/.total" 2>/dev/null
       log "修复 $fixed 条（broken=$broken, checked=$checked）"

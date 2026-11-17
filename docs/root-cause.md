@@ -188,18 +188,6 @@ key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT
   `/proc/1/mountinfo` 里查不到，或者主扫描发现 target 栈顶不是本包沙箱、回滚/原根恢复
   失败，都会归到这里；真正挂在别的层的健康沙箱仍报 `skipped=layer`。
 
-### 仍未覆盖的边界
-
-以下问题在 1.4.2 之后仍然存在，留到 1.4.3：
-
-- 普通根 root=`/0` 的回滚恢复：真机上 user 0 的 `/0` 普通根不可达，恢复分支走不到；
-- `--trim-only` 裁剪与扫描同时发生时的窄竞态；
-- 沙箱锚点目录缺失时还没有上报，`last_fixed` 也不会归零；
-- `.repairs` 在系统时间跳变时的退避判断，以及 `rb_allow` 的 glob 展开；
-- 检查 PID/namespace 与真正执行 mount/umount 之间的 TOCTOU 窗口。
-
-以上都留到 1.4.3 处理。
-
 ### 不是 ColorOS 专有
 
 这条链路是 AOSP 的机制：vold 在 FUSE 守护进程死亡后重挂用户存储。ColorOS 的差别

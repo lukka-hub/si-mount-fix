@@ -117,8 +117,10 @@ case "$out" in
   *defer=fuse*|*error=*|*layer_unknown*) bad "FUSE 已就绪仍 defer/报错：$out" ;;
   *) ok "FUSE 已就绪时不 defer、不报错" ;;
 esac
+# 这个 fixture 没有源目录：1.4.3 起锚点缺失会报 target_missing 并计入 broken，
+# 所以这里只断言“确实扫到了进程、没有动挂载”。
 case "$out" in
-  *checked=1*broken=0*fixed=0*) ok "进入正常扫描（checked=1）" ;;
+  *checked=1*fixed=0*) ok "进入正常扫描（checked=1）" ;;
   *) bad "没有进入正常扫描：$out" ;;
 esac
 
