@@ -133,17 +133,14 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .btn.danger{color:var(--bad);border-color:var(--bad)}
 .btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}
 .btn[disabled]{opacity:.42;cursor:default;transform:none}
-.btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .row-actions .act-btn{flex:1 1 120px}
 #patchCard .card-head{align-items:flex-start;flex-wrap:wrap;gap:6px 10px}
 #patchCard .card-head h2{flex:1 1 auto;min-width:0;line-height:1.35;overflow-wrap:anywhere}
 #patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap;line-height:1.6}
 #patchDetail{overflow-wrap:anywhere}
-.patch-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,160px));justify-content:start;gap:8px;align-items:stretch;margin-top:14px}
-.patch-actions .btn{width:100%;min-width:0;margin:0}
-.patch-check-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 10px;margin-top:14px}
-.patch-check-row .btn{flex:0 0 auto;width:auto}
-#patchTiming{min-width:0;line-height:1.4;overflow-wrap:anywhere}
+#patchActions{margin-top:14px}
+#patchTiming{display:block;margin-top:8px;line-height:1.4;overflow-wrap:anywhere}
 .result{margin-top:12px;background:var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px}
 .result.good{background:var(--good-bg);color:var(--good)}
 .result.warn{background:var(--warn-bg);color:var(--warn)}
@@ -244,19 +241,17 @@ details.card[open] summary{margin-bottom:8px}
   <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
-  <div class="row-actions patch-check-row" id="patchCheckRow">
-    <button class="btn ghost act-btn" id="btnPatchCheck" disabled>检查补丁</button>
-    <span class="muted small" id="patchTiming">—</span>
-  </div>
-  <div class="row-actions patch-actions" id="patchActions" hidden>
+  <div class="btn-grid" id="patchActions" hidden>
     <button class="btn primary act-btn" id="btnPatchApply" disabled>应用补丁</button>
     <button class="btn ghost act-btn" id="btnPatchRestore" hidden disabled>恢复原版</button>
     <button class="btn danger act-btn" id="btnPatchForce" hidden disabled>强制恢复</button>
+    <button class="btn ghost act-btn" id="btnPatchCheck" disabled>检查补丁</button>
   </div>
+  <div class="muted small" id="patchTiming">—</div>
   <div id="patchConfirm" class="result warn" role="alert" hidden>
     <div class="r-title" id="patchConfirmTitle"></div>
     <div class="r-body" id="patchConfirmBody"></div>
-    <div class="row-actions patch-actions">
+    <div class="btn-grid">
       <button class="btn primary act-btn" id="btnPatchConfirmGo" disabled>确认执行</button>
       <button class="btn ghost act-btn" id="btnPatchConfirmCancel">取消</button>
     </div>
@@ -1605,8 +1600,7 @@ details.card[open] summary{margin-bottom:8px}
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
 
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
-      state.patchSdk === '37' && !actionBusy('patchCheck');
-    var forceOk = !!(p && p.match && p.backupOk && st === 'unknown');
+      state.patchSdk === '37' && !actionBusy('patchCheck') && !state.patchConfirm;
     applyBtn.textContent = st === 'patched-legacy' ? '升级到自建版' : '应用补丁';
     restoreBtn.textContent = '恢复原版';
     if (err) {
@@ -1616,17 +1610,17 @@ details.card[open] summary{margin-bottom:8px}
     } else {
       applyBtn.hidden = !(st === 'original' || st === 'patched-legacy');
       restoreBtn.hidden = !(st === 'patched' || st === 'patched-legacy');
-      forceBtn.hidden = !forceOk;
+      /* unknown 的强制恢复始终占网格单元；无备份/版本不匹配时置灰而不是消失。 */
+      forceBtn.hidden = !(st === 'unknown');
     }
     applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply');
     restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchRestore');
-    forceBtn.disabled = !canAct || !p || !p.match || actionBusy('patchForce');
+    forceBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchForce');
     if (checkBtn) {
-      checkBtn.disabled = !BR.ok || state.noRoot || state.locked ||
+      checkBtn.disabled = !BR.ok || state.noRoot || state.locked || state.patchConfirm ||
         actionBusy('patchCheck') || patchBusy();
     }
-    $('patchActions').hidden = !!(state.patchConfirm) ||
-      (applyBtn.hidden && restoreBtn.hidden && forceBtn.hidden);
+    $('patchActions').hidden = false;
 
     var panel = $('patchConfirm');
     if (state.patchConfirm && !patchBusy() && !actionBusy('patchCheck') && !err &&

@@ -113,7 +113,7 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.6` 与 `versionCode=156`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.7` 与 `versionCode=157`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
