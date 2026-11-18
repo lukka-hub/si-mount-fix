@@ -59,9 +59,9 @@ if [ "$SI_TEST" != 1 ]; then
   done
 fi
 
-# 卸载前尽量恢复 SI 原版 dex；恢复不了就保留数据目录，不能把唯一备份一起删掉。
+# 卸载前尽量恢复 zygisk 模块原版 main.dex；恢复不了就保留数据目录，不能把唯一备份一起删掉。
 PATCH_SCRIPT=$MOD/scripts/si-patch.sh
-PATCH_DEX=/data/adb/storage-isolation/bin/server-v355.dex
+PATCH_DEX=/data/adb/modules/zygisk-storage-isolation/main.dex
 PATCH_RESTORE_FAILED=0
 if [ -f "$PATCH_SCRIPT" ]; then
   _chk=$(SI_DATA="$DATA" sh "$PATCH_SCRIPT" check 2>/dev/null)
@@ -73,7 +73,7 @@ if [ -f "$PATCH_SCRIPT" ]; then
     _rc=$?
     if [ "$_rc" = 0 ]; then
       printf '%s\n' "$_out"
-      printf '卸载前已恢复 SI 原版：%s\n' "$PATCH_DEX"
+      printf '卸载前已恢复 zygisk 模块原版 main.dex：%s\n' "$PATCH_DEX"
     else
       PATCH_RESTORE_FAILED=1
       printf '卸载前恢复补丁失败：\n%s\n' "$_out"
@@ -89,7 +89,7 @@ fi
 
 if [ "$PATCH_RESTORE_FAILED" = 1 ]; then
   printf '补丁备份保留在 %s/patch-backup\n' "$DATA"
-  printf '当前 SI dex：%s\n' "$PATCH_DEX"
+  printf '当前 main.dex：%s\n' "$PATCH_DEX"
   printf '请确认该 dex 已恢复原版后，再删除 %s。\n' "$DATA"
 else
   rm -rf "$DATA"

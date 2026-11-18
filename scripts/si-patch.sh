@@ -1,67 +1,73 @@
 #!/system/bin/sh
-# si-patch.sh — Android 17（SDK 37）下 SI 应用列表为空的可选修复。
+# si-patch.sh — Android 17（SDK 37）下 SI 应用列表为空的修复（main.dex）。
 #
-# 只替换 /data/adb/storage-isolation/bin/server-v355.dex：
-#   原版 331,520 B / sha256 c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
-#   补丁 325,984 B / sha256 7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
-# 补丁 dex 由本模块对官方 SI v355 的 server-v355.dex 自行反编译重打；
-# 思路由酷安用户「无所事事」提供。随模块 assets/server-v355.dex 分发，不要修改内容。
-# 适用 SI 版本取自 module.prop 的 siPatchVersion / siPatchServer，脚本里不写版本字面量。
+# 只替换 zygisk-storage-isolation 模块的 main.dex：
+#   /data/adb/modules/zygisk-storage-isolation/main.dex
+#   原版 90,740 B / sha256 a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
+#   补丁 99,104 B / sha256 6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+# 补丁 main.dex 已在真机重启验证：server dex 会被 SI daemon 写回原版，但 main.dex 由
+# Zygisk 模块在开机时加载，替换后跨重启保持。因此不再修补 server dex，也不重启 SI server。
+# 补丁 main.dex 随模块 assets/main.dex 分发，不要修改内容。
+# 适用模块与文件名取自 module.prop 的 siPatchModule / siPatchTarget，版本取自
+# siPatchVersion / siPatchVersionCode；脚本里不写版本字面量。
 #
 # 用法：sh si-patch.sh check|status|apply|restore [--force]
-#   check          输出 KEY=VALUE
+#   check          输出 KEY=VALUE，只读文件哈希/大小，不扫 /proc
 #   status         给人看的一行状态
-#   apply          仅 SDK=37、SI 版本适用、路径存在且为原版时执行；先备份、再校验、失败回滚
+#   apply          仅 SDK=37、zygisk 模块适用、目标为原版时执行；先备份、再校验、失败回滚
 #   restore        当前为补丁版时，从新到旧找第一份 sha==原版的备份恢复
 #   restore --force 当前不是补丁版（如 unknown）但存在有效原版备份时，显式覆盖恢复
 #
-# 只碰 server-v355.dex：不改 main.dex、不改 SI 配置、不动 SI 的其它文件；
-# apply/restore 成功只重启映射该 dex 的 server 进程，不杀 daemon/app。
+# 只碰 zygisk-storage-isolation/main.dex：不改 SI 配置、不动 SI 的其它文件；
+# apply/restore 成功只提示重启生效，不杀进程、不等待 server。
 LC_ALL=C
 export LC_ALL
 
-ORIGINAL_SHA=c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
-PATCH_SHA=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
-SERVER=server-v355.dex
+ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
+ORIGINAL_SIZE=90740
+PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+PATCH_SIZE=99104
 
 case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
 MODDIR=${SI_MOD:-$D/..}
 DATA=${SI_DATA:-/data/adb/si-mount-fix}
-BIN=/data/adb/storage-isolation/bin
-ASSET=$MODDIR/assets/$SERVER
+PROP=$MODDIR/module.prop
 CP=cp
-PROC=/proc
-KILL=kill
-RESTART_WAIT=5
-TERM_WAIT=1
+CHOWN=chown
+
+# 适用模块/文件名/版本只来自 module.prop；缺失时用已知目标兜底，apply 会因版本门禁拒绝。
+PATCH_FOR_MODULE=
+PATCH_FOR_TARGET=
+PATCH_FOR_VERSION=
+PATCH_FOR_VERSION_CODE=
+if [ -r "$PROP" ]; then
+  PATCH_FOR_MODULE=$(sed -n 's/^siPatchModule=//p' "$PROP" 2>/dev/null | head -1)
+  PATCH_FOR_TARGET=$(sed -n 's/^siPatchTarget=//p' "$PROP" 2>/dev/null | head -1)
+  PATCH_FOR_VERSION=$(sed -n 's/^siPatchVersion=//p' "$PROP" 2>/dev/null | head -1)
+  PATCH_FOR_VERSION_CODE=$(sed -n 's/^siPatchVersionCode=//p' "$PROP" 2>/dev/null | head -1)
+fi
+[ -n "$PATCH_FOR_MODULE" ] || PATCH_FOR_MODULE=zygisk-storage-isolation
+[ -n "$PATCH_FOR_TARGET" ] || PATCH_FOR_TARGET=main.dex
+TARGET=$PATCH_FOR_TARGET
+TARGET_DIR=/data/adb/modules/$PATCH_FOR_MODULE
+MODULE_PROP=$TARGET_DIR/module.prop
+ASSET=$MODDIR/assets/$TARGET
 
 # 测试钩子只在 SI_TEST=1 时生效，生产环境忽略残留变量。
-# SI_PATCH_ORIGINAL_SHA 让测试用小样本扮演“原版”；补丁哈希始终用真实值。
+# ORIGINAL_SHA/SIZE 可换成小样本扮演“原版”；补丁哈希/大小始终用真实值。
 if [ "$SI_TEST" = 1 ]; then
   [ -n "${SI_PATCH_DATA:-}" ] && DATA=$SI_PATCH_DATA
-  [ -n "${SI_PATCH_BIN:-}" ] && BIN=$SI_PATCH_BIN
+  [ -n "${SI_PATCH_TARGET_DIR:-}" ] && TARGET_DIR=$SI_PATCH_TARGET_DIR
   [ -n "${SI_PATCH_ASSET:-}" ] && ASSET=$SI_PATCH_ASSET
   [ -n "${SI_PATCH_ORIGINAL_SHA:-}" ] && ORIGINAL_SHA=$SI_PATCH_ORIGINAL_SHA
+  [ -n "${SI_PATCH_ORIGINAL_SIZE:-}" ] && ORIGINAL_SIZE=$SI_PATCH_ORIGINAL_SIZE
   [ -n "${SI_PATCH_CP:-}" ] && CP=$SI_PATCH_CP
-  [ -n "${SI_PATCH_PROC:-}" ] && PROC=$SI_PATCH_PROC
-  [ -n "${SI_PATCH_KILL:-}" ] && KILL=$SI_PATCH_KILL
-  [ -n "${SI_PATCH_RESTART_WAIT:-}" ] && RESTART_WAIT=$SI_PATCH_RESTART_WAIT
-  [ -n "${SI_PATCH_TERM_WAIT:-}" ] && TERM_WAIT=$SI_PATCH_TERM_WAIT
+  [ -n "${SI_PATCH_CHOWN:-}" ] && CHOWN=$SI_PATCH_CHOWN
 fi
-case "$RESTART_WAIT" in ''|*[!0-9]*) RESTART_WAIT=5 ;; esac
-case "$TERM_WAIT" in ''|*[!0-9]*) TERM_WAIT=1 ;; esac
-DEX=$BIN/$SERVER
+DEX=$TARGET_DIR/$TARGET
+MODULE_PROP=$TARGET_DIR/module.prop
 BACKUP_DIR=$DATA/patch-backup
 LOCK=$DATA/.si-patch.lock
-PROP=$MODDIR/module.prop
-
-# 适用版本只来自 module.prop；缺失时 SI_MATCH=0，apply 会拒绝执行。
-PATCH_FOR_VERSION=
-PATCH_FOR_SERVER=
-if [ -r "$PROP" ]; then
-  PATCH_FOR_VERSION=$(sed -n 's/^siPatchVersion=//p' "$PROP" 2>/dev/null | head -1)
-  PATCH_FOR_SERVER=$(sed -n 's/^siPatchServer=//p' "$PROP" 2>/dev/null | head -1)
-fi
 
 detect_sdk() {
   if [ "$SI_TEST" = 1 ] && [ -n "${SI_PATCH_SDK:-}" ]; then
@@ -69,20 +75,6 @@ detect_sdk() {
     return 0
   fi
   getprop ro.build.version.sdk 2>/dev/null | tr -d '[:space:]'
-}
-
-detect_si_version() {
-  if [ "$SI_TEST" = 1 ] && [ -n "${SI_PATCH_VERSION:-}" ]; then
-    printf '%s\n' "$SI_PATCH_VERSION"
-    return 0
-  fi
-  command -v dumpsys >/dev/null 2>&1 || return 1
-  if command -v timeout >/dev/null 2>&1; then
-    _dump=$(timeout 5 dumpsys package moe.shizuku.redirectstorage 2>/dev/null)
-  else
-    _dump=$(dumpsys package moe.shizuku.redirectstorage 2>/dev/null)
-  fi
-  printf '%s\n' "$_dump" | sed -n 's/^[[:space:]]*versionName=//p' | head -1
 }
 
 sha256_of() {
@@ -95,10 +87,20 @@ file_size() {
   wc -c < "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
-# 备份文件名是 server-v355.dex.<YYYYmmdd-HHMMSS>[.<序号>]；临时文件以点开头，不会混进来。
+target_version() {
+  [ -r "$MODULE_PROP" ] || return 0
+  sed -n 's/^version=//p' "$MODULE_PROP" 2>/dev/null | head -1
+}
+
+target_version_code() {
+  [ -r "$MODULE_PROP" ] || return 0
+  sed -n 's/^versionCode=//p' "$MODULE_PROP" 2>/dev/null | head -1
+}
+
+# 备份文件名是 main.dex.<YYYYmmdd-HHMMSS>[.<序号>]；临时文件以点开头，不会混进来。
 list_backups() {
   [ -d "$BACKUP_DIR" ] || return 0
-  for _b in "$BACKUP_DIR/$SERVER".*; do
+  for _b in "$BACKUP_DIR/$TARGET".*; do
     [ -f "$_b" ] || continue
     case "${_b##*/}" in
       *".tmp."*) continue ;;
@@ -122,164 +124,24 @@ find_original_backup() {
   done
 }
 
-# maps 路径与目标 dex 都按 readlink -f 归一化后比较（处理符号链接、/./）。
-# 只认 pathname 最后一段是 $SERVER 的行，先排除库和其它文件；容忍 " (deleted)"。
-maps_has_dex() {   # $1=maps 文件
-  [ -r "$1" ] || return 1
-  _mh_real=$(readlink -f "$DEX" 2>/dev/null)
-  [ -n "$_mh_real" ] || _mh_real=$DEX
-  _mh_list=$(awk -v name="$SERVER" '
-    {
-      p = $0
-      sub(/^[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+/, "", p)
-      n = split(p, a, "/")
-      if (a[n] == name || a[n] == name " (deleted)") print p
-    }
-  ' "$1" 2>/dev/null)
-  _mh_sfx=' (deleted)'
-  while IFS= read -r _mh_p; do
-    [ -n "$_mh_p" ] || continue
-    case "$_mh_p" in *"$_mh_sfx") _mh_p=${_mh_p%"$_mh_sfx"} ;; esac
-    [ "$_mh_p" = "$DEX" ] && return 0
-    [ "$_mh_p" = "$_mh_real" ] && return 0
-    _mh_rp=$(readlink -f "$_mh_p" 2>/dev/null)
-    [ -n "$_mh_rp" ] && [ "$_mh_rp" = "$_mh_real" ] && return 0
-  done <<EOF
-$_mh_list
-EOF
-  return 1
-}
-
-# 只认 SI 自己的进程：cmdline 含 storage_isolation / storage-isolation，或 uid=0；
-# 模块守护 si-mount-eventd 即使恰好映射了同名文件也不碰（root 守护同样排除）。
-proc_is_si_server() {   # $1=pid
-  [ -d "$PROC/$1" ] || return 1
-  _cmd=
-  [ -r "$PROC/$1/cmdline" ] && _cmd=$(tr '\0' ' ' < "$PROC/$1/cmdline" 2>/dev/null)
-  case "$_cmd" in
-    *si-mount-eventd*|*si-mount-fix/scripts*) return 1 ;;
-    *storage_isolation*|*storage-isolation*) return 0 ;;
-  esac
-  if [ -r "$PROC/$1/status" ]; then
-    _uid=$(sed -n 's/^Uid:[[:space:]]*//p' "$PROC/$1/status" 2>/dev/null | awk '{print $1}' | head -1)
-    [ "$_uid" = 0 ] && return 0
-  fi
-  return 1
-}
-
-# 明确是别的应用（cmdline 带 com. 包名或 /data/app 等应用路径）的进程，不算 SI server。
-# 空 cmdline / 只有 storage-isolation 路径 / 非 root server 都保留。
-proc_is_other_app() {   # $1=pid
-  [ -r "$PROC/$1/cmdline" ] || return 1
-  _ocmd=$(tr '\0' ' ' < "$PROC/$1/cmdline" 2>/dev/null)
-  case "$_ocmd" in
-    *com.*|*/data/app/*|*/data/data/*|*/data/user/*) return 0 ;;
-  esac
-  return 1
-}
-
-find_dex_pids_any() {   # 只按 maps 精确匹配，不做身份判断
-  for _maps in "$PROC"/[0-9]*/maps; do
-    [ -r "$_maps" ] || continue
-    maps_has_dex "$_maps" || continue
-    _ap=${_maps%/maps}
-    printf '%s\n' "${_ap##*/}"
-  done
-}
-
-find_dex_pids_alive() {   # maps 命中且不是明确的其他应用
-  for _lp in $(find_dex_pids_any); do
-    proc_is_other_app "$_lp" && continue
-    printf '%s\n' "$_lp"
-  done
-}
-
-count_dex_pids() {  # check 的 SERVER_PIDS：排除明确其他应用后的映射进程数
-  find_dex_pids_alive | wc -l | tr -d '[:space:]'
-}
-
-# 只结束映射了目标 dex 的 SI server 进程；daemon 由 PPID 1 拉起，不映射这个 dex，不碰。
-restart_si_server() {
-  _old=
-  _refused=
-  for _p in $(find_dex_pids_any); do
-    if proc_is_si_server "$_p"; then
-      _old="$_old $_p"
-    else
-      _refused="$_refused $_p"
-      log_action "SERVER-RESTART refuse pid=$_p"
-    fi
-  done
-  _skip_pids="$_old $_refused"
-  if [ -z "$_old" ]; then
-    if [ -n "$_refused" ]; then
-      log_action "SERVER-RESTART skip refused"
-      return 3
-    fi
-    log_action "SERVER-RESTART skip"
-    return 2
-  fi
-
-  for _p in $_old; do
-    # TERM 前复核：准备期间进程可能已退出，或 PID 被复用
-    maps_has_dex "$PROC/$_p/maps" || continue
-    proc_is_si_server "$_p" || continue
-    "$KILL" -TERM "$_p" 2>/dev/null
-  done
-  sleep "$TERM_WAIT"
-  for _p in $_old; do
-    # KILL 前再复核一次：已退出/不再映射 $DEX 的不补刀，避免误杀复用后的 PID
-    maps_has_dex "$PROC/$_p/maps" || continue
-    proc_is_si_server "$_p" || continue
-    "$KILL" -KILL "$_p" 2>/dev/null
-  done
-
-  _new=
-  # 0.1 秒粒度计数（mksh 算术 32 位，不能用 date +%s%N）；总等待约 RESTART_WAIT 秒。
-  _ticks=$((RESTART_WAIT * 10))
-  while [ "$_ticks" -gt 0 ]; do
-    # 新进程只按 maps 认（SI server 可能不是 root，cmdline 也未必带特征），
-    # 但明确属于其他应用的进程不算。
-    for _p in $(find_dex_pids_alive); do
-      case " $_skip_pids " in
-        *" $_p "*) continue ;;
-      esac
-      _new=$_p
-      break 2
-    done
-    sleep 0.1
-    _ticks=$((_ticks - 1))
-  done
-
-  if [ -n "$_new" ]; then
-    log_action "SERVER-RESTART ok pid=$_new"
-    return 0
-  fi
-  log_action "SERVER-RESTART fail"
-  return 1
-}
-
-restart_note() {   # $1=应用|恢复 $2=restart_si_server 的返回码
-  case "$2" in
-    0) printf '已%s，SI server 已自动重启；若列表未刷新请重开 SI。\n' "$1" ;;
-    2) printf '已%s；当前没有运行中的 SI server，打开 SI 后生效。\n' "$1" ;;
-    3) printf '已%s；找到映射该 dex 的进程但身份不符，已跳过；请重开 SI 或重启手机。\n' "$1" ;;
-    *) printf '已%s；SI server 自动重启失败，请重开 SI 或重启手机。\n' "$1" ;;
-  esac
-}
-
-si_version_ok() {
+# 版本门禁：module.prop 有的字段必须匹配；版本信息完全读不到时，以目标文件存在作为适用范围依据。
+version_ok() {
   [ -n "$PATCH_FOR_VERSION" ] || return 1
-  # versionName 读不到时，固定路径 server-v355.dex 本身就是适用范围内的证据。
-  [ -n "$SI_VERSION" ] || return 0
-  case "$SI_VERSION" in
-    "$PATCH_FOR_VERSION"*) return 0 ;;
-  esac
-  return 1
+  if [ -n "$SI_VERSION" ]; then
+    _v=${SI_VERSION#v}
+    _tv=${PATCH_FOR_VERSION#v}
+    [ "$_v" = "$_tv" ] || return 1
+  fi
+  if [ -n "$PATCH_FOR_VERSION_CODE" ] && [ -n "$SI_VERSION_CODE" ]; then
+    [ "$SI_VERSION_CODE" = "$PATCH_FOR_VERSION_CODE" ] || return 1
+  fi
+  return 0
 }
 
 SDK=$(detect_sdk)
-SI_VERSION=$(detect_si_version)
+[ -n "$SDK" ] || SDK=unknown
+SI_VERSION=
+SI_VERSION_CODE=
 SIZE=0
 SHA=
 DEX_EXISTS=0
@@ -295,7 +157,6 @@ BACKUP=
 LOCK_HELD=0
 
 collect_state() {
-  SDK=${SDK:-unknown}
   SIZE=0
   SHA=
   DEX_EXISTS=0
@@ -308,8 +169,10 @@ collect_state() {
     esac
     SHA=$(sha256_of "$DEX")
   fi
+  SI_VERSION=$(target_version)
+  SI_VERSION_CODE=$(target_version_code)
   SI_MATCH=0
-  if si_version_ok; then SI_MATCH=1; fi
+  if [ "$DEX_EXISTS" = 1 ] && version_ok; then SI_MATCH=1; fi
   BACKUP_COUNT=$(count_backups)
   BACKUP_OK=0
   if [ -n "$(find_original_backup)" ]; then BACKUP_OK=1; fi
@@ -318,10 +181,10 @@ collect_state() {
   if [ "$SDK" != 37 ]; then
     STATE=unsupported
   elif [ "$DEX_EXISTS" != 1 ]; then
-    STATE=no-si
-  elif [ "$SHA" = "$ORIGINAL_SHA" ]; then
+    STATE=no-target
+  elif [ "$SHA" = "$ORIGINAL_SHA" ] && [ "$SIZE" = "$ORIGINAL_SIZE" ]; then
     STATE=original
-  elif [ "$SHA" = "$PATCH_SHA" ]; then
+  elif [ "$SHA" = "$PATCH_SHA" ] && [ "$SIZE" = "$PATCH_SIZE" ]; then
     STATE=patched
   else
     STATE=unknown
@@ -332,42 +195,49 @@ print_check() {
   printf 'STATE=%s\n' "$STATE"
   printf 'SDK=%s\n' "$SDK"
   printf 'SI_VERSION=%s\n' "${SI_VERSION:-}"
+  printf 'SI_VERSION_CODE=%s\n' "${SI_VERSION_CODE:-}"
+  printf 'SI_TARGET_MODULE=%s\n' "$PATCH_FOR_MODULE"
   printf 'SI_TARGET_VERSION=%s\n' "${PATCH_FOR_VERSION:-}"
-  printf 'SI_TARGET_SERVER=%s\n' "${PATCH_FOR_SERVER:-}"
+  printf 'SI_TARGET_VERSION_CODE=%s\n' "${PATCH_FOR_VERSION_CODE:-}"
+  printf 'SI_TARGET_FILE=%s\n' "$TARGET"
   printf 'SI_MATCH=%s\n' "$SI_MATCH"
   printf 'DEX=%s\n' "$DEX"
   printf 'SIZE=%s\n' "$SIZE"
   printf 'SHA=%s\n' "${SHA:-}"
+  printf 'ORIGINAL_SIZE=%s\n' "$ORIGINAL_SIZE"
+  printf 'ORIGINAL_SHA=%s\n' "$ORIGINAL_SHA"
+  printf 'PATCH_SIZE=%s\n' "$PATCH_SIZE"
+  printf 'PATCH_SHA=%s\n' "$PATCH_SHA"
   printf 'BACKUP_COUNT=%s\n' "$BACKUP_COUNT"
   printf 'BACKUP_OK=%s\n' "$BACKUP_OK"
   printf 'PROMPTED=%s\n' "$PROMPTED"
-  printf 'SERVER_PIDS=%s\n' "$(count_dex_pids)"
 }
 
 status_line() {
   case "$STATE" in
     unsupported)
-      printf 'SI 补丁：不适用（Android SDK %s，仅支持 SDK 37）\n' "$SDK" ;;
-    no-si)
-      printf 'SI 补丁：未检测到 SI 的 %s（%s）\n' "$SERVER" "$DEX" ;;
+      printf 'main.dex 补丁：不适用（Android SDK %s，仅支持 SDK 37）\n' "$SDK" ;;
+    no-target)
+      printf 'main.dex 补丁：未检测到 zygisk-storage-isolation 的 %s（%s）\n' "$TARGET" "$DEX" ;;
     original)
       if [ "$SI_MATCH" = 1 ]; then
-        printf 'SI 补丁：可应用（SI %s，原版 %s）\n' "${SI_VERSION:-版本未知}" "$SERVER"
+        printf 'main.dex 补丁：可应用（zygisk-storage-isolation %s，原版 %s）\n' \
+          "${SI_VERSION:-版本未知}" "$TARGET"
       else
-        printf 'SI 补丁：不适用（当前 SI %s，仅适用于 %s / %s）\n' \
-          "${SI_VERSION:-版本未知}" "${PATCH_FOR_VERSION:-未知版本}" "${PATCH_FOR_SERVER:-$SERVER}"
+        printf 'main.dex 补丁：不适用（当前 zygisk-storage-isolation %s，仅适用于 %s / %s）\n' \
+          "${SI_VERSION:-版本未知}" "${PATCH_FOR_VERSION:-未知版本}" "$TARGET"
       fi ;;
     patched)
       if [ "$BACKUP_OK" = 1 ]; then
-        printf 'SI 补丁：已应用（可恢复原版）\n'
+        printf 'main.dex 补丁：已应用（重启手机生效；可恢复原版）\n'
       else
-        printf 'SI 补丁：已应用（没有可用的原版备份）\n'
+        printf 'main.dex 补丁：已应用（重启手机生效；没有可用的原版备份）\n'
       fi ;;
     *)
       if [ "$BACKUP_OK" = 1 ]; then
-        printf 'SI 补丁：版本不匹配，未动（有可用的原版备份，可强制恢复）\n'
+        printf 'main.dex 补丁：版本/哈希不匹配，未动（有可用的原版备份，可强制恢复）\n'
       else
-        printf 'SI 补丁：版本不匹配，未动（sha256 %s）\n' "${SHA:-读取失败}"
+        printf 'main.dex 补丁：版本/哈希不匹配，未动（sha256 %s）\n' "${SHA:-读取失败}"
       fi ;;
   esac
 }
@@ -416,8 +286,7 @@ acquire_lock() {
         _i=$((_i + 1))
       done
     fi
-    if [ -n "$_lp" ] && [ -d "/proc/$_lp" ] && \
-       tr '\0' ' ' < "/proc/$_lp/cmdline" 2>/dev/null | grep -q 'si-patch\.sh'; then
+    if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; then
       die "另一个补丁操作正在进行（PID $_lp），请稍后再试" 4
     fi
     rm -rf "$LOCK" 2>/dev/null
@@ -432,11 +301,12 @@ acquire_lock() {
   LOCK_HELD=1
 }
 
-# 把 $1 复制到目标 dex：临时文件里 chown/chmod、校验 $2，再原子替换。
+# 把 $1 复制到目标 dex：临时文件里 chown/chmod、校验 $2/$3，再原子替换。
 install_file() {
   _src=$1
   _want=$2
-  _tmp=$BIN/.$SERVER.new.$$
+  _want_size=$3
+  _tmp=$TARGET_DIR/.$TARGET.new.$$
   TMP_TARGET=$_tmp
   if ! "$CP" "$_src" "$_tmp"; then
     rm -f "$_tmp" 2>/dev/null
@@ -445,25 +315,26 @@ install_file() {
   fi
   # 真机为 root；测试可用 SI_PATCH_CHOWN 注入可记录的命令，CI 非 root 也能覆盖这一步。
   if [ "$SI_TEST" = 1 ] && [ -n "${SI_PATCH_CHOWN:-}" ]; then
-    if ! "$SI_PATCH_CHOWN" root:root "$_tmp" 2>/dev/null; then
+    if ! "$CHOWN" root:root "$_tmp" 2>/dev/null; then
       rm -f "$_tmp" 2>/dev/null
       TMP_TARGET=
       return 1
     fi
   elif [ "$(id -u 2>/dev/null)" = 0 ]; then
-    if ! chown root:root "$_tmp" 2>/dev/null; then
+    if ! "$CHOWN" root:root "$_tmp" 2>/dev/null; then
       rm -f "$_tmp" 2>/dev/null
       TMP_TARGET=
       return 1
     fi
   fi
-  if ! chmod 600 "$_tmp" 2>/dev/null; then
+  if ! chmod 644 "$_tmp" 2>/dev/null; then
     rm -f "$_tmp" 2>/dev/null
     TMP_TARGET=
     return 1
   fi
   _got=$(sha256_of "$_tmp")
-  if [ "$_got" != "$_want" ]; then
+  _gsize=$(file_size "$_tmp")
+  if [ "$_got" != "$_want" ] || [ "$_gsize" != "$_want_size" ]; then
     rm -f "$_tmp" 2>/dev/null
     TMP_TARGET=
     return 1
@@ -481,7 +352,8 @@ install_file() {
     printf 'si-patch test corruption\n' > "$DEX" 2>/dev/null
   fi
   _got=$(sha256_of "$DEX")
-  [ "$_got" = "$_want" ]
+  _gsize=$(file_size "$DEX")
+  [ "$_got" = "$_want" ] && [ "$_gsize" = "$_want_size" ]
 }
 
 create_backup() {
@@ -489,12 +361,12 @@ create_backup() {
   chmod 700 "$BACKUP_DIR" 2>/dev/null
   _ts=$(date '+%Y%m%d-%H%M%S' 2>/dev/null)
   [ -n "$_ts" ] || _ts=$(date +%s 2>/dev/null)
-  _tmp=$BACKUP_DIR/.$SERVER.$_ts.tmp.$$
-  BACKUP=$BACKUP_DIR/$SERVER.$_ts
+  _tmp=$BACKUP_DIR/.$TARGET.$_ts.tmp.$$
+  BACKUP=$BACKUP_DIR/$TARGET.$_ts
   _n=0
   while [ -e "$BACKUP" ]; do
     _n=$((_n + 1))
-    BACKUP=$BACKUP_DIR/$SERVER.$_ts.$(printf '%03d' "$_n")
+    BACKUP=$BACKUP_DIR/$TARGET.$_ts.$(printf '%03d' "$_n")
   done
   if ! "$CP" "$DEX" "$_tmp"; then
     rm -f "$_tmp" 2>/dev/null
@@ -505,7 +377,8 @@ create_backup() {
     die "设置备份权限失败" 5
   fi
   _got=$(sha256_of "$_tmp")
-  if [ "$_got" != "$ORIGINAL_SHA" ]; then
+  _gsize=$(file_size "$_tmp")
+  if [ "$_got" != "$ORIGINAL_SHA" ] || [ "$_gsize" != "$ORIGINAL_SIZE" ]; then
     rm -f "$_tmp" 2>/dev/null
     die "备份校验失败（sha256=${_got:-读取失败}），未改动目标" 5
   fi
@@ -519,19 +392,19 @@ do_apply() {
   collect_state
   case "$STATE" in
     patched)
-      printf 'SI 补丁已应用，无需重复操作（恢复原版请用 restore）。\n'
+      printf 'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。\n'
       return 0 ;;
     unsupported)
       die "仅支持 Android 17（SDK 37），当前 SDK=${SDK}" 2 ;;
-    no-si)
-      die "找不到 $DEX，未检测到可修复的 SI server" 2 ;;
+    no-target)
+      die "找不到 $DEX，未检测到 zygisk-storage-isolation 模块" 2 ;;
     unknown)
-      die "当前 $SERVER 的 sha256 既不是原版也不是补丁版（${SHA:-读取失败}），已拒绝操作；如果当前是旧版本补丁，请先运行 restore --force 再 apply" 3 ;;
+      die "当前 $TARGET 的 sha256/大小既不是原版也不是补丁版（${SHA:-读取失败}），已拒绝操作；如果当前是旧版本补丁，请先运行 restore --force 再 apply" 3 ;;
     original) ;;
     *) die "补丁状态异常（$STATE），已取消" 4 ;;
   esac
   if [ "$SI_MATCH" != 1 ]; then
-    die "SI 版本不适用（当前 ${SI_VERSION:-版本未知}，仅适用于 ${PATCH_FOR_VERSION:-未知版本} / ${PATCH_FOR_SERVER:-$SERVER}），未改动目标" 2
+    die "zygisk-storage-isolation 版本不适用（当前 ${SI_VERSION:-版本未知}/${SI_VERSION_CODE:-?}，仅适用于 ${PATCH_FOR_VERSION:-未知版本}/${PATCH_FOR_VERSION_CODE:-?} / $TARGET），未改动目标" 2
   fi
 
   # 测试钩子：留出窗口把目标改成 patched，验证持锁后会重新读状态，不会覆盖。
@@ -543,36 +416,35 @@ do_apply() {
   collect_state
   case "$STATE" in
     patched)
-      printf 'SI 补丁已应用，无需重复操作（恢复原版请用 restore）。\n'
+      printf 'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。\n'
       return 0 ;;
     original) ;;
-    no-si) die "锁定时目标消失：$DEX" 2 ;;
+    no-target) die "锁定时目标消失：$DEX" 2 ;;
     unknown) die "锁定后目标哈希变化（${SHA:-读取失败}），已取消" 3 ;;
     *) die "锁定后状态异常：$STATE" 4 ;;
   esac
   if [ "$SI_MATCH" != 1 ]; then
-    die "锁定后 SI 版本不适用（当前 ${SI_VERSION:-版本未知}），已取消" 2
+    die "锁定后 zygisk-storage-isolation 版本不适用（当前 ${SI_VERSION:-版本未知}），已取消" 2
   fi
 
   [ -f "$ASSET" ] || die "模块缺少补丁资产 $ASSET" 5
   _asha=$(sha256_of "$ASSET")
-  [ "$_asha" = "$PATCH_SHA" ] \
-    || die "补丁资产校验失败（sha256=${_asha:-读取失败}），未改动目标" 5
+  _asize=$(file_size "$ASSET")
+  [ "$_asha" = "$PATCH_SHA" ] && [ "$_asize" = "$PATCH_SIZE" ] \
+    || die "补丁资产校验失败（sha256=${_asha:-读取失败}，大小=${_asize:-读取失败}），未改动目标" 5
 
   create_backup
-  if ! install_file "$ASSET" "$PATCH_SHA"; then
-    if [ -f "$BACKUP" ] && install_file "$BACKUP" "$ORIGINAL_SHA"; then
-      log_action "APPLY-FAILED si=${SI_VERSION:-?} rollback=ok backup=$BACKUP"
+  if ! install_file "$ASSET" "$PATCH_SHA" "$PATCH_SIZE"; then
+    if [ -f "$BACKUP" ] && install_file "$BACKUP" "$ORIGINAL_SHA" "$ORIGINAL_SIZE"; then
+      log_action "APPLY-FAILED target=$TARGET rollback=ok backup=$BACKUP"
       die "写入补丁失败，已自动回滚到原版（备份：$BACKUP）" 5
     fi
-    log_action "APPLY-FAILED si=${SI_VERSION:-?} rollback=failed backup=$BACKUP"
+    log_action "APPLY-FAILED target=$TARGET rollback=failed backup=$BACKUP"
     die "写入补丁失败，且自动回滚失败；请用 restore 或手动从 $BACKUP 恢复" 6
   fi
-  log_action "APPLY si=${SI_VERSION:-?} original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
+  log_action "APPLY target=$TARGET original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
   printf '已应用补丁：%s\n' "$DEX"
-  _restart=0
-  restart_si_server || _restart=$?
-  restart_note 应用 "$_restart"
+  printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
 do_restore() {
@@ -580,7 +452,7 @@ do_restore() {
   if [ "$DEX_EXISTS" != 1 ]; then
     die "找不到 $DEX，无法恢复" 2
   fi
-  if [ "$SHA" = "$ORIGINAL_SHA" ]; then
+  if [ "$SHA" = "$ORIGINAL_SHA" ] && [ "$SIZE" = "$ORIGINAL_SIZE" ]; then
     die "当前已经是原版，无需恢复" 2
   fi
   _backup=$(find_original_backup)
@@ -588,12 +460,12 @@ do_restore() {
     die "没有可用的原版备份（$BACKUP_DIR），无法恢复" 5
   fi
   if [ "$SHA" != "$PATCH_SHA" ] && [ "$FORCE" != 1 ]; then
-    die "当前 $SERVER 不是已知补丁版（${SHA:-读取失败}）；如确认要用原版备份覆盖，请加 --force" 3
+    die "当前 $TARGET 不是已知补丁版（${SHA:-读取失败}）；如确认要用原版备份覆盖，请加 --force" 3
   fi
 
   acquire_lock
   collect_state
-  if [ "$SHA" = "$ORIGINAL_SHA" ]; then
+  if [ "$SHA" = "$ORIGINAL_SHA" ] && [ "$SIZE" = "$ORIGINAL_SIZE" ]; then
     die "补丁状态已变化：当前已经是原版，已取消恢复" 4
   fi
   if [ "$SHA" != "$PATCH_SHA" ] && [ "$FORCE" != 1 ]; then
@@ -604,34 +476,42 @@ do_restore() {
     die "没有可用的原版备份（$BACKUP_DIR），已取消恢复" 5
   fi
   _bsha=$(sha256_of "$_backup")
-  if [ "$_bsha" != "$ORIGINAL_SHA" ]; then
+  _bsize=$(file_size "$_backup")
+  if [ "$_bsha" != "$ORIGINAL_SHA" ] || [ "$_bsize" != "$ORIGINAL_SIZE" ]; then
     die "选中的备份不是原版（sha256=${_bsha:-读取失败}），已拒绝恢复" 5
   fi
 
   # 先把操作前的目标留一份，恢复过程中失败可以退回去。
   _cur_sha=$SHA
+  _cur_size=$SIZE
   if [ -z "$_cur_sha" ]; then
     die "当前目标 sha256 读取失败，已取消恢复" 3
   fi
-  TMP_CUR=$BIN/.$SERVER.cur.$$
+  TMP_CUR=$TARGET_DIR/.$TARGET.cur.$$
   if ! "$CP" "$DEX" "$TMP_CUR"; then
     rm -f "$TMP_CUR" 2>/dev/null
     TMP_CUR=
     die "保存当前目标副本失败，未改动目标" 5
   fi
+  if ! chmod 600 "$TMP_CUR" 2>/dev/null; then
+    rm -f "$TMP_CUR" 2>/dev/null
+    TMP_CUR=
+    die "设置当前目标副本权限失败，未改动目标" 5
+  fi
   _csha=$(sha256_of "$TMP_CUR")
-  if [ "$_csha" != "$_cur_sha" ]; then
+  _csize=$(file_size "$TMP_CUR")
+  if [ "$_csha" != "$_cur_sha" ] || [ "$_csize" != "$_cur_size" ]; then
     rm -f "$TMP_CUR" 2>/dev/null
     TMP_CUR=
     die "当前目标副本校验失败（sha256=${_csha:-读取失败}），未改动目标" 5
   fi
 
-  if ! install_file "$_backup" "$ORIGINAL_SHA"; then
-    if install_file "$TMP_CUR" "$_cur_sha"; then
-      log_action "RESTORE-FAILED rollback=ok backup=$_backup"
+  if ! install_file "$_backup" "$ORIGINAL_SHA" "$ORIGINAL_SIZE"; then
+    if install_file "$TMP_CUR" "$_cur_sha" "$_cur_size"; then
+      log_action "RESTORE-FAILED target=$TARGET rollback=ok backup=$_backup"
       die "恢复原版失败，已回到操作前状态（备份：$_backup）" 5
     fi
-    log_action "RESTORE-FAILED rollback=failed backup=$_backup"
+    log_action "RESTORE-FAILED target=$TARGET rollback=failed backup=$_backup"
     # 回滚失败时保留操作前副本，别让 EXIT 清理把它删掉。
     _keep=$TMP_CUR
     TMP_CUR=
@@ -645,9 +525,7 @@ do_restore() {
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"
   fi
   printf '已恢复原版：%s\n' "$DEX"
-  _restart=0
-  restart_si_server || _restart=$?
-  restart_note 恢复 "$_restart"
+  printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
 case "${1:-}" in

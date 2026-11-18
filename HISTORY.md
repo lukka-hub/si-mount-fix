@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.3）
+# 演化过程（1.0 → 1.5.4）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -254,6 +254,21 @@
   `custom_dirs:["@sandbox"]` 合法目录与旧 `#SI2` 缓存失效，以及 WebUI 动作判定
   （node 实跑 STATE/SERVER_PIDS/输出文本组合）。
 - **版本**：`v1.5.3` / `versionCode 153`；`CHANGELOG.md` 只展示 1.5.3。
+
+## 1.5.4 补丁目标改为 main.dex
+
+- **持久化根因**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回
+  `server-v355.dex`，补 server dex 每次开机必被还原。`zygisk-storage-isolation` 的
+  `main.dex` 由 Zygisk 模块在开机时加载，替换后跨重启保持；真机重启验证 SI 列表仍为 31 个。
+- **目标切换**：`si-patch.sh` 改为只替换
+  `/data/adb/modules/zygisk-storage-isolation/main.dex`；原版 90,740 B，补丁 99,104 B。
+  `module.prop` 新增 `siPatchModule` / `siPatchTarget`，版本门禁改为模块 v29.0.1/89。
+- **去掉 server 逻辑**：删除 `/proc` 扫描、PID 识别、TERM/KILL 和 5 秒等待；`check` 只读文件
+  哈希/大小，`apply`/`restore` 只做备份、原子替换与回滚，成功提示重启手机生效。
+- **WebUI**：去掉 `SERVER_PIDS` 与动作后的二次 `check`，成功结果直接返回；卡片改为
+  「Android 17 应用列表修复（main.dex）」，unknown 只提示/强制恢复。
+- **卸载**：恢复目标同步改为 zygisk 模块的 `main.dex`。
+- **版本**：`v1.5.4` / `versionCode 154`；`CHANGELOG.md` 只展示 1.5.4。
 
 ## 兼容与边界
 

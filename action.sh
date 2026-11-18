@@ -245,6 +245,7 @@ fi
 
 # 补丁状态只报告，不自动应用：apply 必须由用户在 WebUI 里确认。
 patch_txt=$(SI_DATA="$DATA" timeout 10 "$SH_BIN" "$MOD/scripts/si-patch.sh" status 2>/dev/null)
+patch_txt=${patch_txt#main.dex 补丁：}
 patch_txt=${patch_txt#SI 补丁：}
 [ -n "$patch_txt" ] || patch_txt="状态未知（si-patch.sh 缺失或执行失败）"
 printf ' 补丁   %s\n' "$patch_txt"

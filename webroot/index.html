@@ -230,7 +230,7 @@ details.card[open] summary{margin-bottom:8px}
 </section>
 
 <section class="card" id="patchCard" hidden>
-  <div class="card-head"><h2>Android 17 应用列表修复</h2><span class="muted small" id="patchBadge"></span></div>
+  <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
   <div class="row-actions" id="patchActions" hidden>
@@ -601,11 +601,12 @@ details.card[open] summary{margin-bottom:8px}
     }).then(function (res) {
       BR.latency = Date.now() - t0;
       if (!res) { throw new Error('命令无响应（' + Math.round(CMD_TIMEOUT / 1000) + ' 秒超时）'); }
-      /* errnoKnown=false 是 sync 桥接：没有退出码，不在这里判失败，交给调用方用结果/check 判断。 */
+      /* errnoKnown=false 是 sync 桥接：没有退出码，不在这里判失败，交给调用方按输出标记判断。 */
       if (res.errnoKnown !== false && res.errno !== 0 && !String(res.stdout || '').trim()) {
         var e = new Error(String(res.stderr || '').trim() || ('退出码 ' + res.errno));
-        /* 带上退出码/输出：补丁动作收到后仍要先跑 check 再判，不能只留一条错误消息。 */
+        /* 带上退出码与输出：补丁动作直接按退出码/输出展示结果，不再跑第二次 check。 */
         e.errno = res.errno; e.errnoKnown = true; e.stdout = res.stdout || '';
+        e.stderr = res.stderr || '';
         throw e;
       }
       return res;
@@ -906,8 +907,8 @@ details.card[open] summary{margin-bottom:8px}
         ] });
     } else if (patchPromptable()) {
       items.push({ tone: 'warn', title: 'Android 17 应用列表可能为空',
-        body: '可应用自建补丁修复。补丁只替换 SI 的 server-v355.dex，确认后才会执行；' +
-          '应用后需要重新打开 SI。之后仍可在下方「Android 17 应用列表修复」里手动应用。',
+        body: '可应用补丁修复。补丁只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；' +
+          '应用后重启手机生效。之后仍可在下方「Android 17 应用列表修复（main.dex）」里手动应用。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
           { action: 'patch-dismiss', label: '暂不' }
@@ -1039,8 +1040,9 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   /* ============================================================
-     Android 17 可选补丁（只替换 server-v355.dex）
+     Android 17 可选补丁（只替换 zygisk-storage-isolation/main.dex）
      si-patch.sh check 输出 KEY=VALUE；这里只负责展示与转发，是否执行由用户点按钮决定。
+     文件操作很快：动作结果直接展示，不再补跑第二次 check，也没有 server 重启/等待。
      ============================================================ */
   function parseKv(text) {
     var out = {};
@@ -1055,7 +1057,7 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   /* SDK != 37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
-     SDK=37 才继续检查 SI 状态。 */
+     SDK=37 才继续检查 main.dex 状态。 */
   function ensurePatchSdk() {
     if (state.patchSdk !== null && state.patchSdk !== undefined) {
       return Promise.resolve(state.patchSdk);
@@ -1098,15 +1100,19 @@ details.card[open] summary{margin-bottom:8px}
         p.state = String(p.STATE);
         p.sdk = String(p.SDK || '');
         p.si = String(p.SI_VERSION || '');
+        p.siCode = String(p.SI_VERSION_CODE || '');
+        p.targetModule = String(p.SI_TARGET_MODULE || 'zygisk-storage-isolation');
         p.targetVersion = String(p.SI_TARGET_VERSION || '');
-        p.targetServer = String(p.SI_TARGET_SERVER || '');
+        p.targetVersionCode = String(p.SI_TARGET_VERSION_CODE || '');
+        p.targetFile = String(p.SI_TARGET_FILE || 'main.dex');
         p.match = toInt(p.SI_MATCH, 0) === 1;
         p.size = toInt(p.SIZE, 0);
         p.sha = String(p.SHA || '');
+        p.originalSize = toInt(p.ORIGINAL_SIZE, 0);
+        p.originalSha = String(p.ORIGINAL_SHA || '');
         p.backup = toInt(p.BACKUP_COUNT, 0);
         p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
         p.prompted = toInt(p.PROMPTED, 0) === 1;
-        p.serverPids = toInt(p.SERVER_PIDS, 0);
         state.patch = p;
         state.patchError = '';
         renderPatch();
@@ -1164,7 +1170,7 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function patchConfirmTitle(action) {
-    if (action === 'apply') { return '确认应用自建补丁？'; }
+    if (action === 'apply') { return '确认应用 main.dex 补丁？'; }
     if (action === 'force') { return '确认强制恢复原版？'; }
     return '确认恢复原版？';
   }
@@ -1177,18 +1183,19 @@ details.card[open] summary{margin-bottom:8px}
 
   function patchConfirmBody(action) {
     var p = state.patch || {};
-    var si = p.si || '版本未知';
+    var mod = p.targetModule || 'zygisk-storage-isolation';
+    var file = p.targetFile || 'main.dex';
     var ver = p.targetVersion || '未知版本';
-    var srv = p.targetServer || 'server-v355';
     var what;
     if (action === 'apply') {
-      what = '把 server-v355.dex 替换为自建补丁';
+      what = '把 ' + mod + ' 的 ' + file + ' 替换为补丁版';
     } else if (action === 'force') {
-      what = '用有效原版备份强制覆盖当前 server-v355.dex';
+      what = '用有效原版备份强制覆盖 ' + mod + ' 的 ' + file;
     } else {
-      what = '用有效原版备份恢复 server-v355.dex';
+      what = '用有效原版备份恢复 ' + mod + ' 的 ' + file;
     }
-    return '目标 SI：' + si + '。将' + what + '。仅适用于 ' + ver + '（' + srv + '）。';
+    return '目标模块：' + mod + ' ' + (p.si || '版本未知') + '。将' + what +
+      '。仅适用于 ' + ver + '（' + file + '）。重启手机后生效。';
   }
 
   function armPatchAction(action) {
@@ -1228,6 +1235,11 @@ details.card[open] summary{margin-bottom:8px}
     var p = state.patch;
     var err = state.patchError;
     if (!p && !err) { card.hidden = true; return; }
+    var st = p ? p.state : '';
+    if (!err && st !== 'original' && st !== 'patched' && st !== 'unknown') {
+      card.hidden = true;
+      return;
+    }
     card.hidden = false;
 
     var applyBtn = $('btnPatchApply');
@@ -1235,57 +1247,53 @@ details.card[open] summary{margin-bottom:8px}
     var forceBtn = $('btnPatchForce');
     var hint = $('patchHint');
     var bits = [];
-    var st = p ? p.state : '';
     var badge = '';
+    var mod = p ? (p.targetModule || 'zygisk-storage-isolation') : 'zygisk-storage-isolation';
+    var file = p ? (p.targetFile || 'main.dex') : 'main.dex';
 
     if (err) {
       badge = '读取失败';
       hint.textContent = err;
       hint.hidden = false;
       if (p) {
-        bits.push('SI ' + (p.si || '版本未知'));
+        bits.push(mod + ' ' + (p.si || '版本未知'));
         bits.push('上次状态：' + (st || '未知'));
       }
     } else if (st === 'original') {
-      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push(p.size ? (p.size + ' B') : '大小未知');
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       if (p.match) {
         badge = '可应用';
-        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用自建补丁修复。' +
-          '补丁只替换 server-v355.dex，确认后才会执行。';
+        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用补丁修复。' +
+          '补丁只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
       } else {
         badge = '不支持';
-        hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。补丁仅适用于 ' +
-          (p.targetVersion || '未知版本') + '（' + (p.targetServer || 'server-v355') + '）。';
+        hint.textContent = '当前 ' + mod + ' 版本/哈希不在支持范围，未做任何修改。补丁仅适用于 ' +
+          (p.targetVersion || '未知版本') + '（' + file + '）。';
       }
       hint.hidden = false;
     } else if (st === 'patched') {
-      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-      bits.push('SI server ' + toInt(p.serverPids, 0) + ' 个');
       if (p.match) {
         badge = '已应用';
-        hint.textContent = '';
-        hint.hidden = true;
+        hint.textContent = '重启手机生效（Zygisk 模块在开机时加载）。';
       } else {
         badge = '不支持';
-        hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。' +
+        hint.textContent = '当前 ' + mod + ' 版本/哈希不在支持范围，未做任何修改。' +
           (p.backupOk ? ' 可用原版备份强制恢复。' : ' 没有可用的原版备份。');
-        hint.hidden = false;
       }
-    } else if (st === 'unknown') {
+      hint.hidden = false;
+    } else {
       badge = '不支持';
-      hint.textContent = '当前 SI 版本/哈希不在支持范围，未做任何修改。' +
+      hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
         (p.backupOk ? ' 检测到有效原版备份，仅可强制恢复。' : ' 也没有可用的原版备份。');
       hint.hidden = false;
-      bits.push('SI ' + (p.si || '版本未知'));
+      bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-    } else {
-      card.hidden = true;
-      return;
     }
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
@@ -1330,64 +1338,49 @@ details.card[open] summary{margin-bottom:8px}
 
   /* PATCH-VERDICT-START */
   /* 补丁动作判定（纯函数，tools/patch.test.sh 用 node 直接跑）：
-     1) STATE 必须是预期值；2) “无需重复操作”只算信息；3) 输出含自动重启失败要降级；
-     4) apply 还要有映射该 dex 的 SI server（SERVER_PIDS>0）才报成功；
-     5) 已知非 0 退出码只作附注，状态复核对了仍按成功处理。 */
-  function patchActionVerdict(action, st, serverPids, text, errnoKnown, errno) {
+     1) 退出码已知时必须为 0；sync 桥接没有退出码，用成功输出标记判定；
+     2) “无需重复操作”只算信息；
+     3) 成功时直接提示重启，不再跑第二次 check。 */
+  function patchActionVerdict(action, text, errnoKnown, errno) {
     var isApply = action === 'apply';
-    var expect = isApply ? 'patched' : 'original';
-    var expectText = isApply ? '补丁版' : '原版';
-    var detail = text ? '\n' + text : '';
-    var pids = parseInt(serverPids, 10);
-    if (!isFinite(pids) || pids < 0) { pids = 0; }
-    var failTitle = isApply ? '补丁应用失败' : '恢复失败';
-    var unknownTitle = isApply ? '补丁应用结果未知' : '恢复结果未知';
-    st = String(st || '');
-    text = String(text || '');
-    if (!st) {
-      return { tone: 'warn', title: unknownTitle,
-        body: '动作已执行，但重新检查没有返回 STATE，无法确认结果。' + detail };
+    var t = String(text || '');
+    if (t.indexOf('无需重复操作') >= 0) {
+      return { tone: 'info', title: '无需重复操作', body: t };
     }
-    if (st !== expect) {
-      return { tone: 'bad', title: failTitle,
-        body: '动作后重新检查：当前为 ' + st + '，不是预期的 ' + expectText + '（' + expect + '）。' + detail };
+    var ok = true;
+    if (errnoKnown && errno !== 0) { ok = false; }
+    if (!errnoKnown) {
+      var marker = isApply ? '已应用补丁' : '已恢复原版';
+      if (t.indexOf(marker) < 0) { ok = false; }
     }
-    if (text.indexOf('无需重复操作') >= 0) {
-      return { tone: 'info', title: '无需重复操作',
-        body: text + (isApply ? '\n当前已经是补丁版，本次没有写入新文件。' : '') };
+    if (!ok) {
+      return { tone: 'bad', title: isApply ? '补丁应用失败' : '恢复失败',
+        body: t || '命令没有返回可识别结果，请刷新后看补丁状态。' };
     }
-    if (text.indexOf('自动重启失败') >= 0 || text.indexOf('身份不符') >= 0) {
-      return { tone: 'warn',
-        title: isApply ? '补丁已应用，但 SI server 未自动重启' : '原版已恢复，但 SI server 未自动重启',
-        body: 'dex 已按预期写入；请重开 SI 或重启手机让新 dex 生效。' + detail };
-    }
-    if (isApply && pids <= 0) {
-      return { tone: 'warn', title: '补丁已应用，但没检测到 SI server',
-        body: 'dex 已写入，但 SERVER_PIDS=0，无法确认新 server 已起来；请打开或重开 SI 后再看。' + detail };
-    }
-    var okTitle = isApply ? '补丁已应用' : (action === 'force' ? '已强制恢复原版' : '已恢复原版');
-    var body = text + (detail ? '\n' : '') + '已重新检查：当前为' + expectText + '（' + st + '）';
-    if (isApply) { body += '，SERVER_PIDS=' + pids; }
-    body += '。';
-    if (errnoKnown && errno !== 0) {
-      body += '\n动作命令退出码 ' + errno + '，但状态复核一致，按成功处理。';
-    }
-    return { tone: 'good', title: okTitle, body: body };
+    var restart = '重启生效（Zygisk 模块在开机时加载）。';
+    var body = t;
+    if (t.indexOf('重启生效') < 0) { body = (t ? t + '\n' : '') + restart; }
+    return {
+      tone: 'good',
+      title: isApply ? '已应用，重启手机生效' : '已恢复原版，重启手机生效',
+      body: body
+    };
   }
   /* PATCH-VERDICT-END */
 
-  function verifyPatchAction(action, text, res) {
-    var known = res && res.errnoKnown !== false;
-    var code = res ? res.errno : null;
-    return run('sh ' + P.patch + ' check').then(function (cres) {
-      var p = parseKv(cres.stdout);
-      var v = patchActionVerdict(action, p.STATE, p.SERVER_PIDS, text, known, code);
-      showPatchResult(v.title, v.body, v.tone);
-    }, function (err) {
-      var v = patchActionVerdict(action, '', 0, text, known, code);
-      v.body += '\n重新检查失败：' + String(err && err.message ? err.message : err);
-      showPatchResult(v.title, v.body, 'warn');
-    });
+  /* 动作成功后直接更新卡片状态：不补跑 check，避免多一次桥接往返。 */
+  function applyPatchState(action) {
+    var p = state.patch;
+    if (!p) { return; }
+    if (action === 'apply') {
+      p.state = 'patched';
+      p.backupOk = 1;
+      p.backup = toInt(p.backup, 0) + 1;
+    } else {
+      p.state = 'original';
+      if (p.originalSize) { p.size = p.originalSize; }
+      if (p.originalSha) { p.sha = p.originalSha; }
+    }
   }
 
   function runPatchAction(action) {
@@ -1401,25 +1394,26 @@ details.card[open] summary{margin-bottom:8px}
     var cmd = isForce ? 'restore --force' : action;
     state.patchBusy = true;
     renderPatch();
-    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…', '请稍候，不要关闭页面。', '');
+    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…', '正在写入 main.dex，请稍候。', '');
     run('sh ' + P.patch + ' ' + cmd).then(function (res) {
       return res;
     }, function (err) {
-      /* 桥接超时/异常时命令可能其实已执行：不要直接判红，先跑 check 看真实状态。
-         run() 因非 0 退出码抛错时会带上 errno/stdout，仍交给 verify 附注。 */
+      /* 已知退出码时如实带上；sync 桥接拿不到退出码，交给输出标记判断。 */
       var known = !!(err && err.errnoKnown === true);
       return { errno: known ? err.errno : null, errnoKnown: known,
         stdout: known && err.stdout ? err.stdout : '',
-        stderr: '命令未正常返回：' + String(err && err.message ? err.message : err) };
+        stderr: String(err && (err.stderr || err.message) ? (err.stderr || err.message) : '') };
     }).then(function (res) {
       var parts = [];
       if (String(res.stdout || '').trim()) { parts.push(String(res.stdout).trim()); }
       if (String(res.stderr || '').trim()) { parts.push(String(res.stderr).trim()); }
-      return verifyPatchAction(action, parts.join('\n'), res);
-    }).then(function () {
+      var v = patchActionVerdict(action, parts.join('\n'), res.errnoKnown !== false, res.errno);
+      showPatchResult(v.title, v.body, v.tone);
+      if (v.tone === 'good' || v.tone === 'info') { applyPatchState(action); }
       state.patchBusy = false;
+      renderPatch();
+      renderStateBanner();
       markPatchPrompted();
-      return loadPatch();
     }).catch(function (err) {
       /* 兜底：任何意外异常都要解锁按钮，不能把面板卡在“操作中”。 */
       state.patchBusy = false;

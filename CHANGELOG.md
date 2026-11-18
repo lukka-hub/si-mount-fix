@@ -1,21 +1,19 @@
 # 更新日志
 
-## 1.5.3
+## 1.5.4
 
-- WebUI：sync 桥接不再把命令返回当成退出码 0；apply/restore 结束后重新执行 `check`，
-  已知非 0 退出码也先复核。只有 `STATE` 符合预期才算成功：apply 还要求 `SERVER_PIDS>0`；
-  输出含“自动重启失败/身份不符”时降级为警告，“无需重复操作”只作信息提示，读不到状态
-  显示“结果未知”，不再误报“已应用/已恢复”。
-- `check` 新增 `SERVER_PIDS`（映射该 dex 且排除明确其他应用后的进程数），供面板判断 server 是否真的起来。
-- `action.sh` 与 WebUI 补 `target_missing`（锚点/目标目录缺失）、`pid_changed`（进程已变化）
-  的中文标签；RESULT token 从生产端自动抽取并与标签双向比对。
-- 自动重启 SI server：maps 与目标 dex 用 `readlink -f` 归一化后比较（兼容符号链接、
-  `/./` 和 ` (deleted)`），不再子串命中 `.bak/.orig`；身份正例放宽为 uid=0、cmdline 含
-  `storage_isolation` 或 `storage-isolation`，并排除模块 daemon；没有 server 与身份不符
-  分开返回（身份拒绝记录 PID）；新进程只按 maps 识别，排除 cmdline 明确带 `com.`/`/data/app/`
-  的其他应用；等待改为 0.1 秒计数、约 5 秒。
-- 同包多 PID 时 RESULT 的 `churn` 累加，不再被扫描计数覆盖；`.churn` 记录行为不变。
-- 沙箱内部退避键改为 `/@sandbox`，合法的用户目录 `@sandbox` 重新可用；配置缓存头升级为
-  `#SI3` 并带解析器+修复脚本指纹，旧缓存自动失效，避免继续沿用旧目录列表。
-- 文档同步上述行为与 `SERVER_PIDS`；1.5.0 补丁用户先 `restore --force` 再 `apply`。
-- 版本 v1.5.3 / 153。
+- 补丁目标改为 Zygisk 模块 `zygisk-storage-isolation` 的 `main.dex`：只替换
+  `/data/adb/modules/zygisk-storage-isolation/main.dex`，重启手机后由 Zygisk 模块加载并保持。
+  不再依赖 SI 的 server dex —— SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回
+  `server-v355.dex`，补它每次开机必被还原，没有持久意义。
+- 补丁资产换成社区验证的 `assets/main.dex`（99,104 B / sha256
+  `6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7`）；原版 main.dex 为
+  90,740 B / sha256 `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`。
+  apply 前校验资产与目标哈希/大小，备份到 `patch-backup/main.dex.<时间戳>`（600），
+  原子替换为 644 root:root，失败自动回滚。
+- WebUI 去掉 `SERVER_PIDS`、`/proc` 全量扫描和 SI server 重启/等待：apply/restore 只做文件操作，
+  结果直接返回，不再有 18 秒复核；成功提示“已应用，重启手机生效”。补丁卡片改为
+  「Android 17 应用列表修复（main.dex）」，版本/哈希不匹配时置灰，unknown 仅提示/强制恢复。
+- 卸载前恢复改为 `main.dex`；备份保留逻辑不变。文档同步适用条件（zygisk-storage-isolation
+  v29.0.1 / main.dex）、备份/恢复、重启生效，以及官方更新覆盖后需重打。
+- 版本 v1.5.4 / 154。

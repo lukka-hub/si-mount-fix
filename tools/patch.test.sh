@@ -1,18 +1,16 @@
 #!/system/bin/sh
-# si-patch.sh / WebUI / uninstall 补丁接线回归：
-#   SDK≠37、无 SI、原版→apply（备份存在）、已 patched no-op、unknown 拒绝、
-#   asset 缺失/哈希不对、备份创建哈希、复制失败回滚、mv 后校验与真实回滚、
-#   chown、umask 022 下 600、restore 从新到旧选有效备份、坏备份/全坏、unknown 强制恢复、
-#   restore 当前副本回滚、无备份/非 patched、持锁后重查、并发锁、卸载前恢复/失败保留、
-#   SI server 重启的精确匹配（.bak/daemon 不杀、(deleted) 后缀、符号链接、连字符 cmdline、
-#   非 root 新进程、TERM 后 KILL 前复核、skip 2/3）。
-#   fake SI 目录 + SI_TEST 钩子；补丁资产用仓库里的真实 dex。
+# si-patch.sh / WebUI / uninstall 的 main.dex 补丁回归：
+#   check 的 original/patched/unknown/no-target、SDK 门禁、版本门禁、asset 哈希/大小、
+#   备份创建/恢复/强制恢复、已 patched no-op、apply 失败回滚、restore 无备份报错、
+#   目标 644 / 备份 600 / chown、持锁重查、并发锁、卸载前恢复/失败保留。
+#   另外静态断言：check 不扫 /proc、不重启 server；WebUI 去掉了 SERVER_PIDS/二次 check。
+#   fake 模块目录 + SI_TEST 钩子；补丁资产用仓库里的真实 assets/main.dex。
 #
 # 用法：sh tools/patch.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 PATCH=scripts/si-patch.sh
-ASSET_REAL=$PWD/assets/server-v355.dex
+ASSET_REAL=$PWD/assets/main.dex
 TEST_SH=${SI_TEST_SH:-/system/bin/sh}
 if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
   TEST_SH=$(command -v mksh 2>/dev/null)
@@ -24,48 +22,87 @@ if [ -z "$TEST_SH" ] || ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" 
   echo "找不到可用的 sh（可用 SI_TEST_SH=... 指定）"; exit 1
 fi
 
-T=${TMPDIR:-/tmp}/si-patch-test.$$
+T=${TMPDIR:-/tmp}/si-patch-main-test.$$
 DATA=$T/data
-BIN=$T/si/bin
+TARGET_DIR=$T/module
 HOLDER=
 cleanup() {
   [ -n "$HOLDER" ] && kill -9 "$HOLDER" 2>/dev/null
   rm -rf "$T"
 }
 trap cleanup EXIT INT TERM HUP
-mkdir -p "$DATA" "$BIN" "$T/fakebin" "$T/holder" "$T/proc-empty" || exit 1
+mkdir -p "$DATA" "$TARGET_DIR" "$T/fakebin" "$T/holder" || exit 1
 
 fail=0
 ok()  { echo "  ok   $1"; }
 bad() { echo "  FAIL $1"; fail=1; }
 has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+size_of() { wc -c < "$1" 2>/dev/null | tr -d '[:space:]'; }
 
 ASSET_SHA=$(sha_of "$ASSET_REAL")
-PATCH_SHA_EXPECT=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
-ORIGINAL_SHA_EXPECT=c410e8924da1a08f8fe05d8e5d36cae5eb1cb6a192bca219f9b940471db08d7a
-SI_VER_OK=8.8.1.r3684.test
+PATCH_SHA_EXPECT=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+ORIGINAL_SHA_EXPECT=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
+PATCH_SIZE_EXPECT=99104
+ORIGINAL_SIZE_EXPECT=90740
 
+# ---------- 0) 仓库资产 / module.prop / 版本 ----------
 [ -f "$ASSET_REAL" ] && ok "补丁资产存在" || bad "补丁资产不存在：$ASSET_REAL"
 [ "$ASSET_SHA" = "$PATCH_SHA_EXPECT" ] && ok "补丁资产 sha256 正确" \
   || bad "补丁资产 sha256 不对：$ASSET_SHA"
-[ "$(wc -c < "$ASSET_REAL" | tr -d ' ')" = 325984 ] && ok "补丁资产大小 325984 B" \
-  || bad "补丁资产大小不对：$(wc -c < "$ASSET_REAL")"
-grep -q "ORIGINAL_SHA=$ORIGINAL_SHA_EXPECT" "$PATCH" \
-  && ok "脚本原版 sha256 常量正确" || bad "脚本原版 sha256 常量不对"
+[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "补丁资产大小 99104 B" \
+  || bad "补丁资产大小不对：$(size_of "$ASSET_REAL")"
 extra_asset=0
 for _f in assets/*; do
-  [ "$_f" = "assets/server-v355.dex" ] || extra_asset=1
+  [ "$_f" = "assets/main.dex" ] || extra_asset=1
 done
-[ "$extra_asset" = 0 ] && ok "assets 只有 server-v355.dex（没有 main.dex）" \
+[ "$extra_asset" = 0 ] && ok "assets 只有 main.dex（没有 server-v355.dex）" \
   || bad "assets 里混入了其它文件"
-grep -q '^siPatchVersion=8.8.1.r3684$' module.prop && ok "module.prop 提供补丁适用版本" \
-  || bad "module.prop 缺少 siPatchVersion"
-grep -q '^siPatchServer=server-v355$' module.prop && ok "module.prop 提供补丁适用 server" \
-  || bad "module.prop 缺少 siPatchServer"
+grep -q "ORIGINAL_SHA=$ORIGINAL_SHA_EXPECT" "$PATCH" \
+  && ok "脚本原版 sha256 常量正确" || bad "脚本原版 sha256 常量不对"
+grep -q "ORIGINAL_SIZE=$ORIGINAL_SIZE_EXPECT" "$PATCH" \
+  && ok "脚本原版大小常量正确" || bad "脚本原版大小常量不对"
+grep -q "PATCH_SHA=$PATCH_SHA_EXPECT" "$PATCH" \
+  && ok "脚本补丁 sha256 常量正确" || bad "脚本补丁 sha256 常量不对"
+grep -q "PATCH_SIZE=$PATCH_SIZE_EXPECT" "$PATCH" \
+  && ok "脚本补丁大小常量正确" || bad "脚本补丁大小常量不对"
+grep -q '^version=v1.5.4$' module.prop && grep -q '^versionCode=154$' module.prop \
+  && ok "module.prop 版本 v1.5.4 / 154" || bad "module.prop 版本不对"
+grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
+  && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
+grep -q '^siPatchTarget=main.dex$' module.prop \
+  && ok "module.prop 提供 siPatchTarget=main.dex" || bad "module.prop 缺少 siPatchTarget"
+grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=89$' module.prop \
+  && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
+! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
+  || bad "module.prop 仍有 siPatchServer"
+grep -q '"version": "v1.5.4"' update.json && grep -q '"versionCode": 154' update.json \
+  && ok "update.json 指向 v1.5.4/154" || bad "update.json 版本不对"
 
-printf 'fake original server-v355.dex fixture\n' > "$T/original.bin"
+# check 不能有进程扫描或 server 重启代码。
+if grep -q '/proc/' "$PATCH"; then bad "si-patch.sh 仍引用 /proc（check 不应扫进程）"; else
+  ok "si-patch.sh 不引用 /proc"
+fi
+for _n in SERVER_PIDS restart_si_server SERVER-RESTART TERM_WAIT RESTART_WAIT           find_dex_pids maps_has_dex count_dex_pids; do
+  if grep -q "$_n" "$PATCH"; then bad "si-patch.sh 仍含 server 逻辑：$_n"; fi
+done
+for _n in '-TERM' '-KILL'; do
+  if grep -q -- "$_n" "$PATCH"; then bad "si-patch.sh 仍含杀进程参数：$_n"; fi
+done
+if grep -q 'kill -0' "$PATCH"; then
+  ok "锁检查只使用 kill -0（不杀进程）"
+else
+  bad "锁检查没有使用 kill -0"
+fi
+ok "si-patch.sh 没有 server 重启/等待逻辑"
+if grep -q 'server-v355' "$PATCH"; then bad "si-patch.sh 仍引用 server-v355"; else
+  ok "si-patch.sh 不再引用 server-v355"
+fi
+
+# ---------- fixture 与运行钩子 ----------
+printf 'fake original main.dex fixture\n' > "$T/original.bin"
 ORIG_SHA=$(sha_of "$T/original.bin")
+ORIG_SIZE=$(size_of "$T/original.bin")
 SDK=37
 CP_OVERRIDE=
 ASSET_OVERRIDE=$ASSET_REAL
@@ -73,25 +110,24 @@ CHOWN_OVERRIDE=
 PRELOCK_SLEEP=
 PRELOCK_MARK=
 CORRUPT_MARK=
-PROC_OVERRIDE=$T/proc-empty
-KILL_OVERRIDE=
-BIN_OVERRIDE=
-RESTART_WAIT=
-TERM_WAIT=0
-TEST_RESTART=
 OUT=
 ERR=
 RC=0
 
+write_prop() {   # $1=version $2=versionCode；省略写 v29.0.1/89
+  if [ "$#" -ge 1 ]; then _v=$1; else _v=v29.0.1; fi
+  if [ "$#" -ge 2 ]; then _c=$2; else _c=89; fi
+  printf 'id=zygisk-storage-isolation\nname=Zygisk - Enhanced mode for Storage Isolation\nversion=%s\nversionCode=%s\n' \
+    "$_v" "$_c" > "$TARGET_DIR/module.prop"
+}
+
 run_patch() {
-  SI_TEST=1 SI_PATCH_DATA=$DATA SI_PATCH_BIN=${BIN_OVERRIDE:-$BIN} SI_PATCH_ASSET=$ASSET_OVERRIDE \
-    SI_PATCH_SDK=$SDK SI_PATCH_VERSION=$SI_VER_OK \
-    SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_CP=$CP_OVERRIDE \
-    SI_PATCH_CHOWN=$CHOWN_OVERRIDE SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP \
-    SI_PATCH_PRELOCK_MARK=$PRELOCK_MARK SI_PATCH_CORRUPT_AFTER_MV=$CORRUPT_MARK \
-    SI_PATCH_PROC=$PROC_OVERRIDE SI_PATCH_KILL=$KILL_OVERRIDE \
-    SI_PATCH_RESTART_WAIT=$RESTART_WAIT SI_PATCH_TERM_WAIT=$TERM_WAIT \
-    SI_PATCH_TEST_RESTART=$TEST_RESTART SI_PATCH_TEST_FAKE_DEX=$BIN/server-v355.dex \
+  SI_TEST=1 SI_PATCH_DATA=$DATA SI_PATCH_TARGET_DIR=$TARGET_DIR \
+    SI_PATCH_ASSET=$ASSET_OVERRIDE SI_PATCH_SDK=$SDK \
+    SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+    SI_PATCH_CP=$CP_OVERRIDE SI_PATCH_CHOWN=$CHOWN_OVERRIDE \
+    SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP SI_PATCH_PRELOCK_MARK=$PRELOCK_MARK \
+    SI_PATCH_CORRUPT_AFTER_MV=$CORRUPT_MARK \
     "$TEST_SH" "$PATCH" "$@"
 }
 
@@ -110,18 +146,26 @@ run_capture_umask() {
 }
 
 kv() { printf '%s\n' "$OUT" | sed -n "s/^$1=//p" | head -1; }
-target_sha() { sha_of "$BIN/server-v355.dex"; }
+target_sha() { sha_of "$TARGET_DIR/main.dex"; }
+target_size() { size_of "$TARGET_DIR/main.dex"; }
 reset_original() {
-  cp "$T/original.bin" "$BIN/server-v355.dex" || exit 1
-  chmod 600 "$BIN/server-v355.dex"
+  cp "$T/original.bin" "$TARGET_DIR/main.dex" || exit 1
+  chmod 600 "$TARGET_DIR/main.dex"
+  write_prop
+}
+reset_patched() {
+  cp "$ASSET_REAL" "$TARGET_DIR/main.dex" || exit 1
+  chmod 644 "$TARGET_DIR/main.dex"
+  write_prop
 }
 reset_unknown() {
-  printf 'unknown server-v355.dex fixture\n' > "$BIN/server-v355.dex" || exit 1
-  chmod 600 "$BIN/server-v355.dex"
+  printf 'unknown main.dex fixture\n' > "$TARGET_DIR/main.dex" || exit 1
+  chmod 600 "$TARGET_DIR/main.dex"
+  write_prop
 }
 backups() {
   [ -d "$DATA/patch-backup" ] || return 0
-  for _b in "$DATA/patch-backup/server-v355.dex".*; do
+  for _b in "$DATA/patch-backup/main.dex".*; do
     [ -f "$_b" ] || continue
     case "${_b##*/}" in
       *".tmp."*) continue ;;
@@ -134,7 +178,7 @@ latest_backup() { backups | tail -1; }
 clean_data() {
   rm -rf "$DATA/patch-backup" "$DATA/.si-patch.lock" 2>/dev/null
   rm -f "$DATA/patch.log" "$DATA/.patch_prompted" 2>/dev/null
-  rm -f "$BIN"/.server-v355.dex.* 2>/dev/null
+  rm -f "$TARGET_DIR"/.main.dex.* 2>/dev/null
 }
 reset_hooks() {
   CP_OVERRIDE=
@@ -143,14 +187,8 @@ reset_hooks() {
   PRELOCK_SLEEP=
   PRELOCK_MARK=
   CORRUPT_MARK=
-  PROC_OVERRIDE=$T/proc-empty
-  KILL_OVERRIDE=
-  BIN_OVERRIDE=
-  RESTART_WAIT=
-  TERM_WAIT=0
-  TEST_RESTART=
   SDK=37
-  SI_VER_OK=8.8.1.r3684.test
+  write_prop
 }
 
 # ---------- 1) SDK≠37 ----------
@@ -172,45 +210,60 @@ run_capture apply
 has "$ERR" '仅支持 Android 17' && ok "SDK=36 拒绝原因明确" || bad "SDK=36 拒绝原因不清：$ERR"
 [ "$(target_sha)" = "$ORIG_SHA" ] && ok "SDK=36 没动目标" || bad "SDK=36 改动了目标"
 
-# ---------- 2) 无 SI / 无 server ----------
+# ---------- 2) no-target ----------
 reset_hooks
 clean_data
-rm -f "$BIN/server-v355.dex"
+rm -f "$TARGET_DIR/main.dex"
 run_capture check
-[ "$RC" = 0 ] && ok "check 在 no-si 返回 0" || bad "check 在 no-si 退出码 $RC"
-[ "$(kv STATE)" = no-si ] && ok "缺 server 判为 no-si" || bad "缺 server 状态不对：$(kv STATE)"
-[ "$(kv SIZE)" = 0 ] && ok "no-si 的 SIZE=0" || bad "no-si 的 SIZE 不对：$(kv SIZE)"
-[ -z "$(kv SHA)" ] && ok "no-si 的 SHA 为空" || bad "no-si 仍输出 SHA：$(kv SHA)"
+[ "$RC" = 0 ] && ok "check 在 no-target 返回 0" || bad "check 在 no-target 退出码 $RC"
+[ "$(kv STATE)" = no-target ] && ok "缺 main.dex 判为 no-target" \
+  || bad "缺 main.dex 状态不对：$(kv STATE)"
+[ "$(kv SIZE)" = 0 ] && ok "no-target 的 SIZE=0" || bad "no-target 的 SIZE 不对：$(kv SIZE)"
+[ -z "$(kv SHA)" ] && ok "no-target 的 SHA 为空" || bad "no-target 仍输出 SHA：$(kv SHA)"
 run_capture status
 has "$OUT" '未检测到' && ok "status 说明未检测到" || bad "status 没说明未检测到：$OUT"
 run_capture apply
-[ "$RC" != 0 ] && ok "no-si apply 拒绝" || bad "no-si apply 没有拒绝"
-has "$ERR" '找不到' && ok "no-si 拒绝原因明确" || bad "no-si 拒绝原因不清：$ERR"
+[ "$RC" != 0 ] && ok "no-target apply 拒绝" || bad "no-target apply 没有拒绝"
+has "$ERR" '找不到' && ok "no-target 拒绝原因明确" || bad "no-target 拒绝原因不清：$ERR"
+run_capture restore
+[ "$RC" != 0 ] && ok "no-target restore 拒绝" || bad "no-target restore 没有拒绝"
+has "$ERR" '找不到' && ok "no-target restore 原因明确" || bad "no-target restore 原因不清：$ERR"
 
-# ---------- 3) 原版 + 版本门禁 ----------
+# ---------- 3) original + 版本门禁 ----------
 reset_hooks
 clean_data
 reset_original
 run_capture check
 [ "$RC" = 0 ] && ok "check 在 original 返回 0" || bad "check 在 original 退出码 $RC"
-[ "$(kv STATE)" = original ] && ok "原版哈希判为 original" \
-  || bad "原版哈希状态不对：$(kv STATE)"
-[ "$(kv SI_MATCH)" = 1 ] && ok "SI 版本匹配时 SI_MATCH=1" \
+[ "$(kv STATE)" = original ] && ok "原版哈希/大小判为 original" \
+  || bad "原版状态不对：$(kv STATE)"
+[ "$(kv SI_MATCH)" = 1 ] && ok "模块版本匹配时 SI_MATCH=1" \
   || bad "SI_MATCH 不对：$(kv SI_MATCH)"
-[ "$(kv SI_TARGET_VERSION)" = 8.8.1.r3684 ] && ok "输出补丁适用版本" \
+[ "$(kv SI_TARGET_MODULE)" = zygisk-storage-isolation ] && ok "输出目标模块" \
+  || bad "目标模块字段不对：$(kv SI_TARGET_MODULE)"
+[ "$(kv SI_TARGET_FILE)" = main.dex ] && ok "输出目标文件 main.dex" \
+  || bad "目标文件字段不对：$(kv SI_TARGET_FILE)"
+[ "$(kv SI_TARGET_VERSION)" = v29.0.1 ] && ok "输出适用模块版本" \
   || bad "适用版本字段不对：$(kv SI_TARGET_VERSION)"
-[ "$(kv SI_TARGET_SERVER)" = server-v355 ] && ok "输出补丁适用 server" \
-  || bad "适用 server 字段不对：$(kv SI_TARGET_SERVER)"
-[ "$(kv DEX)" = "$BIN/server-v355.dex" ] && ok "输出 dex 路径" \
+[ "$(kv SI_TARGET_VERSION_CODE)" = 89 ] && ok "输出适用模块 versionCode" \
+  || bad "适用 versionCode 字段不对：$(kv SI_TARGET_VERSION_CODE)"
+[ "$(kv DEX)" = "$TARGET_DIR/main.dex" ] && ok "输出 main.dex 路径" \
   || bad "dex 路径不对：$(kv DEX)"
-[ "$(kv SIZE)" = "$(wc -c < "$T/original.bin" | tr -d ' ')" ] && ok "输出 dex 大小" \
+[ "$(kv SIZE)" = "$ORIG_SIZE" ] && ok "输出 dex 大小" \
   || bad "dex 大小不对：$(kv SIZE)"
 [ "$(kv SHA)" = "$ORIG_SHA" ] && ok "输出 dex sha256" || bad "dex sha256 不对：$(kv SHA)"
+[ "$(kv ORIGINAL_SIZE)" = "$ORIG_SIZE" ] && ok "输出原版大小常量" \
+  || bad "原版大小字段不对：$(kv ORIGINAL_SIZE)"
 [ "$(kv BACKUP_COUNT)" = 0 ] && ok "初始没有备份" \
   || bad "初始备份数不对：$(kv BACKUP_COUNT)"
 [ "$(kv BACKUP_OK)" = 0 ] && ok "初始没有可用原版备份" \
   || bad "初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
 [ "$(kv PROMPTED)" = 0 ] && ok "初始未提示" || bad "初始 PROMPTED 不对：$(kv PROMPTED)"
+[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 19 ] \
+  && ok "check 输出 19 个 KEY=VALUE" || bad "check 字段数不对"
+has "$OUT" 'SERVER_PIDS=' && bad "check 仍输出 SERVER_PIDS" \
+  || ok "check 不输出 SERVER_PIDS"
+[ ! -f "$DATA/patch.log" ] && ok "check 不写 patch.log" || bad "check 写了 patch.log"
 run_capture status
 has "$OUT" '可应用' && ok "status 显示可应用" || bad "status 没显示可应用：$OUT"
 
@@ -218,22 +271,21 @@ has "$OUT" '可应用' && ok "status 显示可应用" || bad "status 没显示�
 run_capture check
 [ "$(kv PROMPTED)" = 1 ] && ok "存在 .patch_prompted 时 PROMPTED=1" \
   || bad "PROMPTED 没读标记：$(kv PROMPTED)"
-rm -f "$DATA/.patch_prompted"
 
-SDK=37
-SI_VER_OK=8.9.0.test
+write_prop v29.0.0 88
 run_capture check
-[ "$(kv STATE)" = original ] && ok "版本不匹配时仍按哈希判 original" \
-  || bad "版本不匹配状态不对：$(kv STATE)"
-[ "$(kv SI_MATCH)" = 0 ] && ok "版本不匹配时 SI_MATCH=0" \
+[ "$(kv SI_MATCH)" = 0 ] && ok "模块版本不匹配时 SI_MATCH=0" \
   || bad "版本不匹配 SI_MATCH 不对：$(kv SI_MATCH)"
 run_capture status
-has "$OUT" '不适用' && ok "版本不匹配时 status 说不适用" \
-  || bad "版本不匹配 status 不对：$OUT"
+has "$OUT" '不适用' && ok "status 显示版本不适用" || bad "status 没显示版本不适用：$OUT"
 run_capture apply
-[ "$RC" != 0 ] && ok "版本不匹配时 apply 拒绝" || bad "版本不匹配时 apply 没拒绝"
-has "$ERR" '不适用' && ok "版本门禁拒绝原因明确" || bad "版本门禁原因不清：$ERR"
-[ "$(target_sha)" = "$ORIG_SHA" ] && ok "版本门禁没动目标" || bad "版本门禁改动了目标"
+[ "$RC" != 0 ] && ok "版本不匹配 apply 拒绝" || bad "版本不匹配 apply 没有拒绝"
+has "$ERR" '版本不适用' && ok "版本不匹配原因明确" || bad "版本不匹配原因不清：$ERR"
+[ "$(target_sha)" = "$ORIG_SHA" ] && ok "版本不匹配没动目标" || bad "版本不匹配改动了目标"
+write_prop ''
+run_capture check
+[ "$(kv SI_MATCH)" = 1 ] && ok "模块版本读不到时按目标存在视为适用" \
+  || bad "版本读不到时 SI_MATCH 不对：$(kv SI_MATCH)"
 reset_hooks
 
 # ---------- 4) unknown 拒绝 ----------
@@ -247,7 +299,8 @@ run_capture check
 [ "$(kv BACKUP_OK)" = 0 ] && ok "未知哈希且无备份 BACKUP_OK=0" \
   || bad "unknown BACKUP_OK 不对：$(kv BACKUP_OK)"
 run_capture status
-has "$OUT" '版本不匹配' && ok "status 显示版本不匹配" || bad "status 没显示版本不匹配：$OUT"
+has "$OUT" '版本/哈希不匹配' && ok "status 显示版本/哈希不匹配" \
+  || bad "status 没显示版本/哈希不匹配：$OUT"
 run_capture apply
 [ "$RC" != 0 ] && ok "unknown apply 拒绝" || bad "unknown apply 没有拒绝"
 has "$ERR" '已拒绝操作' && ok "unknown 拒绝原因明确" || bad "unknown 拒绝原因不清：$ERR"
@@ -353,7 +406,7 @@ has "$ERR" '已自动回滚' && ok "替换后哈希不符触发回滚" || bad "�
 grep -q 'APPLY-FAILED.*rollback=ok' "$DATA/patch.log" 2>/dev/null \
   && ok "回滚成功写入日志" || bad "回滚成功没有日志"
 
-# ---------- 9) chown 调用 ----------
+# ---------- 9) chown / 权限 / apply 成功 / no-op ----------
 reset_hooks
 clean_data
 reset_original
@@ -365,38 +418,34 @@ S
 chmod 755 "$T/fakebin/chown"
 rm -f "$T/fakebin/chown.log"
 CHOWN_OVERRIDE=$T/fakebin/chown
-run_capture apply
-[ "$RC" = 0 ] && ok "注入 chown 后 apply 成功" || bad "注入 chown 后 apply 失败：$ERR"
-[ -f "$T/fakebin/chown.log" ] && grep -q 'root:root' "$T/fakebin/chown.log" \
-  && ok "apply 调用了 chown root:root" || bad "apply 没有调用 chown root:root"
-CHOWN_OVERRIDE=
-
-# ---------- 10) umask 022 下仍为 600；apply 成功 / no-op ----------
-reset_hooks
-clean_data
-reset_original
 run_capture_umask apply
 [ "$RC" = 0 ] && ok "umask 022 下 apply 成功" || bad "umask 022 下 apply 失败：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "目标已换成补丁 dex" \
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "目标已换成补丁 main.dex" \
   || bad "目标哈希不是补丁：$(target_sha)"
-has "$OUT" '没有运行中的 SI server' && ok "未运行 server 时提示打开 SI" \
-  || bad "未运行 server 时提示不对：$OUT"
-grep -q 'SERVER-RESTART skip' "$DATA/patch.log" 2>/dev/null \
-  && ok "未运行 server 时记录 skip" || bad "未运行 server 时没有 skip 日志"
+[ "$(target_size)" = "$PATCH_SIZE_EXPECT" ] && ok "目标大小 99104 B" \
+  || bad "目标大小不对：$(target_size)"
+has "$OUT" '重启生效（Zygisk 模块在开机时加载）' && ok "apply 提示重启生效" \
+  || bad "apply 没提示重启生效：$OUT"
+! has "$OUT" 'server' && ok "apply 输出不再提 server" || bad "apply 输出仍提 server：$OUT"
+[ -f "$T/fakebin/chown.log" ] && grep -q 'root:root' "$T/fakebin/chown.log" \
+  && ok "apply 调用了 chown root:root" || bad "apply 没有调用 chown root:root"
 [ "$(backup_count)" = 1 ] && ok "apply 留下 1 份备份" || bad "apply 备份数不对：$(backup_count)"
 _bl=$(latest_backup)
+case "${_bl##*/}" in main.dex.*) ok "备份文件名为 main.dex.<时间戳>" ;; *) bad "备份文件名不对：$_bl" ;; esac
 [ -n "$_bl" ] && [ "$(sha_of "$_bl")" = "$ORIG_SHA" ] && ok "备份内容为原版" \
   || bad "备份内容不对：$_bl"
-[ "$(stat -c %a "$BIN/server-v355.dex" 2>/dev/null)" = 600 ] && ok "目标权限 600" \
-  || bad "目标权限不对：$(stat -c %a "$BIN/server-v355.dex" 2>/dev/null)"
+[ "$(stat -c %a "$TARGET_DIR/main.dex" 2>/dev/null)" = 644 ] && ok "目标权限 644" \
+  || bad "目标权限不对：$(stat -c %a "$TARGET_DIR/main.dex" 2>/dev/null)"
 [ "$(stat -c %a "$_bl" 2>/dev/null)" = 600 ] && ok "备份权限 600" \
   || bad "备份权限不对：$(stat -c %a "$_bl" 2>/dev/null)"
 if [ "$(id -u 2>/dev/null)" = 0 ]; then
-  [ "$(stat -c %U 2>/dev/null "$BIN/server-v355.dex")" = root ] && ok "目标属主 root" \
+  [ "$(stat -c %U 2>/dev/null "$TARGET_DIR/main.dex")" = root ] && ok "目标属主 root" \
     || bad "目标属主不是 root"
 fi
 grep -q 'APPLY' "$DATA/patch.log" 2>/dev/null && ok "写了 apply 日志" \
   || bad "没有 apply 日志"
+! grep -q 'SERVER-RESTART' "$DATA/patch.log" 2>/dev/null && ok "apply 没有 server 重启日志" \
+  || bad "apply 仍写 server 重启日志"
 run_capture check
 [ "$(kv STATE)" = patched ] && ok "apply 后 check=patched" \
   || bad "apply 后状态不对：$(kv STATE)"
@@ -409,10 +458,11 @@ run_capture apply
 has "$OUT" '无需重复' && ok "已 patched 提示无需重复" || bad "已 patched 提示不对：$OUT"
 [ "$(backup_count)" = 1 ] && ok "no-op 没有新增备份" || bad "no-op 新增了备份：$(backup_count)"
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "no-op 没有改目标" || bad "no-op 改动了目标"
+CHOWN_OVERRIDE=
 
-# ---------- 11) restore：最新备份坏、旧备份有效 ----------
-printf 'corrupt newest backup\n' > "$DATA/patch-backup/server-v355.dex.99991231-235959"
-chmod 600 "$DATA/patch-backup/server-v355.dex.99991231-235959"
+# ---------- 10) restore：最新备份坏、旧备份有效 ----------
+printf 'corrupt newest backup\n' > "$DATA/patch-backup/main.dex.99991231-235959"
+chmod 600 "$DATA/patch-backup/main.dex.99991231-235959"
 run_capture check
 [ "$(kv BACKUP_COUNT)" = 2 ] && ok "最新坏备份计入总数" \
   || bad "备份总数不对：$(kv BACKUP_COUNT)"
@@ -421,11 +471,13 @@ run_capture check
 run_capture restore
 [ "$RC" = 0 ] && ok "最新备份坏时 restore 仍成功" || bad "restore 没选旧的有效备份（$RC）：$ERR"
 [ "$(target_sha)" = "$ORIG_SHA" ] && ok "restore 回到原版" || bad "restore 后哈希不对"
+has "$OUT" '重启生效（Zygisk 模块在开机时加载）' && ok "restore 提示重启生效" \
+  || bad "restore 没提示重启生效：$OUT"
 
-# ---------- 12) 备份全坏 ----------
+# ---------- 11) 备份全坏 ----------
 run_capture apply
 [ "$RC" = 0 ] && ok "为全坏备份用例重新应用" || bad "全坏备份用例准备失败：$ERR"
-for _b in "$DATA/patch-backup/server-v355.dex".*; do
+for _b in "$DATA/patch-backup/main.dex".*; do
   [ -f "$_b" ] || continue
   printf 'corrupt backup\n' > "$_b"
   chmod 600 "$_b"
@@ -440,7 +492,7 @@ has "$ERR" '没有可用的原版备份' && ok "备份全坏原因明确" \
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "备份全坏失败时目标仍是补丁" \
   || bad "备份全坏失败时目标被改"
 
-# ---------- 13) unknown + 有效备份 → 强制恢复 ----------
+# ---------- 12) unknown + 有效备份 → 强制恢复 ----------
 reset_hooks
 clean_data
 reset_original
@@ -460,7 +512,7 @@ run_capture restore --force
 [ "$RC" = 0 ] && ok "unknown 强制恢复成功" || bad "强制恢复失败（$RC）：$ERR"
 [ "$(target_sha)" = "$ORIG_SHA" ] && ok "强制恢复后回到原版" || bad "强制恢复后哈希不对"
 
-# ---------- 14) restore 当前副本与回滚 ----------
+# ---------- 13) restore 当前副本与回滚 ----------
 reset_hooks
 clean_data
 reset_original
@@ -474,7 +526,7 @@ has "$ERR" '已回到操作前状态' && ok "restore 失败回滚到补丁版" \
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "restore 回滚后仍是补丁版" \
   || bad "restore 回滚后目标不对"
 
-# ---------- 15) 已是原版 / 没有备份 ----------
+# ---------- 14) 已是原版 / 没有备份 ----------
 reset_hooks
 clean_data
 reset_original
@@ -492,7 +544,7 @@ has "$ERR" '没有可用的原版备份' && ok "无备份报错原因明确" \
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "无备份失败时目标仍是补丁" \
   || bad "无备份失败时目标被改"
 
-# ---------- 16) 持锁后重查 ----------
+# ---------- 15) 持锁后重查 ----------
 reset_hooks
 clean_data
 reset_original
@@ -511,8 +563,8 @@ if [ -e "$T/prelock.mark" ]; then
 else
   bad "apply 没有进入拿锁前测试窗口"
 fi
-cp "$ASSET_REAL" "$BIN/server-v355.dex"
-chmod 600 "$BIN/server-v355.dex"
+cp "$ASSET_REAL" "$TARGET_DIR/main.dex"
+chmod 644 "$TARGET_DIR/main.dex"
 wait "$_bg"
 _bg_rc=$(cat "$T/bg.rc" 2>/dev/null)
 _bg_out=$(cat "$T/bg.out" 2>/dev/null)
@@ -525,8 +577,19 @@ has "$_bg_out" '无需重复' && ok "持锁后发现已 patched 走 no-op" \
   || bad "持锁后重查产生了备份：$(backup_count)"
 reset_original
 
-# ---------- 17) 并发锁 ----------
+# ---------- 16) 并发锁 ----------
 reset_hooks
+clean_data
+reset_original
+mkdir -p "$DATA/.si-patch.lock"
+run_capture apply
+[ "$RC" = 0 ] && ok "空 pid 的新鲜锁等待 1 秒后可回收" \
+  || bad "空 pid 的锁没有回收（$RC）：$ERR"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "空 pid 锁回收后 apply 成功" \
+  || bad "空 pid 锁回收后 apply 没生效"
+run_capture restore
+[ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] && ok "空 pid 锁用例收尾恢复原版" \
+  || bad "空 pid 锁用例收尾恢复失败"
 clean_data
 reset_original
 cat > "$T/holder/si-patch.sh" <<'S'
@@ -536,12 +599,7 @@ S
 chmod 755 "$T/holder/si-patch.sh"
 "$TEST_SH" "$T/holder/si-patch.sh" &
 HOLDER=$!
-_i=0
-while [ "$_i" -lt 30 ]; do
-  if tr '\0' ' ' < "/proc/$HOLDER/cmdline" 2>/dev/null | grep -q 'si-patch\.sh'; then break; fi
-  sleep 0.1
-  _i=$((_i + 1))
-done
+sleep 0.3
 mkdir -p "$DATA/.si-patch.lock"
 printf '%s\n' "$HOLDER" > "$DATA/.si-patch.lock/pid"
 run_capture apply
@@ -559,325 +617,61 @@ run_capture restore
 [ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] && ok "并发用例收尾恢复原版" \
   || bad "并发用例收尾恢复失败"
 
-# ---------- 18) 卸载前恢复成功 ----------
+# ---------- 17) 卸载前恢复成功 ----------
 M1=$T/un1/mod; D1=$T/un1/data; B1=$T/un1/bin
 mkdir -p "$M1/scripts" "$D1/patch-backup" "$B1" || exit 1
 cp module.prop "$M1/module.prop" || exit 1
 cp "$PATCH" "$M1/scripts/si-patch.sh" || exit 1
 chmod 755 "$M1/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B1/server-v355.dex"
-chmod 600 "$B1/server-v355.dex"
-cp "$T/original.bin" "$D1/patch-backup/server-v355.dex.20260101-000000"
-chmod 600 "$D1/patch-backup/server-v355.dex.20260101-000000"
-SI_TEST=1 SI_MOD=$M1 SI_DATA=$D1 SI_PATCH_BIN=$B1 SI_PATCH_SDK=37 \
-  SI_PATCH_VERSION=$SI_VER_OK SI_PATCH_ORIGINAL_SHA=$ORIG_SHA \
-  SI_PATCH_PROC=$T/proc-empty SI_PATCH_TERM_WAIT=0 \
+cp "$ASSET_REAL" "$B1/main.dex"
+chmod 644 "$B1/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B1/module.prop" || exit 1
+cp "$T/original.bin" "$D1/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D1/patch-backup/main.dex.20260101-000000"
+SI_TEST=1 SI_MOD=$M1 SI_DATA=$D1 SI_PATCH_TARGET_DIR=$B1 SI_PATCH_SDK=37 \
+  SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
   "$TEST_SH" uninstall.sh >"$T/un1.out" 2>"$T/un1.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "卸载脚本成功退出" || bad "卸载脚本退出码 $_rc"
-[ "$(sha_of "$B1/server-v355.dex")" = "$ORIG_SHA" ] && ok "卸载前已恢复原版 dex" \
-  || bad "卸载前没有恢复原版 dex"
+[ "$(sha_of "$B1/main.dex")" = "$ORIG_SHA" ] && ok "卸载前已恢复原版 main.dex" \
+  || bad "卸载前没有恢复原版 main.dex"
 [ ! -d "$D1" ] && ok "恢复成功后数据目录已删除" || bad "恢复成功后数据目录还在"
-has "$(cat "$T/un1.out" 2>/dev/null)" '已恢复 SI 原版' \
+has "$(cat "$T/un1.out" 2>/dev/null)" '已恢复 zygisk 模块原版 main.dex' \
   && ok "卸载输出说明已恢复" || bad "卸载输出没说明恢复"
 
-# ---------- 19) 卸载前恢复失败：保留备份 ----------
+# ---------- 18) 卸载前恢复失败：保留备份 ----------
 M2=$T/un2/mod; D2=$T/un2/data; B2=$T/un2/bin
 mkdir -p "$M2/scripts" "$D2/patch-backup" "$B2" || exit 1
 cp module.prop "$M2/module.prop" || exit 1
 cp "$PATCH" "$M2/scripts/si-patch.sh" || exit 1
 chmod 755 "$M2/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B2/server-v355.dex"
-chmod 600 "$B2/server-v355.dex"
-printf 'corrupt backup\n' > "$D2/patch-backup/server-v355.dex.20260101-000000"
-chmod 600 "$D2/patch-backup/server-v355.dex.20260101-000000"
-SI_TEST=1 SI_MOD=$M2 SI_DATA=$D2 SI_PATCH_BIN=$B2 SI_PATCH_SDK=37 \
-  SI_PATCH_VERSION=$SI_VER_OK SI_PATCH_ORIGINAL_SHA=$ORIG_SHA \
-  SI_PATCH_PROC=$T/proc-empty SI_PATCH_TERM_WAIT=0 \
+cp "$ASSET_REAL" "$B2/main.dex"
+chmod 644 "$B2/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B2/module.prop" || exit 1
+printf 'corrupt backup\n' > "$D2/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D2/patch-backup/main.dex.20260101-000000"
+SI_TEST=1 SI_MOD=$M2 SI_DATA=$D2 SI_PATCH_TARGET_DIR=$B2 SI_PATCH_SDK=37 \
+  SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
   "$TEST_SH" uninstall.sh >"$T/un2.out" 2>"$T/un2.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "恢复失败时卸载脚本仍成功退出" || bad "恢复失败时卸载退出码 $_rc"
 [ -d "$D2" ] && ok "恢复失败时保留数据目录" || bad "恢复失败时数据目录被删"
 [ -d "$D2/patch-backup" ] && ok "恢复失败时保留 patch-backup" \
   || bad "恢复失败时 patch-backup 被删"
-[ "$(sha_of "$B2/server-v355.dex")" = "$PATCH_SHA_EXPECT" ] && ok "恢复失败时 dex 未被乱改" \
+[ "$(sha_of "$B2/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "恢复失败时 dex 未被乱改" \
   || bad "恢复失败时 dex 被改"
 has "$(cat "$T/un2.out" 2>/dev/null)" '补丁备份保留在' \
   && ok "卸载输出保留路径提示" || bad "卸载输出没有保留提示"
 
-# ---------- 20) 自动重启 SI server：成功 / 跳过 / 失败 ----------
-cat > "$T/fakebin/kill" <<'S'
-#!/bin/sh
-printf '%s\n' "$*" >> "$0.log"
-pid=
-for a in "$@"; do
-  case "$a" in
-    -*) ;;
-    *) pid=$a ;;
-  esac
-done
-[ -n "$pid" ] || exit 1
-case " $* " in
-  *" -TERM "*)
-    # 测试 TERM 后地图变化：不动进程，只把 maps 换成 .bak，验证 KILL 前复核。
-    if [ -e "$SI_PATCH_PROC/.term_drop" ]; then
-      printf '%s\n' "$SI_PATCH_TEST_FAKE_DEX.bak" > "$SI_PATCH_PROC/$pid/maps"
-      exit 0
-    fi
-    rm -rf "$SI_PATCH_PROC/$pid"
-    if [ "$SI_PATCH_TEST_RESTART" = 1 ]; then
-      mkdir -p "$SI_PATCH_PROC/101"
-      printf '%s\n' "$SI_PATCH_TEST_FAKE_DEX" > "$SI_PATCH_PROC/101/maps"
-      if [ -e "$SI_PATCH_PROC/.new_other" ]; then
-        # 模拟 dex 被另一个普通应用映射：不是 SI server，不能算重启成功。
-        printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$SI_PATCH_PROC/101/status"
-        printf 'com.example.other\000--scan\000' > "$SI_PATCH_PROC/101/cmdline"
-      elif [ -e "$SI_PATCH_PROC/.new_nonroot" ]; then
-        # 模拟新 server 不是 root、cmdline 也没有特征：只按 maps 仍应认出来。
-        printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$SI_PATCH_PROC/101/status"
-      else
-        printf 'Uid:\t0\t0\t0\t0\n' > "$SI_PATCH_PROC/101/status"
-      fi
-    fi ;;
-  *" -KILL "*)
-    rm -rf "$SI_PATCH_PROC/$pid" ;;
-esac
-exit 0
-S
-chmod 755 "$T/fakebin/kill"
-
-# 20a) 找到映射 dex 的 server → 杀掉后新进程出现
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-found" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-found/100"
-# apply 已经 mv 掉旧 inode，真机上这条 maps 会带 " (deleted)"；精确匹配必须容忍。
-printf '%s\n' "$BIN/server-v355.dex (deleted)" > "$T/proc-found/100/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-found/100/status"
-PROC_OVERRIDE=$T/proc-found
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=2
-TERM_WAIT=0
-TEST_RESTART=1
-run_capture apply
-[ "$RC" = 0 ] && ok "server 重启成功路径 apply 成功" || bad "server 重启成功路径 apply 失败：$ERR"
-has "$OUT" 'SI server 已自动重启' && ok "apply 提示 server 已自动重启" \
-  || bad "apply 没提示 server 重启：$OUT"
-grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
-  && ok "server 重启成功写入 ok 日志" || bad "server 重启成功没有 ok 日志"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "server 重启成功后 dex 仍是补丁" \
-  || bad "server 重启成功后 dex 不对"
-grep -q -- '-TERM 100' "$T/fakebin/kill.log" 2>/dev/null \
-  && ok "只对映射 dex 的 PID 发 TERM" || bad "没有对映射 dex 的 PID 发 TERM"
-grep -q -- '-KILL' "$T/fakebin/kill.log" 2>/dev/null \
-  && bad "TERM 后进程已退出仍发了 KILL" || ok "TERM 后没有多余 KILL"
-run_capture check
-[ "$(kv SERVER_PIDS)" = 1 ] && ok "check 输出 SERVER_PIDS=1（新 server 已起来）" \
-  || bad "check 的 SERVER_PIDS 不对：$(kv SERVER_PIDS)"
-
-# 20b) 没有运行中的 server → skip，不影响 apply
-reset_hooks
-clean_data
-reset_original
-PROC_OVERRIDE=$T/proc-empty
-run_capture apply
-[ "$RC" = 0 ] && ok "没有 server 时 apply 成功" || bad "没有 server 时 apply 失败：$ERR"
-has "$OUT" '没有运行中的 SI server' && ok "没有 server 时提示打开 SI" \
-  || bad "没有 server 时提示不对：$OUT"
-grep -q 'SERVER-RESTART skip' "$DATA/patch.log" 2>/dev/null \
-  && ok "没有 server 时写入 skip 日志" || bad "没有 server 时没有 skip 日志"
-run_capture check
-[ "$(kv SERVER_PIDS)" = 0 ] && ok "没有 server 时 SERVER_PIDS=0" \
-  || bad "没有 server 时 SERVER_PIDS 不为 0：$(kv SERVER_PIDS)"
-
-# 20c) 杀掉旧 server 但没有新进程 → fail，不回滚 dex
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-fail" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-fail/100"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-fail/100/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-fail/100/status"
-PROC_OVERRIDE=$T/proc-fail
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=1
-TERM_WAIT=0
-TEST_RESTART=0
-run_capture apply
-[ "$RC" = 0 ] && ok "server 重启失败时 apply 仍成功" || bad "server 重启失败时 apply 失败：$RC"
-has "$OUT" 'SI server 自动重启失败' && ok "server 重启失败有提示" \
-  || bad "server 重启失败没提示：$OUT"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "server 重启失败不回滚 dex" \
-  || bad "server 重启失败把 dex 回滚了"
-grep -q 'SERVER-RESTART fail' "$DATA/patch.log" 2>/dev/null \
-  && ok "server 重启失败写入 fail 日志" || bad "server 重启失败没有 fail 日志"
-
-# 20d) .bak 路径也含 $DEX 子串：精确匹配不能误杀
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-bak" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-bak/150"
-printf '%s\n' "$BIN/server-v355.dex.bak" > "$T/proc-bak/150/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-bak/150/status"
-printf 'backup\n' > "$BIN/server-v355.dex.bak"
-PROC_OVERRIDE=$T/proc-bak
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=1
-run_capture apply
-[ "$RC" = 0 ] && ok ".bak 场景 apply 成功" || bad ".bak 场景 apply 失败：$ERR"
-has "$OUT" '没有运行中的 SI server' && ok ".bak 不当作 SI server" \
-  || bad ".bak 被误判：$OUT"
-grep -q -- '-TERM 150' "$T/fakebin/kill.log" 2>/dev/null \
-  && bad ".bak 进程被 TERM" || ok ".bak 进程没有被杀"
-[ -f "$BIN/server-v355.dex.bak" ] && ok ".bak 文件原样保留" || bad ".bak 文件被动了"
-rm -f "$BIN/server-v355.dex.bak"
-
-# 20e) 模块 daemon 即使映射同名 dex、uid=0，也不能杀
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-daemon" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-daemon/151"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-daemon/151/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-daemon/151/status"
-printf '/system/bin/sh\000/data/adb/si-mount-fix/scripts/si-mount-eventd.sh\000' \
-  > "$T/proc-daemon/151/cmdline"
-PROC_OVERRIDE=$T/proc-daemon
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=1
-run_capture apply
-[ "$RC" = 0 ] && ok "daemon 场景 apply 成功" || bad "daemon 场景 apply 失败：$ERR"
-has "$OUT" '身份不符' && ok "身份拒绝走 skip=3 提示" \
-  || bad "daemon 没有按身份拒绝处理：$OUT"
-grep -q 'SERVER-RESTART refuse pid=151' "$DATA/patch.log" 2>/dev/null \
-  && ok "身份拒绝记录 PID" || bad "身份拒绝没有记录 PID"
-grep -q -- '-TERM 151' "$T/fakebin/kill.log" 2>/dev/null \
-  && bad "模块 daemon 被 TERM" || ok "模块 daemon 没有被杀"
-
-# 20f) TERM 后进程不再映射 $DEX：KILL 前复核，不补刀
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-termdrop" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-termdrop/160"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-termdrop/160/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-termdrop/160/status"
-: > "$T/proc-termdrop/.term_drop"
-PROC_OVERRIDE=$T/proc-termdrop
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=1
-run_capture apply
-grep -q -- '-TERM 160' "$T/fakebin/kill.log" 2>/dev/null \
-  && ok "TERM 先发给映射目标 dex 的 PID" || bad "没有发 TERM"
-grep -q -- '-KILL 160' "$T/fakebin/kill.log" 2>/dev/null \
-  && bad "TERM 后已不映射 $DEX 仍被 KILL" || ok "KILL 前复核生效（未补刀）"
-grep -q 'server-v355.dex.bak' "$T/proc-termdrop/160/maps" 2>/dev/null \
-  && ok "复核看到进程 maps 已换掉" \
-  || bad "测试桩没有把 maps 换掉：$(cat "$T/proc-termdrop/160/maps" 2>/dev/null)"
-has "$OUT" 'SI server 自动重启失败' && ok "没有新 server 时提示重开 SI" \
-  || bad "没有新 server 时提示不对：$OUT"
-
-# 20g) 非 root server，cmdline 只有 storage-isolation（连字符）：身份正例
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-dash" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-dash/152"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-dash/152/maps"
-printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$T/proc-dash/152/status"
-printf '/system/bin/app_process\000/data/adb/storage-isolation/bin/server-v355.dex\000' \
-  > "$T/proc-dash/152/cmdline"
-PROC_OVERRIDE=$T/proc-dash
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=2
-TERM_WAIT=0
-TEST_RESTART=1
-run_capture apply
-[ "$RC" = 0 ] && ok "连字符 cmdline 的非 root server 场景 apply 成功" \
-  || bad "连字符 cmdline 场景 apply 失败：$ERR"
-grep -q -- '-TERM 152' "$T/fakebin/kill.log" 2>/dev/null \
-  && ok "非 root + storage-isolation 路径被认作 SI server" \
-  || bad "连字符 cmdline 的 server 没有被杀"
-grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
-  && ok "连字符场景重启成功" || bad "连字符场景没有重启 ok 日志"
-
-# 20h) BIN 是符号链接：maps 里的真实路径与 $DEX 归一化后相等
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-link" "$T/fakebin/kill.log" "$T/linkbin"
-mkdir -p "$T/proc-link/155"
-ln -s "$BIN" "$T/linkbin"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-link/155/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-link/155/status"
-PROC_OVERRIDE=$T/proc-link
-KILL_OVERRIDE=$T/fakebin/kill
-BIN_OVERRIDE=$T/linkbin
-RESTART_WAIT=2
-TERM_WAIT=0
-TEST_RESTART=1
-run_capture apply
-[ "$RC" = 0 ] && ok "BIN 符号链接场景 apply 成功" || bad "符号链接场景 apply 失败：$ERR"
-grep -q -- '-TERM 155' "$T/fakebin/kill.log" 2>/dev/null \
-  && ok "符号链接 BIN 仍能按 readlink -f 命中旧 server" \
-  || bad "符号链接 BIN 没有命中旧 server"
-grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
-  && ok "符号链接场景重启成功" || bad "符号链接场景没有重启 ok 日志"
-BIN_OVERRIDE=
-rm -rf "$T/linkbin"
-
-# 20i) 新 server 不是 root、cmdline 无特征：_new 只按 maps 仍要认出来
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-newuser" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-newuser/156"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-newuser/156/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-newuser/156/status"
-: > "$T/proc-newuser/.new_nonroot"
-PROC_OVERRIDE=$T/proc-newuser
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=2
-TERM_WAIT=0
-TEST_RESTART=1
-run_capture apply
-grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
-  && ok "_new 只按 maps 认出非 root 新 server" \
-  || bad "非 root 新 server 没有被认出来"
-has "$OUT" 'SI server 已自动重启' && ok "非 root 新 server 仍提示已重启" \
-  || bad "非 root 新 server 提示不对：$OUT"
-
-# 20j) 其他应用映射 dex（uid 非 0、cmdline 带 com.）：不能算新 server
-reset_hooks
-clean_data
-reset_original
-rm -rf "$T/proc-other" "$T/fakebin/kill.log"
-mkdir -p "$T/proc-other/157"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-other/157/maps"
-printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-other/157/status"
-: > "$T/proc-other/.new_other"
-PROC_OVERRIDE=$T/proc-other
-KILL_OVERRIDE=$T/fakebin/kill
-RESTART_WAIT=1
-TERM_WAIT=0
-TEST_RESTART=1
-run_capture apply
-has "$OUT" 'SI server 自动重启失败' && ok "其他应用映射 dex 不算重启成功" \
-  || bad "其他应用映射 dex 被当成新 server：$OUT"
-grep -q 'SERVER-RESTART fail' "$DATA/patch.log" 2>/dev/null \
-  && ok "其他应用场景写入 fail 日志" || bad "其他应用场景没有 fail 日志"
-run_capture check
-[ "$(kv SERVER_PIDS)" = 0 ] && ok "其他应用不计入 SERVER_PIDS" \
-  || bad "其他应用被计入 SERVER_PIDS：$(kv SERVER_PIDS)"
-
-# ---------- 21) WebUI / action / build 接线（静态） ----------
-
+# ---------- 19) WebUI / action / build / 文档（静态） ----------
 grep -q 'P.patch = P.mod' webroot/index.html && ok "WebUI 指向 si-patch.sh" \
   || bad "WebUI 没接线 si-patch.sh"
 grep -q '\.patch_prompted' webroot/index.html && ok "WebUI 使用 .patch_prompted" \
   || bad "WebUI 没使用 .patch_prompted"
+grep -q 'Android 17 应用列表修复（main.dex）' webroot/index.html \
+  && ok "补丁卡片标题含 main.dex" || bad "补丁卡片标题没含 main.dex"
 for _id in patchCard patchHint patchActions btnPatchApply btnPatchRestore btnPatchForce \
            patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult; do
   grep -q "id=\"$_id\"" webroot/index.html || bad "WebUI 缺少元素 $_id"
@@ -896,9 +690,9 @@ grep -q "act === 'patch-apply') { armPatchAction('apply'); }" webroot/index.html
   && ok "banner 应用按钮也走两步确认" || bad "banner 应用按钮直接执行"
 grep -q "act === 'patch-confirm-go') { confirmPatchAction(); }" webroot/index.html \
   && ok "banner 确认按钮执行" || bad "banner 确认按钮没接线"
-grep -q 'p.targetVersion' webroot/index.html && grep -q 'p.targetServer' webroot/index.html \
-  && grep -q '仅适用于' webroot/index.html && ok "确认框显示 SI 版本与适用范围" \
-  || bad "确认框缺少 SI 版本/适用范围"
+grep -q 'p.targetVersion' webroot/index.html && grep -q 'p.targetFile' webroot/index.html \
+  && grep -q '仅适用于' webroot/index.html && ok "确认框显示模块版本与适用范围" \
+  || bad "确认框缺少模块版本/适用范围"
 grep -q 'state.patchConfirm' webroot/index.html && ok "WebUI 有确认状态" \
   || bad "WebUI 没有确认状态"
 grep -q 'patchError' webroot/index.html && ok "WebUI 有补丁错误状态" \
@@ -906,36 +700,34 @@ grep -q 'patchError' webroot/index.html && ok "WebUI 有补丁错误状态" \
 _run_refs=$(grep -c 'runPatchAction' webroot/index.html)
 [ "$_run_refs" = 2 ] && ok "runPatchAction 只在确认后调用（2 处）" \
   || bad "runPatchAction 调用点不对：$_run_refs"
+[ "$(grep -c "run('sh ' + P.patch + ' check')" webroot/index.html)" = 1 ] \
+  && ok "补丁动作后不再补跑 check（只有 loadPatch 一处）" \
+  || bad "补丁动作后仍补跑 check"
+grep -q 'verifyPatchAction' webroot/index.html && bad "仍存在动作后复核函数" \
+  || ok "已删除动作后复核函数"
+grep -q 'applyPatchState' webroot/index.html && ok "动作后直接更新卡片状态" \
+  || bad "动作后没有直接更新卡片状态"
 grep -q 'errnoKnown: false' webroot/index.html \
   && grep -q 'res.errnoKnown !== false' webroot/index.html \
   && ok "sync 桥接不伪造 errno=0" || bad "sync 桥接仍把 errno 固定为 0"
 grep -q 'patchActionVerdict' webroot/index.html \
-  && grep -q "var expect = isApply ? 'patched' : 'original'" webroot/index.html \
-  && ok "动作后用 check 的 STATE 判成败" || bad "动作后没有按 check 复核"
-grep -q '补丁应用结果未知' webroot/index.html && grep -q '恢复结果未知' webroot/index.html \
-  && ok "读不到 STATE 时显示结果未知" || bad "没有结果未知文案"
-grep -q "showPatchResult(title, text, 'good')" webroot/index.html \
-  && bad "仍有按 errno 直接报成功的旧路径" || ok "没有按 errno 直接报成功的旧路径"
-grep -q "return verifyPatchAction(action, parts.join" webroot/index.html \
-  && ok "命令返回后总是先跑 check（含 errno≠0）" || bad "errno≠0 时仍可能直接判红"
-grep -q 'SERVER_PIDS' webroot/index.html && grep -q 'p.serverPids = toInt(p.SERVER_PIDS, 0)' webroot/index.html \
-  && ok "WebUI 读取 SERVER_PIDS" || bad "WebUI 没读 SERVER_PIDS"
-grep -q "if (isApply && pids <= 0)" webroot/index.html \
-  && ok "apply 要求 SERVER_PIDS>0 才报成功" || bad "apply 没有 SERVER_PIDS 门槛"
-grep -q "var styles = \['cb3', 'cb2', 'sync'\]" webroot/index.html \
-  && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
-grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
-  || bad "WebUI 缺少已应用文案"
-grep -q '当前 SI 版本/哈希不在支持范围，未做任何修改' webroot/index.html \
-  && ok "WebUI 不支持范围提示" || bad "WebUI 缺少不支持范围提示"
-grep -q "getprop ro.build.version.sdk" webroot/index.html \
-  && grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.html \
+  && grep -q "var marker = isApply ? '已应用补丁' : '已恢复原版'" webroot/index.html \
+  && ok "sync 动作按输出标记判成败" || bad "sync 动作没有输出标记判定"
+grep -q '已应用，重启手机生效' webroot/index.html && ok "WebUI 应用成功文案" \
+  || bad "WebUI 缺少应用成功文案"
+grep -q '已恢复原版，重启手机生效' webroot/index.html && ok "WebUI 恢复成功文案" \
+  || bad "WebUI 缺少恢复成功文案"
+grep -q '重启生效（Zygisk 模块在开机时加载）' webroot/index.html \
+  && ok "WebUI 提示重启生效" || bad "WebUI 没提示重启生效"
+grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.html \
   && ok "SDK!=37 在 check 前隐藏卡片（SDK 14/15）" \
   || bad "WebUI 没有在 check 前按 SDK 隐藏"
 grep -q "state.patchSdk !== '37'" webroot/index.html \
   && ok "render/arm 也按 SDK 门禁" || bad "WebUI 缺少 patchSdk 门禁"
 grep -q "applyBtn.disabled = !canAct || !p || !p.match" webroot/index.html \
-  && ok "版本不匹配时 apply 置灰" || bad "版本不匹配时 apply 没置灰"
+  && ok "版本/哈希不匹配时 apply 置灰" || bad "版本/哈希不匹配时 apply 没置灰"
+grep -q "restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk" webroot/index.html \
+  && ok "版本/哈希不匹配或无备份时 restore 置灰" || bad "restore 置灰条件不对"
 grep -q "forceOk = !!(p && p.backupOk" webroot/index.html \
   && grep -q "st === 'unknown' || (st === 'patched' && !p.match)" webroot/index.html \
   && grep -q "applyBtn.hidden = !(st === 'original')" webroot/index.html \
@@ -944,69 +736,100 @@ grep -q "forceOk = !!(p && p.backupOk" webroot/index.html \
   && ok "unknown+备份只留强制恢复" || bad "unknown 强制恢复条件不对"
 grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
   && ok "首次提示只给 SDK37+匹配" || bad "首次提示缺 SDK/匹配门禁"
-grep -q "SI_MATCH" webroot/index.html && grep -q "BACKUP_OK" webroot/index.html \
+grep -q 'SI_MATCH' webroot/index.html && grep -q 'BACKUP_OK' webroot/index.html \
   && ok "WebUI 读取版本门禁与有效备份字段" || bad "WebUI 没读新字段"
+grep -q 'p.originalSha' webroot/index.html && grep -q 'p.originalSize' webroot/index.html \
+  && ok "WebUI 用原版哈希/大小更新恢复后的卡片" || bad "WebUI 没记录原版哈希/大小"
+grep -q "var styles = \['cb3', 'cb2', 'sync'\]" webroot/index.html \
+  && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
+grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
+  || bad "WebUI 缺少已应用文案"
+grep -q '既不是原版也不是补丁版' webroot/index.html && ok "WebUI unknown 提示" \
+  || bad "WebUI 缺少 unknown 提示"
+grep -q "if (!err && st !== 'original' && st !== 'patched' && st !== 'unknown')" webroot/index.html \
+  && ok "no-target/unsupported 隐藏卡片" || bad "no-target 没有隐藏卡片"
+grep -q '当前 ' webroot/index.html && grep -q '版本/哈希不在支持范围' webroot/index.html \
+  && ok "WebUI 不支持范围提示" || bad "WebUI 缺少不支持范围提示"
+if grep -q 'SERVER_PIDS\|serverPids\|server-v355\|restart_si_server\|TERM_WAIT\|RESTART_WAIT' webroot/index.html; then
+  bad "WebUI 仍含 SERVER_PIDS/server 重启残留"
+else
+  ok "WebUI 已移除 SERVER_PIDS/server 重启/等待"
+fi
+if grep -q '18 秒' webroot/index.html; then
+  bad "WebUI 仍有 18 秒等待文案"
+else
+  ok "WebUI 没有 18 秒等待文案"
+fi
 grep -q 'si-patch\.sh" status' action.sh && ok "action.sh 显示补丁状态" \
   || bad "action.sh 没有补丁状态"
 grep -q 'si-patch\.sh" apply' action.sh && bad "action.sh 会自动 apply" \
   || ok "action.sh 不自动 apply"
-grep -q 'assets/server-v355.dex' tools/build.sh && ok "构建脚本包含补丁资产" \
-  || bad "构建脚本没有补丁资产"
-grep -q '7a941f35' tools/build.sh && ok "构建脚本校验补丁 sha" \
+grep -q 'patch_txt=${patch_txt#main.dex 补丁：}' action.sh \
+  && ok "action.sh 去掉 main.dex 补丁前缀" || bad "action.sh 前缀剥离不对"
+grep -q 'PATCH_DEX=/data/adb/modules/zygisk-storage-isolation/main.dex' uninstall.sh \
+  && ok "uninstall.sh 默认恢复 main.dex" || bad "uninstall.sh 目标不对"
+grep -q 'assets/main.dex' tools/build.sh && ok "构建脚本包含 main.dex 资产" \
+  || bad "构建脚本没有 main.dex 资产"
+grep -q '6d4058bc' tools/build.sh && ok "构建脚本校验补丁 sha" \
   || bad "构建脚本没有校验补丁 sha"
-grep -q 'siPatchVersion' tools/build.sh && ok "构建脚本校验适用版本字段" \
-  || bad "构建脚本没有校验适用版本字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.3' CHANGELOG.md \
-  && ! grep -q '^## 1.5.0' CHANGELOG.md \
-  && ! grep -q '^## 1.5.1' CHANGELOG.md \
+grep -q '99104' tools/build.sh && ok "构建脚本校验补丁大小" \
+  || bad "构建脚本没有校验补丁大小"
+grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
+  && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.4' CHANGELOG.md \
+  && ! grep -q '^## 1.5.3' CHANGELOG.md \
   && ! grep -q '^## 1.5.2' CHANGELOG.md \
-  && ok "CHANGELOG 只列出 1.5.3" || bad "CHANGELOG 不是只含 1.5.3"
+  && ! grep -q '^## 1.5.1' CHANGELOG.md \
+  && ! grep -q '^## 1.5.0' CHANGELOG.md \
+  && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
+  && ok "CHANGELOG 只列出 1.5.4" || bad "CHANGELOG 不是只含 1.5.4"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
-grep -q '反编译改动' README.md && ok "README 有反编译改动一节" \
-  || bad "README 缺少反编译改动"
-
-if grep -q "SI server ' + toInt(p.serverPids, 0)" webroot/index.html; then
-  ok "serverPids 在补丁卡片里有展示（不是只赋值）"
-else
-  bad "p.serverPids 赋值后没有使用"
-fi
+grep -q 'main.dex' README.md && grep -q 'zygisk-storage-isolation' README.md \
+  && ok "README 说明 main.dex / zygisk 模块" || bad "README 缺少 main.dex 说明"
+! grep -q 'server-v355' README.md && ok "README 已移除 server-v355 描述" \
+  || bad "README 仍有 server-v355"
+grep -q 'patch-backup/main.dex' README.md && ok "README 说明 main.dex 备份路径" \
+  || bad "README 缺少备份路径"
+grep -q '重启手机' README.md && ok "README 说明重启生效" || bad "README 缺少重启说明"
+grep -q '官方更新' README.md && grep -q '覆盖' README.md \
+  && ok "README 说明官方更新覆盖后需重打" || bad "README 缺少更新覆盖说明"
+grep -q '^## ' HISTORY.md && ok "HISTORY 保留演化记录" || bad "HISTORY 缺失"
 if grep -q '^[[:space:]]*\.result\.info' webroot/index.html; then
   ok "info 结果有独立样式"
 else
   bad "缺少 .result.info 样式"
 fi
-if grep -q "补丁操作异常" webroot/index.html; then
-  ok "runPatchAction 有异常兜底（复位 patchBusy）"
-else
-  bad "runPatchAction 缺异常兜底"
-fi
 
-# WebUI 动作判定：抽出 PATCH-VERDICT 之间的纯函数，用 node 直接跑真实逻辑。
+# ---------- 20) WebUI 动作判定（node 实跑生产函数） ----------
 if command -v node >/dev/null 2>&1; then
   sed -n '/PATCH-VERDICT-START/,/PATCH-VERDICT-END/p' webroot/index.html \
     | sed '/PATCH-VERDICT-START/d;/PATCH-VERDICT-END/d' > "$T/verdict.js"
   cat >> "$T/verdict.js" <<'JS'
-function t(name, got, tone, titlePart) {
-  var ok = got && got.tone === tone && (!titlePart || got.title.indexOf(titlePart) >= 0);
+function t(name, got, tone, titlePart, bodyPart) {
+  var ok = got && got.tone === tone && (!titlePart || got.title.indexOf(titlePart) >= 0) &&
+    (!bodyPart || String(got.body || '').indexOf(bodyPart) >= 0);
   console.log((ok ? '  ok   ' : '  FAIL ') + name + (ok ? '' : ' -> ' + JSON.stringify(got)));
   if (!ok) process.exitCode = 1;
 }
-t('重启失败→warn', patchActionVerdict('apply', 'patched', '1',
-  '已应用补丁：x\nSI server 自动重启失败，请重开 SI。', true, 0), 'warn', '未自动重启');
-t('已 patched 再 apply→info', patchActionVerdict('apply', 'patched', '1',
-  'SI 补丁已应用，无需重复操作（恢复原版请用 restore）。', true, 0), 'info', '无需重复操作');
-t('errno≠0 但状态正确→成功', patchActionVerdict('apply', 'patched', '2',
-  '已应用补丁：x\n已自动重启', true, 1), 'good', '补丁已应用');
-t('apply 但 SERVER_PIDS=0→warn', patchActionVerdict('apply', 'patched', '0',
-  '已应用补丁：x', true, 0), 'warn', '没检测到');
-t('身份拒绝→warn', patchActionVerdict('apply', 'patched', '1',
-  '已应用补丁：x\n找到映射该 dex 的进程但身份不符，已跳过', true, 0), 'warn', '未自动重启');
-t('状态不符→bad', patchActionVerdict('apply', 'original', '1', 'x', true, 0), 'bad', '失败');
-t('restore 0 server→good', patchActionVerdict('restore', 'original', '0',
-  '已恢复原版：x', true, 0), 'good', '已恢复原版');
+t('apply 成功→good/重启提示', patchActionVerdict('apply',
+  '已应用补丁：/x/main.dex\n重启生效（Zygisk 模块在开机时加载）。', true, 0),
+  'good', '已应用，重启手机生效', '重启生效（Zygisk 模块在开机时加载）');
+t('restore 成功（sync 无退出码）→good', patchActionVerdict('restore',
+  '已恢复原版：/x/main.dex', false, null), 'good', '已恢复原版，重启手机生效');
+t('force 成功→good', patchActionVerdict('force',
+  '已恢复原版：/x/main.dex', true, 0), 'good', '已恢复原版，重启手机生效');
+t('已 patched 再 apply→info', patchActionVerdict('apply',
+  'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。', true, 0),
+  'info', '无需重复操作');
+t('apply 退出码非 0→bad', patchActionVerdict('apply', 'si-patch: 写入失败', true, 5),
+  'bad', '补丁应用失败');
+t('restore 退出码非 0→bad', patchActionVerdict('restore', 'si-patch: 没有备份', true, 5),
+  'bad', '恢复失败');
+t('sync 无成功标记→bad', patchActionVerdict('apply', '', false, null),
+  'bad', '补丁应用失败');
 JS
   if node "$T/verdict.js"; then
     ok "WebUI 动作判定 7 个场景通过（node 实跑生产函数）"

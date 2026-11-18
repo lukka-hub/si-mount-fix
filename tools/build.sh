@@ -16,9 +16,9 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
-# 自建补丁 dex；思路由酷安用户「无所事事」提供。只替换 SI 的 server-v355.dex。
-PATCH_ASSET=assets/server-v355.dex
-PATCH_SHA=7a941f35ee893f187f4b1c59995b43af0a1f9c12d3988dda0ea519d324c82bbe
+# 补丁 main.dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
+PATCH_ASSET=assets/main.dex
+PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -59,8 +59,12 @@ V_CODE=$(prop_get versionCode)
 [ -n "$(prop_get description)" ] || die 'module.prop 缺少 description'
 [ -n "$(prop_get author)" ] || die 'module.prop 缺少 author'
 # 补丁适用版本由 module.prop 单一提供，脚本/WebUI 不写版本字面量。
-[ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用 SI 版本）'
-[ -n "$(prop_get siPatchServer)" ] || die 'module.prop 缺少 siPatchServer（补丁适用 server 名）'
+[ -n "$(prop_get siPatchModule)" ] || die 'module.prop 缺少 siPatchModule（补丁适用的 Zygisk 模块）'
+[ "$(prop_get siPatchModule)" = zygisk-storage-isolation ] \
+  || die "siPatchModule 应为 zygisk-storage-isolation，当前：$(prop_get siPatchModule)"
+[ -n "$(prop_get siPatchTarget)" ] || die 'module.prop 缺少 siPatchTarget（补丁目标文件名）'
+[ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用模块版本）'
+[ -n "$(prop_get siPatchVersionCode)" ] || die 'module.prop 缺少 siPatchVersionCode（补丁适用模块 versionCode）'
 
 # ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140）----------
 VERSION=${V_PROP#v}
@@ -129,7 +133,7 @@ say "updateJson：$PROP_UJ"
 # ---------- 3b) 第三方补丁资产：内容不能变，sha256 必须与发布说明一致 ----------
 [ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（自建 dex，构建时校验后打进 zip）"
 PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
-[ "$PATCH_SIZE" = 325984 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 325984 B）"
+[ "$PATCH_SIZE" = 99104 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 99104 B）"
 if command -v sha256sum >/dev/null 2>&1; then
   PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
 else
@@ -137,6 +141,9 @@ else
 fi
 [ "$PATCH_GOT" = "$PATCH_SHA" ] \
   || die "补丁资产 sha256 不匹配：实际 $PATCH_GOT，应为 $PATCH_SHA（不要修改 dex 内容）"
+PATCH_FOR_TARGET=$(prop_get siPatchTarget)
+[ "$PATCH_ASSET" = "assets/$PATCH_FOR_TARGET" ] \
+  || die "补丁资产路径与 siPatchTarget 不一致：$PATCH_ASSET / $PATCH_FOR_TARGET"
 say "补丁资产：$PATCH_ASSET（$PATCH_SIZE B，sha256 $PATCH_GOT）"
 
 # ---------- 4) updater-script 首行必须是 #MAGISK ----------
