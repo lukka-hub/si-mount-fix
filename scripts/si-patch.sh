@@ -4,9 +4,10 @@
 # 只替换 zygisk-storage-isolation 模块的 main.dex：
 #   /data/adb/modules/zygisk-storage-isolation/main.dex
 #   原版 90,740 B / sha256 a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-#   补丁 99,104 B / sha256 6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
-# 补丁 main.dex 已在真机重启验证：server dex 会被 SI daemon 写回原版，但 main.dex 由
-# Zygisk 模块在开机时加载，替换后跨重启保持。因此不再修补 server dex，也不重启 SI server。
+#   补丁 88,336 B / sha256 5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+# 社区版 main.dex 已在真机重启验证：server dex 会被 SI daemon 写回原版，但 main.dex 由
+# Zygisk 模块在开机时加载，替换后跨重启保持。自建版与社区版指令级一致，仍建议先在目标机型
+# 抓 logcat 验证。因此不再修补 server dex，也不重启 SI server。
 # 补丁 main.dex 随模块 assets/main.dex 分发，不要修改内容。
 # 适用模块与文件名取自 module.prop 的 siPatchModule / siPatchTarget，版本取自
 # siPatchVersion / siPatchVersionCode；脚本里不写版本字面量。
@@ -25,8 +26,8 @@ export LC_ALL
 
 ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 ORIGINAL_SIZE=90740
-PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
-PATCH_SIZE=99104
+PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+PATCH_SIZE=88336
 
 case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
 MODDIR=${SI_MOD:-$D/..}
@@ -66,6 +67,9 @@ if [ "$SI_TEST" = 1 ]; then
 fi
 DEX=$TARGET_DIR/$TARGET
 MODULE_PROP=$TARGET_DIR/module.prop
+# 首次提示标记按目标文件+适用版本区分；旧版单一 .patch_prompted 不再命中。
+PROMPT_TAG=$(printf '%s.%s' "$TARGET" "$PATCH_FOR_VERSION" | tr -c 'A-Za-z0-9._-' '_')
+PROMPT_FILE=$DATA/.patch_prompted.$PROMPT_TAG
 BACKUP_DIR=$DATA/patch-backup
 LOCK=$DATA/.si-patch.lock
 
@@ -144,6 +148,7 @@ SI_VERSION=
 SI_VERSION_CODE=
 SIZE=0
 SHA=
+MTIME=0
 DEX_EXISTS=0
 STATE=
 SI_MATCH=0
@@ -159,6 +164,7 @@ LOCK_HELD=0
 collect_state() {
   SIZE=0
   SHA=
+  MTIME=0
   DEX_EXISTS=0
   if [ -f "$DEX" ]; then
     DEX_EXISTS=1
@@ -168,6 +174,11 @@ collect_state() {
       *) SIZE=$_size ;;
     esac
     SHA=$(sha256_of "$DEX")
+    _mtime=$(stat -c %Y "$DEX" 2>/dev/null)
+    case "$_mtime" in
+      ''|*[!0-9]*) MTIME=0 ;;
+      *) MTIME=$_mtime ;;
+    esac
   fi
   SI_VERSION=$(target_version)
   SI_VERSION_CODE=$(target_version_code)
@@ -176,7 +187,7 @@ collect_state() {
   BACKUP_COUNT=$(count_backups)
   BACKUP_OK=0
   if [ -n "$(find_original_backup)" ]; then BACKUP_OK=1; fi
-  if [ -f "$DATA/.patch_prompted" ]; then PROMPTED=1; else PROMPTED=0; fi
+  if [ -f "$PROMPT_FILE" ]; then PROMPTED=1; else PROMPTED=0; fi
 
   if [ "$SDK" != 37 ]; then
     STATE=unsupported
@@ -203,6 +214,7 @@ print_check() {
   printf 'SI_MATCH=%s\n' "$SI_MATCH"
   printf 'DEX=%s\n' "$DEX"
   printf 'SIZE=%s\n' "$SIZE"
+  printf 'MTIME=%s\n' "$MTIME"
   printf 'SHA=%s\n' "${SHA:-}"
   printf 'ORIGINAL_SIZE=%s\n' "$ORIGINAL_SIZE"
   printf 'ORIGINAL_SHA=%s\n' "$ORIGINAL_SHA"
@@ -454,6 +466,9 @@ do_restore() {
   fi
   if [ "$SHA" = "$ORIGINAL_SHA" ] && [ "$SIZE" = "$ORIGINAL_SIZE" ]; then
     die "当前已经是原版，无需恢复" 2
+  fi
+  if [ "$SI_MATCH" != 1 ]; then
+    die "zygisk-storage-isolation 版本不匹配（当前 ${SI_VERSION:-版本未知}/${SI_VERSION_CODE:-?}，仅适用于 ${PATCH_FOR_VERSION:-未知版本}/${PATCH_FOR_VERSION_CODE:-?}），已拒绝恢复；版本不匹配时不能用原版备份覆盖" 2
   fi
   _backup=$(find_original_backup)
   if [ -z "$_backup" ]; then

@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.4）
+# 演化过程（1.0 → 1.5.5）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -269,6 +269,23 @@
   「Android 17 应用列表修复（main.dex）」，unknown 只提示/强制恢复。
 - **卸载**：恢复目标同步改为 zygisk 模块的 `main.dex`。
 - **版本**：`v1.5.4` / `versionCode 154`；`CHANGELOG.md` 只展示 1.5.4。
+
+## 1.5.5 自建 main.dex 与 UI 异步化
+
+- **自建 dex**：不再使用社区版 main.dex，改为对官方 main.dex 自行反编译重打：只改 4 条
+  invoke（两个 `getInstalledPackages` 返回类型 + 两处 `getList` owner 改为 `PackageInfoList`），
+  其余 112 类、446 方法、231 字段不变；剥离调试信息后 88,336 B / sha256 `5413a01b…`。
+  原版 90,740 B / `a407…` 不变。与社区版指令级一致，仍建议先在目标机型抓 logcat 验证。
+- **U1**：卸载不再自动恢复 main.dex；只要 `patch-backup/main.dex.*` 存在就只保留该目录并
+  打印路径（即使 `BACKUP_OK=0`/sha256sum 不可用），其他数据照旧删除。
+- **U2**：`restore`/`--force` 在模块版本不匹配时拒绝；WebUI「强制恢复」在 `!match` 时隐藏。
+- **U3**：restore 成功卡片显示“已恢复原版，重启生效”；超时/无 errno 显示“结果未知，请刷新检查”；
+  失败/超时不写缓存/不置 prompted，check 中动作按钮置灰；`loadPatch` 清旧结果；
+  首次提示标记按目标+版本区分。
+- **UI 异步**：check/fix/restart/config/apply/restore 改为后台执行 + 300ms 轮询；按钮独立 busy；
+  check 8s / fix 30s / restart 10s 超时；补丁状态 30 秒缓存（过期后校验 mtime+size+sha）+
+  手动「检查补丁」；动作后 `stat+sha256` 单次复核，不再全量 check。
+- **版本**：`v1.5.5` / `versionCode 155`；`CHANGELOG.md` 只展示 1.5.5。
 
 ## 兼容与边界
 

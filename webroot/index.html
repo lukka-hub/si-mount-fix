@@ -233,6 +233,10 @@ details.card[open] summary{margin-bottom:8px}
   <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
+  <div class="row-actions" id="patchCheckRow">
+    <button class="btn tiny ghost" id="btnPatchCheck" disabled>检查补丁</button>
+    <span class="muted small" id="patchTiming">—</span>
+  </div>
   <div class="row-actions" id="patchActions" hidden>
     <button class="btn primary" id="btnPatchApply" disabled>应用补丁</button>
     <button class="btn ghost" id="btnPatchRestore" hidden disabled>恢复原版</button>
@@ -294,10 +298,15 @@ details.card[open] summary{margin-bottom:8px}
   P.restart = P.mod + '/scripts/restart.sh';
   P.list = P.mod + '/scripts/list-apps.sh';
   P.patch = P.mod + '/scripts/si-patch.sh';
-  P.patchPrompt = D + '/.patch_prompted';
 
   var POLL_MS = 8000;
   var CMD_TIMEOUT = 35000;
+  var CHECK_TIMEOUT = 8000;
+  var FIX_TIMEOUT = 30000;
+  var RESTART_TIMEOUT = 10000;
+  var PATCH_ACTION_TIMEOUT = 10000;
+  var PATCH_CACHE_TTL = 30000;
+  var BG_POLL_MS = 300;
   var BRIDGE_FAIL_LIMIT = 3;   /* 连续失败 N 次：桥接判定失效，回落只读快照 */
   var REPROBE_MS = 20000;      /* 只读模式下重新探测桥接的最小间隔 */
   var SNAPSHOT_STALE = 600;    /* 快照超过 10 分钟没更新，视为守护已停 */
@@ -590,17 +599,18 @@ details.card[open] summary{margin-bottom:8px}
     return BR.probeP;
   }
 
-  function run(cmd) {
+  function run(cmd, waitMs) {
     if (!BR.ok) { return Promise.reject(new Error('未连接桥接')); }
+    var wait = waitMs || CMD_TIMEOUT;
     var t0 = Date.now();
     /* 桥接的执行接口可能是同步阻塞的：先让出一帧，把"执行中"画出来再调用 */
     return new Promise(function (resolve, reject) {
       setTimeout(function () { resolve(); }, 50);
     }).then(function () {
-      return rawCall(BR.style, cmd, CMD_TIMEOUT);
+      return rawCall(BR.style, cmd, wait);
     }).then(function (res) {
       BR.latency = Date.now() - t0;
-      if (!res) { throw new Error('命令无响应（' + Math.round(CMD_TIMEOUT / 1000) + ' 秒超时）'); }
+      if (!res) { throw new Error('命令无响应（' + Math.round(wait / 1000) + ' 秒超时）'); }
       /* errnoKnown=false 是 sync 桥接：没有退出码，不在这里判失败，交给调用方按输出标记判断。 */
       if (res.errnoKnown !== false && res.errno !== 0 && !String(res.stdout || '').trim()) {
         var e = new Error(String(res.stderr || '').trim() || ('退出码 ' + res.errno));
@@ -613,6 +623,80 @@ details.card[open] summary{margin-bottom:8px}
     });
   }
 
+  /* 长动作不在 JS 线程里等：先起后台 shell（输出/退出码落盘），再 300ms 轮询一次。
+     单次 exec 只有启动/读文件，命令本身再慢也不会卡住界面。 */
+  function shq(v) {
+    return "'" + String(v == null ? '' : v).replace(/'/g, "'\\''") + "'";
+  }
+
+  var bgSeq = 0;
+
+  function cleanupBg(out, rc) {
+    if (!BR.ok) { return; }
+    run('rm -f ' + shq(out) + ' ' + shq(rc), 3000).catch(function () { /* 清理失败忽略 */ });
+  }
+
+  function runBg(cmd, opts) {
+    opts = opts || {};
+    var timeoutMs = opts.timeoutMs || 10000;
+    var pollMs = opts.pollMs || BG_POLL_MS;
+    var started = Date.now();
+    var base = D + '/.ui-bg-' + started + '-' + (++bgSeq);
+    var out = base + '.out';
+    var rc = base + '.rc';
+    var spawn = 'mkdir -p ' + shq(D) + ' 2>/dev/null; rm -f ' + shq(out) + ' ' + shq(rc) + '; ' +
+      '( ' + cmd + '; echo $? > ' + shq(rc) + ' ) > ' + shq(out) + ' 2>&1 < /dev/null &';
+    return run(spawn, 5000).then(function () {
+      return new Promise(function (resolve) {
+        var lastErr = '';
+        var lastProgress = 0;
+        function finish(res) {
+          cleanupBg(out, rc);
+          resolve(res);
+        }
+        function timedOut() {
+          /* 不杀后台命令：它可能已经写完，只是没赶上轮询。60 秒后再清临时文件。 */
+          setTimeout(function () { cleanupBg(out, rc); }, 60000);
+          resolve({ rc: null, out: '', timedOut: true, elapsed: Date.now() - started,
+            spawnError: lastErr });
+        }
+        function poll() {
+          if (Date.now() - started > timeoutMs) { timedOut(); return; }
+          var pollCmd = 'if [ -f ' + shq(rc) + ' ]; then printf "RC="; cat ' + shq(rc) +
+            '; else printf "RC="; fi; printf "\\n@@OUT@@\\n"; tail -c 4000 ' + shq(out) +
+            ' 2>/dev/null; true';
+          run(pollCmd, 5000).then(function (res) {
+            var text = String(res.stdout || '');
+            var m = /^RC=([0-9]*)/m.exec(text);
+            var rcVal = null;
+            if (m && m[1] !== '') { rcVal = parseInt(m[1], 10); }
+            var outAt = text.indexOf('@@OUT@@');
+            var outText = outAt >= 0 ? text.slice(outAt + 7).replace(/^\n/, '') : '';
+            if (rcVal !== null) {
+              finish({ rc: rcVal, out: outText, timedOut: false, elapsed: Date.now() - started });
+              return;
+            }
+            if (opts.onProgress && Date.now() - lastProgress > 500) {
+              lastProgress = Date.now();
+              opts.onProgress(Date.now() - started, outText);
+            }
+            setTimeout(poll, pollMs);
+          }, function (err) {
+            lastErr = String(err && err.message ? err.message : err);
+            if (Date.now() - started > timeoutMs) { timedOut(); return; }
+            setTimeout(poll, pollMs);
+          });
+        }
+        setTimeout(poll, pollMs);
+      });
+    }, function (err) {
+      /* 启动命令没有正常返回：后台可能已经跑起来，按“结果未知”处理。 */
+      setTimeout(function () { cleanupBg(out, rc); }, 60000);
+      return { rc: null, out: '', timedOut: false, elapsed: Date.now() - started,
+        spawnError: String(err && err.message ? err.message : err) };
+    });
+  }
+
   /* ============================================================
      状态
      ============================================================ */
@@ -620,9 +704,10 @@ details.card[open] summary{margin-bottom:8px}
     status: null, alive: null, fetchedAt: 0, mode: 'live',
     config: null, configRaw: null, snapshot: null, snapshotTs: 0,
     uid: null, noRoot: false, statusExist: null, statusSize: null,
-    apps: null, log: null, busy: false,
-    patch: null, patchError: '', patchSdk: null, patchBusy: false, patchDismissed: false,
-    patchMarked: false, patchConfirm: null, patchConfirmTimer: null
+    apps: null, log: null, busy: false, locked: false, actionBusy: {},
+    patch: null, patchError: '', patchSdk: null, patchDismissed: false,
+    patchMarked: false, patchMarkedKey: '', patchConfirm: null, patchConfirmTimer: null,
+    patchCache: null, patchCheckMs: 0, patchCheckTimedOut: false, patchCheckSource: ''
   };
 
   /* 一条命令同时取：uid（判断有没有 root）、文件是否存在/多大（区分空文件/没文件）、
@@ -923,8 +1008,9 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function renderStateBanner() {
+    /* 不在渲染时写提示标记：只有用户点「暂不」或动作成功后才写，
+       这样失败/超时不会让下次打开误以为已经提示过。 */
     setBannerItems(bannerItemsForState());
-    if (patchPromptable()) { markPatchPrompted(); }
   }
 
   function metric(label, value, tone) {
@@ -940,6 +1026,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function applyPermissionLock(msg) {
     state.noRoot = true;
+    state.patchCache = null;
     clearPatchConfirmState();
     state.status = null;
     state.alive = null;
@@ -1073,12 +1160,174 @@ details.card[open] summary{margin-bottom:8px}
   function hidePatchCard() {
     state.patch = null;
     state.patchError = '';
+    state.patchCheckSource = '';
+    setPatchTiming('—');
     renderPatch();
     renderStateBanner();
   }
 
-  function loadPatch() {
+  function clonePatch(p) { return JSON.parse(JSON.stringify(p || {})); }
+
+  /* 首次提示标记与 scripts/si-patch.sh 保持一致：目标文件 + 适用版本，非法字符换成 _。 */
+  function patchPromptPath(p) {
+    var tag = String((p && p.targetFile) || 'main.dex') + '.' +
+      String((p && p.targetVersion) || '');
+    tag = tag.replace(/[^A-Za-z0-9._-]/g, '_');
+    return D + '/.patch_prompted.' + tag;
+  }
+
+  function setPatchTiming(text) {
+    var el = $('patchTiming');
+    if (el) { el.textContent = text || '—'; }
+  }
+
+  function clearPatchResult() {
+    var el = $('patchResult');
+    if (!el) { return; }
+    el.hidden = true;
+    el.innerHTML = '';
+    el.className = 'result';
+  }
+
+  function fillPatchData(kv) {
+    var p = kv;
+    p.state = String(p.STATE);
+    p.sdk = String(p.SDK || '');
+    p.si = String(p.SI_VERSION || '');
+    p.siCode = String(p.SI_VERSION_CODE || '');
+    p.targetModule = String(p.SI_TARGET_MODULE || 'zygisk-storage-isolation');
+    p.targetVersion = String(p.SI_TARGET_VERSION || '');
+    p.targetVersionCode = String(p.SI_TARGET_VERSION_CODE || '');
+    p.targetFile = String(p.SI_TARGET_FILE || 'main.dex');
+    p.match = toInt(p.SI_MATCH, 0) === 1;
+    p.dex = String(p.DEX || '');
+    p.size = toInt(p.SIZE, 0);
+    p.mtime = toInt(p.MTIME, 0);
+    p.sha = String(p.SHA || '');
+    p.originalSize = toInt(p.ORIGINAL_SIZE, 0);
+    p.originalSha = String(p.ORIGINAL_SHA || '');
+    p.patchSize = toInt(p.PATCH_SIZE, 0);
+    p.patchSha = String(p.PATCH_SHA || '');
+    p.backup = toInt(p.BACKUP_COUNT, 0);
+    p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
+    p.prompted = toInt(p.PROMPTED, 0) === 1;
+    p.lastAction = '';
+    var promptKey = patchPromptPath(p);
+    if (state.patchMarkedKey && state.patchMarkedKey !== promptKey) { state.patchMarked = false; }
+    state.patch = p;
+    state.patchError = '';
+  }
+
+  function storePatchCache(p) {
+    if (!p) { return; }
+    state.patchCache = {
+      at: Date.now(), dex: p.dex, size: p.size, mtime: p.mtime, sha: p.sha,
+      data: clonePatch(p)
+    };
+  }
+
+  function patchCacheUsable() {
+    return !!(state.patchCache && state.patchCache.data &&
+      state.patchCache.data.state !== 'no-target');
+  }
+
+  function usePatchCache(source) {
+    if (!state.patchCache) { return false; }
+    var p = clonePatch(state.patchCache.data);
+    state.patch = p;
+    state.patchError = '';
+    state.patchCheckMs = 0;
+    state.patchCheckTimedOut = false;
+    state.patchCheckSource = source || 'cache';
+    setPatchTiming(source === 'ttl' ? '使用 30 秒内缓存（未跑 check）' : '缓存命中（mtime+size+sha 未变）');
+    renderPatch();
+    renderStateBanner();
+    return true;
+  }
+
+  function statPatchTarget(cache) {
+    if (!cache || !cache.dex) { return Promise.resolve(null); }
+    var q = shq(cache.dex);
+    var cmd = 'if [ -f ' + q + ' ]; then stat -c "%s %Y" ' + q +
+      ' 2>/dev/null; sha256sum ' + q + ' 2>/dev/null; else echo MISSING; fi';
+    return run(cmd, 2500).then(function (res) {
+      var text = String(res.stdout || '').trim();
+      if (text === 'MISSING') { return { exists: false }; }
+      var lines = text.split('\n');
+      var m = /^(\d+)\s+(\d+)$/.exec(lines[0] || '');
+      var sha = String(lines[1] || '').trim().split(/\s+/)[0] || '';
+      if (!m || !sha) { return null; }
+      return { exists: true, size: toInt(m[1], 0), mtime: toInt(m[2], 0), sha: sha };
+    }).catch(function () { return null; });
+  }
+
+  function fetchPatchCheck() {
+    if (actionBusy('patchCheck')) { return Promise.resolve(false); }
+    beginAction('patchCheck');
+    state.patchCheckTimedOut = false;
+    state.patchCheckSource = 'checking';
+    setPatchTiming('正在检查补丁…');
+    renderPatch();
+    renderStateBanner();
+    return runBg('sh ' + P.patch + ' check', {
+      timeoutMs: CHECK_TIMEOUT,
+      onProgress: function (ms) {
+        setPatchTiming('正在检查… ' + (ms / 1000).toFixed(1) + ' 秒');
+      }
+    }).then(function (res) {
+      state.patchCheckMs = res.elapsed || 0;
+      endAction('patchCheck');
+      if (res.timedOut && res.rc === null) {
+        state.patchCheckTimedOut = true;
+        state.patchCache = null;
+        state.patchError = '补丁检查超时（8 秒），结果未知';
+        setPatchTiming('检查超时（8 秒），结果未知');
+        renderPatch();
+        renderStateBanner();
+        return false;
+      }
+      if (res.spawnError) {
+        state.patchCheckTimedOut = true;
+        state.patchCache = null;
+        state.patchError = '补丁检查结果未知：' + res.spawnError;
+        setPatchTiming('检查未完成，结果未知');
+        renderPatch();
+        renderStateBanner();
+        return false;
+      }
+      var p = parseKv(res.out);
+      if (!p.STATE) {
+        state.patchCache = null;
+        state.patchError = '补丁检查没有返回 STATE（退出码 ' + res.rc + '）';
+        setPatchTiming('检查失败（' + state.patchCheckMs + 'ms）');
+        renderPatch();
+        renderStateBanner();
+        return false;
+      }
+      fillPatchData(p);
+      state.patchCheckSource = 'check';
+      state.patchCheckTimedOut = false;
+      storePatchCache(state.patch);
+      setPatchTiming('检查 ' + state.patchCheckMs + 'ms');
+      renderPatch();
+      renderStateBanner();
+      return true;
+    }).catch(function (err) {
+      endAction('patchCheck');
+      state.patchCheckTimedOut = true;
+      state.patchCache = null;
+      state.patchError = '补丁检查结果未知：' +
+        String(err && err.message ? err.message : err);
+      setPatchTiming('检查未完成，结果未知');
+      renderPatch();
+      renderStateBanner();
+      return false;
+    });
+  }
+
+  function loadPatch(force) {
     clearPatchConfirmState();
+    clearPatchResult();
     if (!BR.ok) {
       if (state.patchSdk && state.patchSdk !== '37') { hidePatchCard(); return Promise.resolve(false); }
       state.patchError = '未连接 WebUI 桥接，暂时无法读取补丁状态。';
@@ -1094,31 +1343,20 @@ details.card[open] summary{margin-bottom:8px}
         renderStateBanner();
         return false;
       }
-      return run('sh ' + P.patch + ' check').then(function (res) {
-        var p = parseKv(res.stdout);
-        if (!p.STATE) { throw new Error('补丁检查没有返回 STATE'); }
-        p.state = String(p.STATE);
-        p.sdk = String(p.SDK || '');
-        p.si = String(p.SI_VERSION || '');
-        p.siCode = String(p.SI_VERSION_CODE || '');
-        p.targetModule = String(p.SI_TARGET_MODULE || 'zygisk-storage-isolation');
-        p.targetVersion = String(p.SI_TARGET_VERSION || '');
-        p.targetVersionCode = String(p.SI_TARGET_VERSION_CODE || '');
-        p.targetFile = String(p.SI_TARGET_FILE || 'main.dex');
-        p.match = toInt(p.SI_MATCH, 0) === 1;
-        p.size = toInt(p.SIZE, 0);
-        p.sha = String(p.SHA || '');
-        p.originalSize = toInt(p.ORIGINAL_SIZE, 0);
-        p.originalSha = String(p.ORIGINAL_SHA || '');
-        p.backup = toInt(p.BACKUP_COUNT, 0);
-        p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
-        p.prompted = toInt(p.PROMPTED, 0) === 1;
-        state.patch = p;
-        state.patchError = '';
-        renderPatch();
-        renderStateBanner();
-        return true;
-      });
+      if (!force && patchCacheUsable()) {
+        if (Date.now() - state.patchCache.at < PATCH_CACHE_TTL) {
+          return usePatchCache('ttl');
+        }
+        return statPatchTarget(state.patchCache).then(function (st) {
+          if (st && st.exists && st.size === state.patchCache.size &&
+              st.mtime === state.patchCache.mtime && st.sha === state.patchCache.sha) {
+            state.patchCache.at = Date.now();
+            return usePatchCache('stat');
+          }
+          return fetchPatchCheck();
+        });
+      }
+      return fetchPatchCheck();
     }).catch(function (err) {
       state.patchError = '补丁状态读取失败：' + String(err && err.message ? err.message : err);
       renderPatch();
@@ -1127,21 +1365,39 @@ details.card[open] summary{margin-bottom:8px}
     });
   }
 
+  function patchActionKey(action) {
+    if (action === 'apply') { return 'patchApply'; }
+    if (action === 'force') { return 'patchForce'; }
+    return 'patchRestore';
+  }
+
+  function patchBusy() {
+    return actionBusy('patchApply') || actionBusy('patchRestore') || actionBusy('patchForce');
+  }
+
   function patchPromptable() {
     var p = state.patch;
     return !!(BR.ok && !state.noRoot && !state.patchError && !state.patchConfirm && p &&
+      !patchBusy() && !actionBusy('patchCheck') &&
       state.patchSdk === '37' && p.sdk === '37' &&
       p.state === 'original' && p.match &&
       !p.prompted && !state.patchDismissed);
   }
 
-  /* 第一次提示后写标记：本次页面仍保留提示（方便用户点按钮），下次打开不再弹。
-     手动入口在下面的补丁卡片里，不受标记影响。 */
+  /* 第一次提示后写标记：标记按目标文件+适用版本区分；同一个标记存在时不再重复写。
+     本次页面仍保留提示（方便用户点按钮），下次打开由 check 的 PROMPTED 字段判断。 */
   function markPatchPrompted() {
-    if (state.patchMarked) { return; }
+    var p = state.patch;
+    if (!p) { return; }
+    var path = patchPromptPath(p);
+    if (state.patchMarked && state.patchMarkedKey === path) { return; }
     state.patchMarked = true;
-    run('umask 077; mkdir -p ' + D + ' && : > ' + P.patchPrompt).catch(function () {
-      state.patchMarked = false;
+    state.patchMarkedKey = path;
+    run('umask 077; mkdir -p ' + D + ' && : > ' + path).catch(function () {
+      if (state.patchMarkedKey === path) {
+        state.patchMarked = false;
+        state.patchMarkedKey = '';
+      }
     });
   }
 
@@ -1199,13 +1455,12 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function armPatchAction(action) {
-    if (state.patchBusy || !BR.ok || state.noRoot || state.patchError ||
-        state.patchSdk !== '37' || !state.patch) { return; }
+    if (patchBusy() || actionBusy('patchCheck') || !BR.ok || state.noRoot || state.patchError ||
+        state.locked || state.patchSdk !== '37' || !state.patch) { return; }
     var p = state.patch;
     var ok = (action === 'apply' && p.state === 'original' && p.match) ||
       (action === 'restore' && p.state === 'patched' && p.match && p.backupOk) ||
-      (action === 'force' && p.backupOk &&
-        (p.state === 'unknown' || (p.state === 'patched' && !p.match)));
+      (action === 'force' && p.match && p.backupOk && p.state === 'unknown');
     if (!ok) { return; }
     clearPatchConfirmTimer();
     state.patchConfirm = action;
@@ -1217,14 +1472,13 @@ details.card[open] summary{margin-bottom:8px}
         renderStateBanner();
       }
     }, 10000);
-    markPatchPrompted();
     renderPatch();
     renderStateBanner();
   }
 
   function confirmPatchAction() {
     var action = state.patchConfirm;
-    if (!action || state.patchBusy) { return; }
+    if (!action || patchBusy()) { return; }
     clearPatchConfirmState();
     runPatchAction(action);
   }
@@ -1245,6 +1499,7 @@ details.card[open] summary{margin-bottom:8px}
     var applyBtn = $('btnPatchApply');
     var restoreBtn = $('btnPatchRestore');
     var forceBtn = $('btnPatchForce');
+    var checkBtn = $('btnPatchCheck');
     var hint = $('patchHint');
     var bits = [];
     var badge = '';
@@ -1263,7 +1518,10 @@ details.card[open] summary{margin-bottom:8px}
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push(p.size ? (p.size + ' B') : '大小未知');
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
-      if (p.match) {
+      if (p.lastAction === 'restored') {
+        badge = '已恢复';
+        hint.textContent = '已恢复原版，重启生效（Zygisk 模块在开机时加载）。';
+      } else if (p.match) {
         badge = '可应用';
         hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用补丁修复。' +
           '补丁只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
@@ -1277,30 +1535,46 @@ details.card[open] summary{margin-bottom:8px}
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-      if (p.match) {
+      if (p.lastAction === 'applied') {
+        badge = '已应用';
+        hint.textContent = '已应用，重启手机生效（Zygisk 模块在开机时加载）。';
+      } else if (p.match) {
         badge = '已应用';
         hint.textContent = '重启手机生效（Zygisk 模块在开机时加载）。';
       } else {
         badge = '不支持';
         hint.textContent = '当前 ' + mod + ' 版本/哈希不在支持范围，未做任何修改。' +
-          (p.backupOk ? ' 可用原版备份强制恢复。' : ' 没有可用的原版备份。');
+          '版本不匹配时不允许恢复或强制恢复。';
       }
       hint.hidden = false;
     } else {
       badge = '不支持';
-      hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
-        (p.backupOk ? ' 检测到有效原版备份，仅可强制恢复。' : ' 也没有可用的原版备份。');
-      hint.hidden = false;
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
+      if (!p.match) {
+        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+          '版本不匹配时不允许强制恢复。';
+      } else if (p.backupOk) {
+        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+          '检测到有效原版备份，可强制恢复。';
+      } else {
+        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+          '也没有可用的原版备份。';
+      }
+      hint.hidden = false;
+    }
+    if (actionBusy('patchCheck')) {
+      badge = '检查中';
+      hint.textContent = '正在检查补丁状态，请稍候…';
+      hint.hidden = false;
     }
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
 
-    var canAct = !state.patchBusy && !err && BR.ok && !state.noRoot && state.patchSdk === '37';
-    var forceOk = !!(p && p.backupOk &&
-      (st === 'unknown' || (st === 'patched' && !p.match)));
+    var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
+      state.patchSdk === '37' && !actionBusy('patchCheck');
+    var forceOk = !!(p && p.match && p.backupOk && st === 'unknown');
     if (err) {
       applyBtn.hidden = true;
       restoreBtn.hidden = true;
@@ -1310,14 +1584,19 @@ details.card[open] summary{margin-bottom:8px}
       restoreBtn.hidden = !(st === 'patched');
       forceBtn.hidden = !forceOk;
     }
-    applyBtn.disabled = !canAct || !p || !p.match;
-    restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk;
-    forceBtn.disabled = !canAct;
+    applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply');
+    restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchRestore');
+    forceBtn.disabled = !canAct || !p || !p.match || actionBusy('patchForce');
+    if (checkBtn) {
+      checkBtn.disabled = !BR.ok || state.noRoot || state.locked ||
+        actionBusy('patchCheck') || patchBusy();
+    }
     $('patchActions').hidden = !!(state.patchConfirm) ||
       (applyBtn.hidden && restoreBtn.hidden && forceBtn.hidden);
 
     var panel = $('patchConfirm');
-    if (state.patchConfirm && !state.patchBusy && !err && state.patchSdk === '37') {
+    if (state.patchConfirm && !patchBusy() && !actionBusy('patchCheck') && !err &&
+        state.patchSdk === '37') {
       panel.hidden = false;
       $('patchConfirmTitle').textContent = patchConfirmTitle(state.patchConfirm);
       $('patchConfirmBody').textContent = patchConfirmBody(state.patchConfirm);
@@ -1338,24 +1617,30 @@ details.card[open] summary{margin-bottom:8px}
 
   /* PATCH-VERDICT-START */
   /* 补丁动作判定（纯函数，tools/patch.test.sh 用 node 直接跑）：
-     1) 退出码已知时必须为 0；sync 桥接没有退出码，用成功输出标记判定；
+     1) 退出码已知且非 0 → 失败；known=0 交给调用方再 stat 复核；
      2) “无需重复操作”只算信息；
-     3) 成功时直接提示重启，不再跑第二次 check。 */
-  function patchActionVerdict(action, text, errnoKnown, errno) {
+     3) 超时/无退出码且没有成功标记 → 结果未知，不要直接判失败或成功；
+     4) 成功时提示重启，不再跑第二次全量 check。 */
+  function patchActionVerdict(action, text, errnoKnown, errno, unknown) {
     var isApply = action === 'apply';
     var t = String(text || '');
     if (t.indexOf('无需重复操作') >= 0) {
       return { tone: 'info', title: '无需重复操作', body: t };
     }
-    var ok = true;
-    if (errnoKnown && errno !== 0) { ok = false; }
-    if (!errnoKnown) {
-      var marker = isApply ? '已应用补丁' : '已恢复原版';
-      if (t.indexOf(marker) < 0) { ok = false; }
+    var unknownBody = (t ? t + '\n' : '') +
+      '后台动作可能仍在执行；请点「检查补丁」或刷新确认当前状态。';
+    if (unknown) {
+      return { tone: 'warn', title: '结果未知，请刷新检查', body: unknownBody };
     }
-    if (!ok) {
+    if (errnoKnown === true && errno !== 0) {
       return { tone: 'bad', title: isApply ? '补丁应用失败' : '恢复失败',
-        body: t || '命令没有返回可识别结果，请刷新后看补丁状态。' };
+        body: t || '命令没有返回可识别结果。' };
+    }
+    if (errnoKnown !== true) {
+      var marker = isApply ? '已应用补丁' : '已恢复原版';
+      if (t.indexOf(marker) < 0) {
+        return { tone: 'warn', title: '结果未知，请刷新检查', body: unknownBody };
+      }
     }
     var restart = '重启生效（Zygisk 模块在开机时加载）。';
     var body = t;
@@ -1368,23 +1653,62 @@ details.card[open] summary{margin-bottom:8px}
   }
   /* PATCH-VERDICT-END */
 
-  /* 动作成功后直接更新卡片状态：不补跑 check，避免多一次桥接往返。 */
+  /* 动作后只复核一次：一条命令同时读 stat(size/mtime) 与 sha256，不再跑全量 check。 */
+  function verifyPatchTarget(action) {
+    var p = state.patch;
+    if (!p || !p.dex) { return Promise.resolve(false); }
+    var started = Date.now();
+    var cmd = 'if [ -f ' + shq(p.dex) + ' ]; then stat -c "%s %Y" ' + shq(p.dex) +
+      ' 2>/dev/null; sha256sum ' + shq(p.dex) + ' 2>/dev/null; else echo MISSING; fi';
+    return run(cmd, 3000).then(function (res) {
+      var lines = String(res.stdout || '').trim().split('\n');
+      if (lines[0] === 'MISSING') {
+        p.state = 'no-target';
+        p.size = 0;
+        p.mtime = 0;
+        p.sha = '';
+        return true;
+      }
+      var m = /^(\d+)\s+(\d+)$/.exec(lines[0] || '');
+      var sha = String(lines[1] || '').trim().split(/\s+/)[0] || '';
+      if (!m || !sha) { return false; }
+      p.size = toInt(m[1], 0);
+      p.mtime = toInt(m[2], 0);
+      p.sha = sha;
+      if (sha === p.patchSha && p.size === p.patchSize) {
+        p.state = 'patched';
+      } else if (sha === p.originalSha && p.size === p.originalSize) {
+        p.state = 'original';
+      } else {
+        p.state = 'unknown';
+      }
+      state.patchCheckMs = Date.now() - started;
+      setPatchTiming('动作复核 ' + state.patchCheckMs + 'ms');
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  /* 复核成功后更新卡片状态并写缓存，避免动作后紧接着又跑 check。 */
   function applyPatchState(action) {
     var p = state.patch;
     if (!p) { return; }
+    p.lastAction = action === 'apply' ? 'applied' : 'restored';
     if (action === 'apply') {
-      p.state = 'patched';
       p.backupOk = 1;
       p.backup = toInt(p.backup, 0) + 1;
-    } else {
-      p.state = 'original';
-      if (p.originalSize) { p.size = p.originalSize; }
-      if (p.originalSha) { p.sha = p.originalSha; }
     }
+    storePatchCache(p);
   }
 
   function runPatchAction(action) {
-    if (state.patchBusy) { return; }
+    if (patchBusy()) {
+      showPatchResult('请稍候', '另一个补丁操作正在进行，完成后再试。', 'warn');
+      return;
+    }
+    if (actionBusy('patchCheck')) {
+      showPatchResult('请稍候', '正在检查补丁状态，完成后再执行动作。', 'warn');
+      return;
+    }
     if (!BR.ok || !state.patch || state.patchSdk !== '37') {
       showPatchResult('无法执行', '未连接 WebUI 桥接，补丁操作需要 root 权限。', 'bad');
       return;
@@ -1392,33 +1716,83 @@ details.card[open] summary{margin-bottom:8px}
     var isApply = action === 'apply';
     var isForce = action === 'force';
     var cmd = isForce ? 'restore --force' : action;
-    state.patchBusy = true;
+    var key = patchActionKey(action);
+    var started = Date.now();
+    var actionOk = false;
+    state.patch.lastAction = '';
+    clearPatchConfirmState();
+    beginAction(key);
     renderPatch();
-    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…', '正在写入 main.dex，请稍候。', '');
-    run('sh ' + P.patch + ' ' + cmd).then(function (res) {
-      return res;
-    }, function (err) {
-      /* 已知退出码时如实带上；sync 桥接拿不到退出码，交给输出标记判断。 */
-      var known = !!(err && err.errnoKnown === true);
-      return { errno: known ? err.errno : null, errnoKnown: known,
-        stdout: known && err.stdout ? err.stdout : '',
-        stderr: String(err && (err.stderr || err.message) ? (err.stderr || err.message) : '') };
+    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…',
+      '后台执行中，页面可以继续操作', '');
+    runBg('sh ' + P.patch + ' ' + cmd, {
+      timeoutMs: PATCH_ACTION_TIMEOUT,
+      onProgress: function (ms) {
+        showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…',
+          '后台执行中 · 已运行 ' + (ms / 1000).toFixed(1) + ' 秒', '');
+      }
     }).then(function (res) {
-      var parts = [];
-      if (String(res.stdout || '').trim()) { parts.push(String(res.stdout).trim()); }
-      if (String(res.stderr || '').trim()) { parts.push(String(res.stderr).trim()); }
-      var v = patchActionVerdict(action, parts.join('\n'), res.errnoKnown !== false, res.errno);
-      showPatchResult(v.title, v.body, v.tone);
-      if (v.tone === 'good' || v.tone === 'info') { applyPatchState(action); }
-      state.patchBusy = false;
+      var elapsed = res.elapsed || (Date.now() - started);
+      if (res.timedOut && res.rc === null) {
+        var tu = patchActionVerdict(action, '', false, null, true);
+        showPatchResult(tu.title, tu.body, tu.tone);
+        return;
+      }
+      if (res.spawnError) {
+        var su = patchActionVerdict(action, '启动失败：' + res.spawnError, false, null, true);
+        showPatchResult(su.title, su.body, su.tone);
+        return;
+      }
+      var text = String(res.out || '');
+      var v = patchActionVerdict(action, text, res.rc !== null, res.rc, false);
+      if (v.tone !== 'good') {
+        if (v.tone === 'info') { actionOk = true; }
+        showPatchResult(v.title, v.body, v.tone);
+        return;
+      }
+      return verifyPatchTarget(action).then(function (ok) {
+        if (!ok) {
+          showPatchResult('结果未知，请刷新检查',
+            (text ? text + '\n' : '') +
+            '动作命令已返回，但读取 main.dex 新状态失败；请点「检查补丁」确认。', 'warn');
+          return;
+        }
+        var expected = isApply ? 'patched' : 'original';
+        if (state.patch.state !== expected) {
+          storePatchCache(state.patch);
+          showPatchResult(isApply ? '补丁应用失败' : '恢复失败',
+            (text ? text + '\n' : '') + '复核发现 main.dex 当前为 ' +
+            state.patch.state + '，不是预期的 ' + expected + '。', 'bad');
+          return;
+        }
+        applyPatchState(action);
+        actionOk = true;
+        var body = text;
+        if (body.indexOf('重启生效') < 0) {
+          body = (body ? body + '\n' : '') + '重启生效（Zygisk 模块在开机时加载）。';
+        }
+        body = (body ? body + '\n' : '') + '复核：main.dex=' + state.patch.state +
+          '，' + state.patch.size + ' B · ' + elapsed + 'ms';
+        showPatchResult(v.title, body, v.tone);
+      });
+    }).catch(function (err) {
+      /* 动作可能已经执行：异常时按“结果未知”处理，不要直接判失败或成功。 */
+      var eu = patchActionVerdict(action, '补丁操作异常：' +
+        String(err && err.message ? err.message : err), false, null, true);
+      showPatchResult(eu.title, eu.body, eu.tone);
+    }).then(function () {
+      endAction(key);
+      if (actionOk && state.patch) {
+        /* 只有动作成功/无需重复才算已提示；失败/超时不能把旧状态写进缓存。 */
+        state.patch.prompted = true;
+        storePatchCache(state.patch);
+        markPatchPrompted();
+      } else {
+        /* 失败/超时后下一次刷新或重开面板必须重新 check。 */
+        state.patchCache = null;
+      }
       renderPatch();
       renderStateBanner();
-      markPatchPrompted();
-    }).catch(function (err) {
-      /* 兜底：任何意外异常都要解锁按钮，不能把面板卡在“操作中”。 */
-      state.patchBusy = false;
-      renderPatch();
-      showPatchResult('补丁操作异常', String(err && err.message ? err.message : err), 'bad');
     });
   }
 
@@ -1511,20 +1885,53 @@ details.card[open] summary{margin-bottom:8px}
     $('cfgDiscard').disabled = true;
     $('cfgActions').hidden = true;
   }
+  function actionBusy(key) { return !!state.actionBusy[key]; }
+
+  function anyActionBusy() {
+    for (var k in state.actionBusy) {
+      if (state.actionBusy[k]) { return true; }
+    }
+    return false;
+  }
+
+  /* 只禁被点的按钮：刷新/体检/修复/重启各管各的，长动作在后台跑时界面仍可操作。 */
+  function syncTopButtons() {
+    var map = { refresh: 'btnRefresh', check: 'btnCheck', fix: 'btnFix', restart: 'btnRestart' };
+    for (var key in map) {
+      var el = $(map[key]);
+      if (el) { el.disabled = state.locked || actionBusy(key); }
+    }
+    state.busy = anyActionBusy();
+  }
+
+  function beginAction(key) {
+    state.actionBusy[key] = true;
+    syncTopButtons();
+  }
+
+  function endAction(key) {
+    state.actionBusy[key] = false;
+    syncTopButtons();
+  }
+
   function unlockAll() {
-    ['btnCheck', 'btnFix', 'btnRestart', 'btnApps', 'btnLog'].forEach(function (id) {
+    state.locked = false;
+    ['btnApps', 'btnLog'].forEach(function (id) {
       var el = $(id);
       if (!el) { return; }
       el.disabled = false;
       el.removeAttribute('data-busy');
     });
+    syncTopButtons();
     $('cfgHint').hidden = true;
   }
 
   function lockActions() {
-    ['btnCheck', 'btnFix', 'btnRestart', 'btnApps', 'btnLog'].forEach(function (id) {
+    state.locked = true;
+    ['btnApps', 'btnLog'].forEach(function (id) {
       var el = $(id); if (el) { el.disabled = true; }
     });
+    syncTopButtons();
   }
 
   /* ============================================================
@@ -1696,6 +2103,7 @@ details.card[open] summary{margin-bottom:8px}
     var f = readForm();
     if (!validate(f)) { toast('配置数值不合法'); return; }
     if (!form.snap) { toast('配置尚未读取成功'); return; }
+    if (actionBusy('config')) { return; }
 
     /* 轮询间隔在非轮询模式下不显示：一律沿用上一次有效值（隐藏的输入框可能残留旧值）；
        MIN_AGE 始终可见，必须显式填写。 */
@@ -1713,57 +2121,75 @@ details.card[open] summary{margin-bottom:8px}
     var cmd = 'umask 077; printf %s \'' + b64utf8(text) + '\' | base64 -d > ' + tmp +
       ' && chmod 600 ' + tmp + ' && mv -f ' + tmp + ' ' + P.config;
 
-    setBusy(true);
+    beginAction('config');
     $('cfgSave').disabled = true;
     var written = false;
 
-    run(cmd).then(function () {
-      written = true;
-      state.config = values;
-      state.configRaw = text;
-      return run('sh ' + P.restart);
-    }).then(function () {
+    function markSaved() {
       form.snap = { enabled: f.enabled, mode: mode, interval: iv, minAge: ma };
       /* 隐藏中的轮询间隔不会显示，但输入框里可能残留旧数字；保存后同步成真正写入的值 */
       if ($('cfgInterval')) { $('cfgInterval').value = String(iv); }
       $('cfgActions').hidden = true;
+    }
+
+    runBg(cmd, { timeoutMs: 5000 }).then(function (w) {
+      if (w.timedOut && w.rc === null) {
+        throw { unknownWrite: true, message: '配置写入超时（超过 5 秒），结果未知' };
+      }
+      if (w.spawnError) { throw new Error('配置写入未启动：' + w.spawnError); }
+      if (w.rc !== 0) {
+        throw new Error('配置写入失败（退出码 ' + w.rc + '）：' + String(w.out || '').slice(-300));
+      }
+      written = true;
+      state.config = values;
+      state.configRaw = text;
+      return runBg('sh ' + P.restart, { timeoutMs: RESTART_TIMEOUT });
+    }).then(function (r) {
+      if (r.timedOut && r.rc === null) {
+        markSaved();
+        opResult('配置已保存，重启结果未知',
+          '重启后台命令超过 10 秒未返回；请点「刷新」确认守护状态。', 'warn');
+        return;
+      }
+      if (r.spawnError) {
+        markSaved();
+        opResult('配置已保存，重启结果未知',
+          '重启命令未正常启动：' + r.spawnError, 'warn');
+        return;
+      }
+      if (r.rc !== 0) {
+        markSaved();
+        opResult('配置已写入，但重启守护失败',
+          '退出码 ' + r.rc + '；守护可能还在用旧配置，点「重启守护」重试。', 'warn');
+        return;
+      }
+      markSaved();
       toast('已保存，守护进程重启中');
-      setTimeout(function () { refreshStatus(); }, 3000);
-      setTimeout(function () { refreshStatus(); }, 7000);
+      setTimeout(function () { refreshStatus(); }, 1500);
+      setTimeout(function () { refreshStatus(); }, 4000);
     }).catch(function (err) {
       if (written) {
         /* 文件已经落盘，只是重启失败：界面同步到新值，别让用户以为没保存 */
-        form.snap = { enabled: f.enabled, mode: mode, interval: iv, minAge: ma };
-        $('cfgActions').hidden = true;
-        opResult('配置已写入，但重启守护失败', '守护进程可能还在用旧配置，点「重启守护」重试。', 'warn');
+        markSaved();
+        opResult('配置已写入，但重启守护失败',
+          '守护进程可能还在用旧配置，点「重启守护」重试。', 'warn');
+      } else if (err && err.unknownWrite) {
+        toast('配置保存结果未知，请刷新确认');
       } else {
-        toast('保存失败：' + (err.message || err));
+        toast('保存失败：' + (err && err.message ? err.message : err));
       }
     }).then(function () {
-      setBusy(false);
-      $('cfgSave').disabled = false;
-      refreshDirty();
+      endAction('config');
+      if (!state.locked) {
+        $('cfgSave').disabled = false;
+        refreshDirty();
+      }
     });
   }
 
   /* ============================================================
      操作
      ============================================================ */
-  function setBusy(busy) {
-    state.busy = !!busy;
-    ['btnRefresh', 'btnCheck', 'btnFix', 'btnRestart'].forEach(function (id) {
-      var el = $(id);
-      if (!el) { return; }
-      if (busy) {
-        /* 只标记"本来可用"的按钮，避免把只读模式下的永久禁用作废 */
-        if (!el.disabled) { el.setAttribute('data-busy', '1'); el.disabled = true; }
-      } else if (el.getAttribute('data-busy') === '1') {
-        el.removeAttribute('data-busy');
-        el.disabled = false;
-      }
-    });
-  }
-
   function opResult(title, body, tone) {
     var el = $('opResult');
     el.className = 'result ' + (tone || '');
@@ -1783,19 +2209,41 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function runFix(dry) {
+    var key = dry ? 'check' : 'fix';
+    if (actionBusy(key)) { return; }
     var started = Date.now();
-    setBusy(true);
-    opResult(dry ? '正在体检…' : '正在修复…', '请稍候', '');
+    beginAction(key);
+    opResult(dry ? '正在体检…' : '正在修复…', '后台执行中，页面可以继续操作', '');
     /* 不传 SI_MIN_AGE：fix 自己从 config.conf 读 MIN_AGE，面板显示的也是同一个值 */
-    return run('sh ' + P.fix + (dry ? ' -n' : ' -q')).then(function (res) {
-      var r = parseResultLine(res.stdout);
-      var ms = Date.now() - started;
+    var cmd = 'sh ' + P.fix + (dry ? ' -n' : ' -q');
+    return runBg(cmd, {
+      timeoutMs: FIX_TIMEOUT,
+      onProgress: function (ms) {
+        opResult(dry ? '正在体检…' : '正在修复…',
+          '后台执行中 · 已运行 ' + (ms / 1000).toFixed(1) + ' 秒', '');
+      }
+    }).then(function (res) {
+      var ms = res.elapsed || (Date.now() - started);
+      if (res.timedOut && res.rc === null) {
+        opResult('结果未知，请刷新检查',
+          '后台命令超过 30 秒未返回；可能仍在执行，请稍后点「刷新」看状态。', 'warn');
+        return;
+      }
+      if (res.spawnError) {
+        opResult('结果未知，请刷新检查',
+          '命令未正常启动或桥接无响应：' + res.spawnError, 'warn');
+        return;
+      }
+      var text = String(res.out || '');
+      var r = parseResultLine(text);
       if (!r) {
-        opResult('没有拿到结果行', String(res.stdout || '').slice(-400) || '（无输出）', 'warn');
+        opResult('没有拿到结果行',
+          (text.slice(-400) || '（无输出）') + ' · 退出码 ' + res.rc + ' · 耗时 ' + ms + 'ms', 'warn');
         return;
       }
       if (r.error) {
-        opResult('执行失败：' + errorText(r.error), '检查 ' + toInt(r.checked, 0) + ' 个进程 · 耗时 ' + ms + 'ms', 'bad');
+        opResult('执行失败：' + errorText(r.error),
+          '检查 ' + toInt(r.checked, 0) + ' 个进程 · 耗时 ' + ms + 'ms', 'bad');
         return;
       }
       if (r.defer === 'fuse') {
@@ -1826,30 +2274,59 @@ details.card[open] summary{margin-bottom:8px}
         (churn ? ' · 熔断跳过 ' + churn + ' 个目标' : '') +
         (retry ? ' · 约 ' + retry + ' 秒后重试' : '') +
         ' · 耗时 ' + ms + 'ms';
+      if (res.rc !== 0) { body += ' · 退出码 ' + res.rc; }
       var tone = '';
       if (dry) { tone = broken > 0 ? 'warn' : ''; }
       else if (fixed > 0) { tone = 'good'; }
       else if (broken > 0) { tone = 'warn'; }
+      if (res.rc !== 0 && tone !== 'warn' && tone !== 'bad') { tone = 'warn'; }
       opResult(title, body, tone);
       if (!dry && (fixed > 0 || churn > 0)) { setTimeout(refreshStatus, 800); }
     }).catch(function (err) {
-      opResult('执行失败', err.message || String(err), 'bad');
-    }).then(function () { setBusy(false); });
+      opResult('执行失败', err && err.message ? err.message : String(err), 'bad');
+    }).then(function () { endAction(key); });
+  }
+
+  function waitDaemonAlive(ms) {
+    var deadline = Date.now() + ms;
+    function once() {
+      return refreshStatus().then(function () {
+        if (state.alive === true) { return true; }
+        if (Date.now() >= deadline) { return false; }
+        return new Promise(function (r) { setTimeout(r, 500); }).then(once);
+      });
+    }
+    return once();
   }
 
   function restartDaemon() {
-    setBusy(true);
-    opResult('正在重启守护…', '旧进程退出后由 supervisor 拉起', '');
-    run('sh ' + P.restart).then(function () {
-      return new Promise(function (r) { setTimeout(r, 3500); });
-    }).then(function () {
-      return refreshStatus();
-    }).then(function () {
-      var ok = state.alive === true;
-      opResult(ok ? '守护已重启' : '重启中', ok ? '新进程已在运行' : '再等几秒点刷新确认', ok ? 'good' : 'warn');
+    if (actionBusy('restart')) { return; }
+    beginAction('restart');
+    opResult('正在重启守护…', '后台执行中，页面可以继续操作', '');
+    return runBg('sh ' + P.restart, { timeoutMs: RESTART_TIMEOUT }).then(function (res) {
+      if (res.timedOut && res.rc === null) {
+        opResult('结果未知，请刷新检查',
+          '重启命令超过 10 秒未返回；后台可能仍在执行，请点「刷新」确认。', 'warn');
+        return;
+      }
+      if (res.spawnError) {
+        opResult('结果未知，请刷新检查',
+          '重启命令未正常启动：' + res.spawnError, 'warn');
+        return;
+      }
+      if (res.rc !== 0) {
+        opResult('重启失败',
+          '退出码 ' + res.rc + '：' + String(res.out || '').slice(-300), 'bad');
+        return;
+      }
+      opResult('正在确认守护…', '重启命令已返回，等待新进程上报状态', '');
+      return waitDaemonAlive(4000).then(function (ok) {
+        opResult(ok ? '守护已重启' : '重启中',
+          ok ? '新进程已在运行' : '再等几秒点「刷新」确认', ok ? 'good' : 'warn');
+      });
     }).catch(function (err) {
-      opResult('重启失败', err.message || String(err), 'bad');
-    }).then(function () { setBusy(false); });
+      opResult('重启失败', err && err.message ? err.message : String(err), 'bad');
+    }).then(function () { endAction('restart'); });
   }
 
   /* ============================================================
@@ -1994,21 +2471,28 @@ details.card[open] summary{margin-bottom:8px}
   function boot() {
     /* 事件绑定 */
     $('btnRefresh').addEventListener('click', function () {
+      if (actionBusy('refresh')) { return; }
+      beginAction('refresh');
+      function done() { endAction('refresh'); }
       if (!BR.ok) {
         /* 快照模式：先重新探测桥接，成功就回实时；仍失败再刷新页面（重新载入快照） */
-        if (BR.probing) { return; }
+        if (BR.probing) { done(); return; }
         lastReprobe = Date.now();
         probeBridge().then(function (ok) {
           if (ok) { restoreLive().then(function () { toast('已连接桥接'); }); return; }
           location.reload();
-        });
+        }).then(done, done);
         return;
       }
       var dirty = refreshDirty();
       refreshStatus().then(function () {
         return dirty ? true : loadConfig();
-      }).then(loadLog).then(loadPatch).then(function () { toast('已刷新'); });
+      }).then(loadLog).then(function () { return loadPatch(false); }).then(function () {
+        toast('已刷新');
+        done();
+      }, done);
     });
+    $('btnPatchCheck').addEventListener('click', function () { loadPatch(true); });
     $('btnCheck').addEventListener('click', function () { runFix(true); });
     $('btnFix').addEventListener('click', function () { runFix(false); });
     $('btnPatchApply').addEventListener('click', function () { armPatchAction('apply'); });

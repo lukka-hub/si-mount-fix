@@ -18,7 +18,7 @@ REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
 # 补丁 main.dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
 PATCH_ASSET=assets/main.dex
-PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -130,10 +130,10 @@ print('update.json：版本/versionCode/zipUrl 与 module.prop 一致')
 PY
 say "updateJson：$PROP_UJ"
 
-# ---------- 3b) 第三方补丁资产：内容不能变，sha256 必须与发布说明一致 ----------
+# ---------- 3b) 自建补丁资产：内容不能变，sha256/大小必须与发布说明一致 ----------
 [ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（自建 dex，构建时校验后打进 zip）"
 PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
-[ "$PATCH_SIZE" = 99104 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 99104 B）"
+[ "$PATCH_SIZE" = 88336 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 88336 B）"
 if command -v sha256sum >/dev/null 2>&1; then
   PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
 else

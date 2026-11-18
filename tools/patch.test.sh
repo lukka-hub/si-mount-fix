@@ -2,8 +2,9 @@
 # si-patch.sh / WebUI / uninstall 的 main.dex 补丁回归：
 #   check 的 original/patched/unknown/no-target、SDK 门禁、版本门禁、asset 哈希/大小、
 #   备份创建/恢复/强制恢复、已 patched no-op、apply 失败回滚、restore 无备份报错、
-#   目标 644 / 备份 600 / chown、持锁重查、并发锁、卸载前恢复/失败保留。
-#   另外静态断言：check 不扫 /proc、不重启 server；WebUI 去掉了 SERVER_PIDS/二次 check。
+#   目标 644 / 备份 600 / chown、持锁重查、并发锁；U1 卸载保留 patch-backup、
+#   U2 restore/--force 版本门禁；静态断言 UI 有后台执行/缓存/独立 busy/结果未知。
+#   另外断言：补丁 check 不扫 /proc、不重启 server；WebUI 无 SERVER_PIDS/二次 check。
 #   fake 模块目录 + SI_TEST 钩子；补丁资产用仓库里的真实 assets/main.dex。
 #
 # 用法：sh tools/patch.test.sh
@@ -41,16 +42,16 @@ sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 size_of() { wc -c < "$1" 2>/dev/null | tr -d '[:space:]'; }
 
 ASSET_SHA=$(sha_of "$ASSET_REAL")
-PATCH_SHA_EXPECT=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+PATCH_SHA_EXPECT=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 ORIGINAL_SHA_EXPECT=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-PATCH_SIZE_EXPECT=99104
+PATCH_SIZE_EXPECT=88336
 ORIGINAL_SIZE_EXPECT=90740
 
 # ---------- 0) 仓库资产 / module.prop / 版本 ----------
 [ -f "$ASSET_REAL" ] && ok "补丁资产存在" || bad "补丁资产不存在：$ASSET_REAL"
 [ "$ASSET_SHA" = "$PATCH_SHA_EXPECT" ] && ok "补丁资产 sha256 正确" \
   || bad "补丁资产 sha256 不对：$ASSET_SHA"
-[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "补丁资产大小 99104 B" \
+[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "补丁资产大小 88336 B" \
   || bad "补丁资产大小不对：$(size_of "$ASSET_REAL")"
 extra_asset=0
 for _f in assets/*; do
@@ -66,8 +67,8 @@ grep -q "PATCH_SHA=$PATCH_SHA_EXPECT" "$PATCH" \
   && ok "脚本补丁 sha256 常量正确" || bad "脚本补丁 sha256 常量不对"
 grep -q "PATCH_SIZE=$PATCH_SIZE_EXPECT" "$PATCH" \
   && ok "脚本补丁大小常量正确" || bad "脚本补丁大小常量不对"
-grep -q '^version=v1.5.4$' module.prop && grep -q '^versionCode=154$' module.prop \
-  && ok "module.prop 版本 v1.5.4 / 154" || bad "module.prop 版本不对"
+grep -q '^version=v1.5.5$' module.prop && grep -q '^versionCode=155$' module.prop \
+  && ok "module.prop 版本 v1.5.5 / 155" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -76,8 +77,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.4"' update.json && grep -q '"versionCode": 154' update.json \
-  && ok "update.json 指向 v1.5.4/154" || bad "update.json 版本不对"
+grep -q '"version": "v1.5.5"' update.json && grep -q '"versionCode": 155' update.json \
+  && ok "update.json 指向 v1.5.5/155" || bad "update.json 版本不对"
 
 # check 不能有进程扫描或 server 重启代码。
 if grep -q '/proc/' "$PATCH"; then bad "si-patch.sh 仍引用 /proc（check 不应扫进程）"; else
@@ -252,6 +253,10 @@ run_capture check
 [ "$(kv SIZE)" = "$ORIG_SIZE" ] && ok "输出 dex 大小" \
   || bad "dex 大小不对：$(kv SIZE)"
 [ "$(kv SHA)" = "$ORIG_SHA" ] && ok "输出 dex sha256" || bad "dex sha256 不对：$(kv SHA)"
+case "$(kv MTIME)" in
+  ''|*[!0-9]*) bad "MTIME 不是数字：$(kv MTIME)" ;;
+  *) ok "输出 dex mtime（供 UI 缓存）" ;;
+esac
 [ "$(kv ORIGINAL_SIZE)" = "$ORIG_SIZE" ] && ok "输出原版大小常量" \
   || bad "原版大小字段不对：$(kv ORIGINAL_SIZE)"
 [ "$(kv BACKUP_COUNT)" = 0 ] && ok "初始没有备份" \
@@ -259,18 +264,23 @@ run_capture check
 [ "$(kv BACKUP_OK)" = 0 ] && ok "初始没有可用原版备份" \
   || bad "初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
 [ "$(kv PROMPTED)" = 0 ] && ok "初始未提示" || bad "初始 PROMPTED 不对：$(kv PROMPTED)"
-[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 19 ] \
-  && ok "check 输出 19 个 KEY=VALUE" || bad "check 字段数不对"
+[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 20 ] \
+  && ok "check 输出 20 个 KEY=VALUE" || bad "check 字段数不对"
 has "$OUT" 'SERVER_PIDS=' && bad "check 仍输出 SERVER_PIDS" \
   || ok "check 不输出 SERVER_PIDS"
 [ ! -f "$DATA/patch.log" ] && ok "check 不写 patch.log" || bad "check 写了 patch.log"
 run_capture status
 has "$OUT" '可应用' && ok "status 显示可应用" || bad "status 没显示可应用：$OUT"
 
-: > "$DATA/.patch_prompted"
+: > "$DATA/.patch_prompted.main.dex.v29.0.1"
 run_capture check
-[ "$(kv PROMPTED)" = 1 ] && ok "存在 .patch_prompted 时 PROMPTED=1" \
+[ "$(kv PROMPTED)" = 1 ] && ok "存在按目标/版本区分的提示标记时 PROMPTED=1" \
   || bad "PROMPTED 没读标记：$(kv PROMPTED)"
+: > "$DATA/.patch_prompted"
+rm -f "$DATA/.patch_prompted.main.dex.v29.0.1"
+run_capture check
+[ "$(kv PROMPTED)" = 0 ] && ok "旧版单一 .patch_prompted 不再命中" \
+  || bad "旧版提示标记仍被当成已提示：$(kv PROMPTED)"
 
 write_prop v29.0.0 88
 run_capture check
@@ -422,7 +432,7 @@ run_capture_umask apply
 [ "$RC" = 0 ] && ok "umask 022 下 apply 成功" || bad "umask 022 下 apply 失败：$ERR"
 [ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "目标已换成补丁 main.dex" \
   || bad "目标哈希不是补丁：$(target_sha)"
-[ "$(target_size)" = "$PATCH_SIZE_EXPECT" ] && ok "目标大小 99104 B" \
+[ "$(target_size)" = "$PATCH_SIZE_EXPECT" ] && ok "目标大小 88336 B" \
   || bad "目标大小不对：$(target_size)"
 has "$OUT" '重启生效（Zygisk 模块在开机时加载）' && ok "apply 提示重启生效" \
   || bad "apply 没提示重启生效：$OUT"
@@ -511,6 +521,33 @@ has "$ERR" '--force' && ok "提示需要 --force" || bad "没提示 --force：$E
 run_capture restore --force
 [ "$RC" = 0 ] && ok "unknown 强制恢复成功" || bad "强制恢复失败（$RC）：$ERR"
 [ "$(target_sha)" = "$ORIG_SHA" ] && ok "强制恢复后回到原版" || bad "强制恢复后哈希不对"
+
+# ---------- 12b) 版本不匹配时拒绝恢复/强制恢复 ----------
+reset_hooks
+clean_data
+reset_original
+run_capture apply
+[ "$RC" = 0 ] && ok "为版本门禁用例准备补丁版和备份" || bad "版本门禁用例准备失败：$ERR"
+write_prop v29.0.0 88
+run_capture check
+[ "$(kv STATE)" = patched ] && [ "$(kv SI_MATCH)" = 0 ] && [ "$(kv BACKUP_OK)" = 1 ] \
+  && ok "版本不匹配但仍是 patched、有有效备份" \
+  || bad "版本门禁用例状态不对：$(kv STATE)/$(kv SI_MATCH)/$(kv BACKUP_OK)"
+run_capture restore
+[ "$RC" != 0 ] && ok "版本不匹配时 restore 拒绝" || bad "版本不匹配 restore 仍成功"
+has "$ERR" '版本不匹配' && ok "restore 报错提示版本不匹配" \
+  || bad "restore 没提示版本不匹配：$ERR"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "版本不匹配 restore 没动目标" \
+  || bad "版本不匹配 restore 动了目标"
+run_capture restore --force
+[ "$RC" != 0 ] && ok "版本不匹配时 restore --force 拒绝" \
+  || bad "版本不匹配 restore --force 仍成功"
+has "$ERR" '版本不匹配' && ok "强制恢复报错提示版本不匹配" \
+  || bad "强制恢复没提示版本不匹配：$ERR"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "版本不匹配强制恢复没动目标" \
+  || bad "版本不匹配强制恢复动了目标"
+reset_hooks
+clean_data
 
 # ---------- 13) restore 当前副本与回滚 ----------
 reset_hooks
@@ -617,12 +654,15 @@ run_capture restore
 [ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] && ok "并发用例收尾恢复原版" \
   || bad "并发用例收尾恢复失败"
 
-# ---------- 17) 卸载前恢复成功 ----------
+# ---------- 17) U1：patched + 有效备份 → 只保留 patch-backup，不自动恢复 ----------
 M1=$T/un1/mod; D1=$T/un1/data; B1=$T/un1/bin
 mkdir -p "$M1/scripts" "$D1/patch-backup" "$B1" || exit 1
 cp module.prop "$M1/module.prop" || exit 1
 cp "$PATCH" "$M1/scripts/si-patch.sh" || exit 1
 chmod 755 "$M1/scripts/si-patch.sh"
+printf 'ENABLED=1\n' > "$D1/config.conf"
+printf 'unrelated\n' > "$D1/daemon.log"
+: > "$D1/.hidden"
 cp "$ASSET_REAL" "$B1/main.dex"
 chmod 644 "$B1/main.dex"
 write_prop
@@ -633,46 +673,170 @@ SI_TEST=1 SI_MOD=$M1 SI_DATA=$D1 SI_PATCH_TARGET_DIR=$B1 SI_PATCH_SDK=37 \
   SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
   "$TEST_SH" uninstall.sh >"$T/un1.out" 2>"$T/un1.err"
 _rc=$?
-[ "$_rc" = 0 ] && ok "卸载脚本成功退出" || bad "卸载脚本退出码 $_rc"
-[ "$(sha_of "$B1/main.dex")" = "$ORIG_SHA" ] && ok "卸载前已恢复原版 main.dex" \
-  || bad "卸载前没有恢复原版 main.dex"
-[ ! -d "$D1" ] && ok "恢复成功后数据目录已删除" || bad "恢复成功后数据目录还在"
-has "$(cat "$T/un1.out" 2>/dev/null)" '已恢复 zygisk 模块原版 main.dex' \
-  && ok "卸载输出说明已恢复" || bad "卸载输出没说明恢复"
+[ "$_rc" = 0 ] && ok "U1 卸载脚本成功退出" || bad "U1 卸载脚本退出码 $_rc"
+[ "$(sha_of "$B1/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "U1 不自动恢复 main.dex" \
+  || bad "U1 仍自动恢复了 main.dex"
+[ -d "$D1/patch-backup" ] && [ -f "$D1/patch-backup/main.dex.20260101-000000" ] \
+  && ok "U1 保留 patch-backup" || bad "U1 patch-backup 被删"
+[ ! -e "$D1/config.conf" ] && [ ! -e "$D1/daemon.log" ] && [ ! -e "$D1/.hidden" ] \
+  && ok "U1 其他数据照旧删除（含隐藏文件）" || bad "U1 其他数据没有删干净"
+[ "$(ls -A "$D1" 2>/dev/null)" = patch-backup ] && ok "U1 数据目录只剩 patch-backup" \
+  || bad "U1 数据目录残留：$(ls -A "$D1" 2>/dev/null)"
+has "$(cat "$T/un1.out" 2>/dev/null)" '补丁备份保留在' \
+  && ok "U1 输出保留路径" || bad "U1 输出没有保留路径"
+has "$(cat "$T/un1.out" 2>/dev/null)" '未自动恢复原版' \
+  && ok "U1 输出说明未自动恢复" || bad "U1 输出没有说明未自动恢复"
 
-# ---------- 18) 卸载前恢复失败：保留备份 ----------
+# ---------- 18) U1：unknown + 有效备份 → 保留备份 ----------
 M2=$T/un2/mod; D2=$T/un2/data; B2=$T/un2/bin
 mkdir -p "$M2/scripts" "$D2/patch-backup" "$B2" || exit 1
 cp module.prop "$M2/module.prop" || exit 1
 cp "$PATCH" "$M2/scripts/si-patch.sh" || exit 1
 chmod 755 "$M2/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B2/main.dex"
-chmod 644 "$B2/main.dex"
+printf 'unknown main.dex fixture\n' > "$B2/main.dex"
+chmod 600 "$B2/main.dex"
 write_prop
 cp "$TARGET_DIR/module.prop" "$B2/module.prop" || exit 1
-printf 'corrupt backup\n' > "$D2/patch-backup/main.dex.20260101-000000"
+cp "$T/original.bin" "$D2/patch-backup/main.dex.20260101-000000"
 chmod 600 "$D2/patch-backup/main.dex.20260101-000000"
+printf 'x\n' > "$D2/daemon.log"
+_unknown_sha=$(sha_of "$B2/main.dex")
 SI_TEST=1 SI_MOD=$M2 SI_DATA=$D2 SI_PATCH_TARGET_DIR=$B2 SI_PATCH_SDK=37 \
   SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
   "$TEST_SH" uninstall.sh >"$T/un2.out" 2>"$T/un2.err"
 _rc=$?
-[ "$_rc" = 0 ] && ok "恢复失败时卸载脚本仍成功退出" || bad "恢复失败时卸载退出码 $_rc"
-[ -d "$D2" ] && ok "恢复失败时保留数据目录" || bad "恢复失败时数据目录被删"
-[ -d "$D2/patch-backup" ] && ok "恢复失败时保留 patch-backup" \
-  || bad "恢复失败时 patch-backup 被删"
-[ "$(sha_of "$B2/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "恢复失败时 dex 未被乱改" \
-  || bad "恢复失败时 dex 被改"
-has "$(cat "$T/un2.out" 2>/dev/null)" '补丁备份保留在' \
-  && ok "卸载输出保留路径提示" || bad "卸载输出没有保留提示"
+[ "$_rc" = 0 ] && ok "U1 unknown 卸载成功退出" || bad "U1 unknown 卸载退出码 $_rc"
+[ "$(sha_of "$B2/main.dex")" = "$_unknown_sha" ] && ok "U1 unknown 目标未被改动" \
+  || bad "U1 unknown 目标被改"
+[ -d "$D2/patch-backup" ] && [ ! -e "$D2/daemon.log" ] \
+  && ok "U1 unknown 只保留备份" || bad "U1 unknown 数据保留不对"
+[ "$(ls -A "$D2" 2>/dev/null)" = patch-backup ] && ok "U1 unknown 数据目录只剩 patch-backup" \
+  || bad "U1 unknown 数据目录残留：$(ls -A "$D2" 2>/dev/null)"
 
-# ---------- 19) WebUI / action / build / 文档（静态） ----------
+# ---------- 19) U1：unsupported + 有效备份 → 保留备份 ----------
+M3=$T/un3/mod; D3=$T/un3/data; B3=$T/un3/bin
+mkdir -p "$M3/scripts" "$D3/patch-backup" "$B3" || exit 1
+cp module.prop "$M3/module.prop" || exit 1
+cp "$PATCH" "$M3/scripts/si-patch.sh" || exit 1
+chmod 755 "$M3/scripts/si-patch.sh"
+cp "$ASSET_REAL" "$B3/main.dex"
+chmod 644 "$B3/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B3/module.prop" || exit 1
+cp "$T/original.bin" "$D3/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D3/patch-backup/main.dex.20260101-000000"
+printf 'x\n' > "$D3/status.json"
+SI_TEST=1 SI_MOD=$M3 SI_DATA=$D3 SI_PATCH_TARGET_DIR=$B3 SI_PATCH_SDK=36 \
+  SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+  "$TEST_SH" uninstall.sh >"$T/un3.out" 2>"$T/un3.err"
+_rc=$?
+[ "$_rc" = 0 ] && ok "U1 unsupported 卸载成功退出" || bad "U1 unsupported 卸载退出码 $_rc"
+[ "$(sha_of "$B3/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "U1 unsupported 目标未被改动" \
+  || bad "U1 unsupported 目标被改"
+[ -d "$D3/patch-backup" ] && [ ! -e "$D3/status.json" ] \
+  && ok "U1 unsupported 只保留备份" || bad "U1 unsupported 数据保留不对"
+
+# ---------- 20) U1：patched 但没有有效备份 → 数据目录全删 ----------
+M4=$T/un4/mod; D4=$T/un4/data; B4=$T/un4/bin
+mkdir -p "$M4/scripts" "$D4" "$B4" || exit 1
+cp module.prop "$M4/module.prop" || exit 1
+cp "$PATCH" "$M4/scripts/si-patch.sh" || exit 1
+chmod 755 "$M4/scripts/si-patch.sh"
+cp "$ASSET_REAL" "$B4/main.dex"
+chmod 644 "$B4/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B4/module.prop" || exit 1
+printf 'x\n' > "$D4/daemon.log"
+SI_TEST=1 SI_MOD=$M4 SI_DATA=$D4 SI_PATCH_TARGET_DIR=$B4 SI_PATCH_SDK=37 \
+  SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+  "$TEST_SH" uninstall.sh >"$T/un4.out" 2>"$T/un4.err"
+_rc=$?
+[ "$_rc" = 0 ] && ok "U1 无有效备份时卸载成功退出" || bad "U1 无备份卸载退出码 $_rc"
+[ ! -d "$D4" ] && ok "U1 无有效备份时数据目录全删" || bad "U1 无有效备份时数据目录还在"
+
+# ---------- 21) U1：目标已是原版但备份在 → 仍保守保留 patch-backup ----------
+M5=$T/un5/mod; D5=$T/un5/data; B5=$T/un5/bin
+mkdir -p "$M5/scripts" "$D5/patch-backup" "$B5" || exit 1
+cp module.prop "$M5/module.prop" || exit 1
+cp "$PATCH" "$M5/scripts/si-patch.sh" || exit 1
+chmod 755 "$M5/scripts/si-patch.sh"
+cp "$T/original.bin" "$B5/main.dex"
+chmod 600 "$B5/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B5/module.prop" || exit 1
+cp "$T/original.bin" "$D5/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D5/patch-backup/main.dex.20260101-000000"
+printf 'x\n' > "$D5/daemon.log"
+SI_TEST=1 SI_MOD=$M5 SI_DATA=$D5 SI_PATCH_TARGET_DIR=$B5 SI_PATCH_SDK=37 \
+  SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+  "$TEST_SH" uninstall.sh >"$T/un5.out" 2>"$T/un5.err"
+_rc=$?
+[ "$_rc" = 0 ] && ok "U1 原版卸载成功退出" || bad "U1 原版卸载退出码 $_rc"
+[ -d "$D5/patch-backup" ] && [ ! -e "$D5/daemon.log" ] \
+  && ok "U1 目标原版但有备份时只保留 patch-backup" \
+  || bad "U1 原版仍把备份一起删了"
+
+# ---------- 22) U1：脚本缺失但备份在 → 保守保留 patch-backup ----------
+M6=$T/un6/mod; D6=$T/un6/data
+mkdir -p "$M6" "$D6/patch-backup" || exit 1
+cp module.prop "$M6/module.prop" || exit 1
+cp "$T/original.bin" "$D6/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D6/patch-backup/main.dex.20260101-000000"
+printf 'x\n' > "$D6/daemon.log"
+SI_TEST=1 SI_MOD=$M6 SI_DATA=$D6 "$TEST_SH" uninstall.sh >"$T/un6.out" 2>"$T/un6.err"
+_rc=$?
+[ "$_rc" = 0 ] && ok "U1 脚本缺失时卸载成功退出" || bad "U1 脚本缺失卸载退出码 $_rc"
+[ -d "$D6/patch-backup" ] && [ ! -e "$D6/daemon.log" ] \
+  && ok "U1 脚本缺失时保守保留 patch-backup" || bad "U1 脚本缺失时备份未保留"
+
+# ---------- 23) U1：sha256sum 失效（BACKUP_OK=0）仍保留 patch-backup ----------
+cat > "$T/fakebin/sha256sum" <<'S'
+#!/bin/sh
+exit 1
+S
+chmod 755 "$T/fakebin/sha256sum"
+M7=$T/un7/mod; D7=$T/un7/data; B7=$T/un7/bin
+mkdir -p "$M7/scripts" "$D7/patch-backup" "$B7" || exit 1
+cp module.prop "$M7/module.prop" || exit 1
+cp "$PATCH" "$M7/scripts/si-patch.sh" || exit 1
+chmod 755 "$M7/scripts/si-patch.sh"
+cp "$ASSET_REAL" "$B7/main.dex"
+chmod 644 "$B7/main.dex"
+write_prop
+cp "$TARGET_DIR/module.prop" "$B7/module.prop" || exit 1
+cp "$T/original.bin" "$D7/patch-backup/main.dex.20260101-000000"
+chmod 600 "$D7/patch-backup/main.dex.20260101-000000"
+printf 'x\n' > "$D7/daemon.log"
+_chk7=$(PATH="$T/fakebin:$PATH" SI_TEST=1 SI_DATA=$D7 SI_PATCH_TARGET_DIR=$B7 \
+  SI_PATCH_SDK=37 SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+  "$TEST_SH" "$PATCH" check)
+printf '%s\n' "$_chk7" | grep -q '^BACKUP_OK=0$' \
+  && ok "sha256sum 失效夹具：BACKUP_OK=0" || bad "sha256sum 夹具没有让 BACKUP_OK=0"
+# uninstall.sh 自身也要能找到 sed/rm 等常用命令，只把 fakebin 放在 PATH 最前面。
+PATH="$T/fakebin:$PATH" SI_TEST=1 SI_MOD=$M7 SI_DATA=$D7 SI_PATCH_TARGET_DIR=$B7 \
+  SI_PATCH_SDK=37 SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+  "$TEST_SH" uninstall.sh >"$T/un7.out" 2>"$T/un7.err"
+_rc=$?
+[ "$_rc" = 0 ] && ok "U1 sha256sum 失效时卸载成功退出" || bad "U1 sha256sum 失效卸载退出码 $_rc"
+[ -d "$D7/patch-backup" ] && [ -f "$D7/patch-backup/main.dex.20260101-000000" ] \
+  && ok "U1 sha256sum 失效时仍保留备份" || bad "U1 sha256sum 失效时备份被删"
+[ ! -e "$D7/daemon.log" ] && ok "U1 sha256sum 失效时其他数据仍删除" \
+  || bad "U1 sha256sum 失效时其他数据残留"
+has "$(cat "$T/un7.out" 2>/dev/null)" '补丁备份保留在' \
+  && ok "U1 sha256sum 失效时仍打印备份路径" || bad "U1 sha256sum 失效时没有路径提示"
+rm -f "$T/fakebin/sha256sum"
+
+# ---------- 24) WebUI / action / build / 文档（静态） ----------
 grep -q 'P.patch = P.mod' webroot/index.html && ok "WebUI 指向 si-patch.sh" \
   || bad "WebUI 没接线 si-patch.sh"
-grep -q '\.patch_prompted' webroot/index.html && ok "WebUI 使用 .patch_prompted" \
-  || bad "WebUI 没使用 .patch_prompted"
+grep -q 'patchPromptPath' webroot/index.html && grep -q '\.patch_prompted\.' webroot/index.html \
+  && ok "WebUI 使用按目标/版本区分的提示标记" || bad "WebUI 提示标记没有按目标/版本区分"
+grep -q 'PROMPT_TAG' scripts/si-patch.sh && grep -q '\.patch_prompted\.\$PROMPT_TAG' scripts/si-patch.sh \
+  && ok "si-patch.sh 提示标记按目标/版本区分" || bad "si-patch.sh 提示标记没有按目标/版本区分"
 grep -q 'Android 17 应用列表修复（main.dex）' webroot/index.html \
   && ok "补丁卡片标题含 main.dex" || bad "补丁卡片标题没含 main.dex"
-for _id in patchCard patchHint patchActions btnPatchApply btnPatchRestore btnPatchForce \
+for _id in patchCard patchHint patchActions patchCheckRow patchTiming btnPatchCheck \
+           btnPatchApply btnPatchRestore btnPatchForce \
            patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult; do
   grep -q "id=\"$_id\"" webroot/index.html || bad "WebUI 缺少元素 $_id"
 done
@@ -686,6 +850,8 @@ grep -q "btnPatchRestore').addEventListener('click', function () { armPatchActio
   webroot/index.html && ok "恢复按钮先 arm 再确认" || bad "恢复按钮没有两步确认"
 grep -q "btnPatchForce').addEventListener('click', function () { armPatchAction('force'); })" \
   webroot/index.html && ok "强制恢复先 arm 再确认" || bad "强制恢复没有两步确认"
+grep -q "btnPatchCheck').addEventListener('click', function () { loadPatch(true); })" \
+  webroot/index.html && ok "检查补丁按钮强制重查" || bad "检查补丁按钮没接线"
 grep -q "act === 'patch-apply') { armPatchAction('apply'); }" webroot/index.html \
   && ok "banner 应用按钮也走两步确认" || bad "banner 应用按钮直接执行"
 grep -q "act === 'patch-confirm-go') { confirmPatchAction(); }" webroot/index.html \
@@ -700,23 +866,34 @@ grep -q 'patchError' webroot/index.html && ok "WebUI 有补丁错误状态" \
 _run_refs=$(grep -c 'runPatchAction' webroot/index.html)
 [ "$_run_refs" = 2 ] && ok "runPatchAction 只在确认后调用（2 处）" \
   || bad "runPatchAction 调用点不对：$_run_refs"
-[ "$(grep -c "run('sh ' + P.patch + ' check')" webroot/index.html)" = 1 ] \
-  && ok "补丁动作后不再补跑 check（只有 loadPatch 一处）" \
-  || bad "补丁动作后仍补跑 check"
-grep -q 'verifyPatchAction' webroot/index.html && bad "仍存在动作后复核函数" \
-  || ok "已删除动作后复核函数"
+[ "$(grep -c "P.patch + ' check'" webroot/index.html)" = 1 ] \
+  && ok "补丁 check 只保留一个后台入口" || bad "补丁 check 入口数量不对"
+grep -q "runBg('sh ' + P.patch + ' check'" webroot/index.html \
+  && ok "补丁 check 走后台执行" || bad "补丁 check 没有走后台执行"
+grep -q 'verifyPatchAction' webroot/index.html && bad "仍存在全量动作后复核函数" \
+  || ok "已删除全量动作后复核函数"
+grep -q 'verifyPatchTarget' webroot/index.html && grep -q 'stat -c "%s %Y"' webroot/index.html \
+  && ok "动作后只用 stat+sha256 复核一次" || bad "动作后没有单次 stat 复核"
 grep -q 'applyPatchState' webroot/index.html && ok "动作后直接更新卡片状态" \
   || bad "动作后没有直接更新卡片状态"
 grep -q 'errnoKnown: false' webroot/index.html \
   && grep -q 'res.errnoKnown !== false' webroot/index.html \
   && ok "sync 桥接不伪造 errno=0" || bad "sync 桥接仍把 errno 固定为 0"
-grep -q 'patchActionVerdict' webroot/index.html \
+grep -q 'patchActionVerdict(action, text, errnoKnown, errno, unknown)' webroot/index.html \
   && grep -q "var marker = isApply ? '已应用补丁' : '已恢复原版'" webroot/index.html \
-  && ok "sync 动作按输出标记判成败" || bad "sync 动作没有输出标记判定"
+  && ok "动作判定支持 unknown/输出标记" || bad "动作判定缺少 unknown 分支"
+grep -q '结果未知，请刷新检查' webroot/index.html \
+  && ok "超时/无 errno 显示结果未知" || bad "缺少结果未知文案"
 grep -q '已应用，重启手机生效' webroot/index.html && ok "WebUI 应用成功文案" \
   || bad "WebUI 缺少应用成功文案"
 grep -q '已恢复原版，重启手机生效' webroot/index.html && ok "WebUI 恢复成功文案" \
   || bad "WebUI 缺少恢复成功文案"
+grep -q "p.lastAction === 'restored'" webroot/index.html \
+  && grep -q '已恢复原版，重启生效（Zygisk 模块在开机时加载）。' webroot/index.html \
+  && ok "restore 成功后卡片显示已恢复原版/重启生效" \
+  || bad "restore 成功卡片没有重启提示"
+grep -q "p.lastAction === 'applied'" webroot/index.html \
+  && ok "apply 成功后卡片显示已应用" || bad "apply 成功卡片没有提示"
 grep -q '重启生效（Zygisk 模块在开机时加载）' webroot/index.html \
   && ok "WebUI 提示重启生效" || bad "WebUI 没提示重启生效"
 grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.html \
@@ -724,36 +901,96 @@ grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.htm
   || bad "WebUI 没有在 check 前按 SDK 隐藏"
 grep -q "state.patchSdk !== '37'" webroot/index.html \
   && ok "render/arm 也按 SDK 门禁" || bad "WebUI 缺少 patchSdk 门禁"
-grep -q "applyBtn.disabled = !canAct || !p || !p.match" webroot/index.html \
-  && ok "版本/哈希不匹配时 apply 置灰" || bad "版本/哈希不匹配时 apply 没置灰"
-grep -q "restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk" webroot/index.html \
-  && ok "版本/哈希不匹配或无备份时 restore 置灰" || bad "restore 置灰条件不对"
-grep -q "forceOk = !!(p && p.backupOk" webroot/index.html \
-  && grep -q "st === 'unknown' || (st === 'patched' && !p.match)" webroot/index.html \
-  && grep -q "applyBtn.hidden = !(st === 'original')" webroot/index.html \
+grep -q "applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply')" webroot/index.html \
+  && ok "版本/哈希不匹配时 apply 置灰且独立 busy" || bad "apply 置灰/独立 busy 不对"
+grep -q "restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchRestore')" webroot/index.html \
+  && ok "restore 置灰条件与独立 busy" || bad "restore 置灰条件不对"
+grep -q "forceBtn.disabled = !canAct || !p || !p.match || actionBusy('patchForce')" webroot/index.html \
+  && ok "强制恢复置灰条件与独立 busy" || bad "强制恢复置灰条件不对"
+grep -q "forceOk = !!(p && p.match && p.backupOk && st === 'unknown')" webroot/index.html \
+  && ok "U2：版本不匹配时隐藏强制恢复" || bad "U2 强制恢复仍不检查版本"
+grep -q "(action === 'force' && p.match && p.backupOk && p.state === 'unknown')" webroot/index.html \
+  && ok "U2：arm 强制恢复也检查版本" || bad "U2 arm 强制恢复缺版本门禁"
+grep -q "applyBtn.hidden = !(st === 'original')" webroot/index.html \
   && grep -q "restoreBtn.hidden = !(st === 'patched')" webroot/index.html \
   && grep -q "forceBtn.hidden = !forceOk" webroot/index.html \
-  && ok "unknown+备份只留强制恢复" || bad "unknown 强制恢复条件不对"
+  && ok "original 可应用 / patched 可恢复 / unknown 强制恢复" \
+  || bad "补丁按钮显示条件不对"
 grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
   && ok "首次提示只给 SDK37+匹配" || bad "首次提示缺 SDK/匹配门禁"
 grep -q 'SI_MATCH' webroot/index.html && grep -q 'BACKUP_OK' webroot/index.html \
   && ok "WebUI 读取版本门禁与有效备份字段" || bad "WebUI 没读新字段"
 grep -q 'p.originalSha' webroot/index.html && grep -q 'p.originalSize' webroot/index.html \
   && ok "WebUI 用原版哈希/大小更新恢复后的卡片" || bad "WebUI 没记录原版哈希/大小"
-grep -q "var styles = \['cb3', 'cb2', 'sync'\]" webroot/index.html \
+grep -q 'MTIME' scripts/si-patch.sh && grep -q 'p.mtime' webroot/index.html \
+  && ok "check 输出 mtime 且 WebUI 读入缓存键" || bad "mtime 缓存键缺失"
+grep -q 'PATCH_CACHE_TTL = 30000' webroot/index.html \
+  && grep -q 'patchCacheUsable' webroot/index.html \
+  && grep -q 'statPatchTarget' webroot/index.html \
+  && grep -q 'st.sha === state.patchCache.sha' webroot/index.html \
+  && ok "补丁状态 30 秒缓存 + mtime/size/sha 校验" || bad "补丁缓存缺失"
+grep -q 'BG_POLL_MS = 300' webroot/index.html && grep -q 'function runBg' webroot/index.html \
+  && ok "长动作后台执行 + 300ms 轮询" || bad "后台轮询缺失"
+grep -q "runBg(cmd, {" webroot/index.html && grep -q 'timeoutMs: FIX_TIMEOUT' webroot/index.html \
+  && ok "fix 走后台执行并带 30s 超时" || bad "fix 没走后台/超时"
+grep -q "runBg('sh ' + P.restart" webroot/index.html \
+  && ok "restart 走后台执行" || bad "restart 没走后台"
+grep -q "runBg('sh ' + P.patch + ' ' + cmd" webroot/index.html \
+  && ok "apply/restore 走后台执行" || bad "apply/restore 没走后台"
+grep -q 'runBg(cmd, { timeoutMs: 5000 })' webroot/index.html \
+  && ok "保存配置写文件走后台执行" || bad "保存配置没走后台"
+grep -q 'state.patchMarked && state.patchMarkedKey === path' webroot/index.html \
+  && ok "patchMarked 存在时不再重复写提示标记" || bad "提示标记仍会重复写"
+if grep -q 'if (patchPromptable()) { markPatchPrompted(); }' webroot/index.html; then
+  bad "renderStateBanner 仍在渲染时写提示标记"
+else
+  ok "提示标记只在暂不/动作成功时写"
+fi
+grep -q 'actionOk && state.patch' webroot/index.html \
+  && grep -q 'state.patchCache = null;' webroot/index.html \
+  && ok "动作失败/超时不写缓存、不置 prompted" || bad "失败动作仍写缓存"
+grep -q 'CHECK_TIMEOUT = 8000' webroot/index.html \
+  && grep -q 'FIX_TIMEOUT = 30000' webroot/index.html \
+  && grep -q 'RESTART_TIMEOUT = 10000' webroot/index.html \
+  && ok "check/fix/restart 超时 8/30/10s" || bad "长命令超时不对"
+grep -q 'setPatchTiming' webroot/index.html && grep -q "检查 ' + state.patchCheckMs + 'ms'" webroot/index.html \
+  && ok "页面显示检查耗时/超时反馈" || bad "缺少检查耗时反馈"
+grep -q 'state.patchSdk === .37. && !actionBusy(.patchCheck.)' webroot/index.html \
+  && grep -q '正在检查补丁状态，请稍候' webroot/index.html \
+  && ok "check 进行中置灰动作按钮并提示检查中" || bad "check 进行中没有置灰动作按钮"
+grep -q 'clearPatchResult' webroot/index.html && grep -q 'clearPatchResult();' webroot/index.html \
+  && ok "loadPatch 清掉旧 patchResult" || bad "loadPatch 没有清旧结果"
+grep -q 'loadPatch(false)' webroot/index.html && grep -q 'loadPatch(true)' webroot/index.html \
+  && ok "刷新用缓存 / 手动检查强制重查" || bad "刷新链仍强制 check"
+grep -q 'function syncTopButtons' webroot/index.html \
+  && grep -q 'state.actionBusy' webroot/index.html \
+  && grep -q "beginAction(key)" webroot/index.html \
+  && ok "按钮独立 busy" || bad "仍不是独立 busy"
+if grep -q 'state.patchBusy\|function setBusy\|setBusy(' webroot/index.html; then
+  bad "仍有全局 patchBusy/setBusy"
+else
+  ok "已移除全局 patchBusy/setBusy"
+fi
+grep -Fq "var styles = ['cb3', 'cb2', 'sync']" webroot/index.html \
   && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
 grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
   || bad "WebUI 缺少已应用文案"
 grep -q '既不是原版也不是补丁版' webroot/index.html && ok "WebUI unknown 提示" \
   || bad "WebUI 缺少 unknown 提示"
+grep -q '版本不匹配时不允许强制恢复' webroot/index.html \
+  && ok "WebUI unknown 版本不匹配时提示不能强制恢复" \
+  || bad "WebUI unknown 版本不匹配提示不对"
 grep -q "if (!err && st !== 'original' && st !== 'patched' && st !== 'unknown')" webroot/index.html \
   && ok "no-target/unsupported 隐藏卡片" || bad "no-target 没有隐藏卡片"
-grep -q '当前 ' webroot/index.html && grep -q '版本/哈希不在支持范围' webroot/index.html \
-  && ok "WebUI 不支持范围提示" || bad "WebUI 缺少不支持范围提示"
 if grep -q 'SERVER_PIDS\|serverPids\|server-v355\|restart_si_server\|TERM_WAIT\|RESTART_WAIT' webroot/index.html; then
   bad "WebUI 仍含 SERVER_PIDS/server 重启残留"
 else
   ok "WebUI 已移除 SERVER_PIDS/server 重启/等待"
+fi
+if grep -q '/proc/' webroot/index.html; then
+  bad "WebUI 仍引用 /proc"
+else
+  ok "WebUI 不引用 /proc"
 fi
 if grep -q '18 秒' webroot/index.html; then
   bad "WebUI 仍有 18 秒等待文案"
@@ -767,26 +1004,57 @@ grep -q 'si-patch\.sh" apply' action.sh && bad "action.sh 会自动 apply" \
 grep -q 'patch_txt=${patch_txt#main.dex 补丁：}' action.sh \
   && ok "action.sh 去掉 main.dex 补丁前缀" || bad "action.sh 前缀剥离不对"
 grep -q 'PATCH_DEX=/data/adb/modules/zygisk-storage-isolation/main.dex' uninstall.sh \
-  && ok "uninstall.sh 默认恢复 main.dex" || bad "uninstall.sh 目标不对"
+  && ok "uninstall.sh 默认目标 main.dex" || bad "uninstall.sh 目标不对"
+grep -q 'PATCH_KEEP_BACKUP=1' uninstall.sh && grep -q '补丁备份保留在' uninstall.sh \
+  && ok "U1：卸载保留 patch-backup 并打印路径" || bad "U1 卸载没有保留备份"
+grep -Fq '"$DATA/patch-backup/main.dex".*' uninstall.sh \
+  && ok "U1：按 main.dex.* 文件存在保守保留" || bad "U1 没有按备份文件存在保留"
+if grep -q 'BACKUP_OK' uninstall.sh; then
+  bad "U1 仍依赖 BACKUP_OK"
+else
+  ok "U1 不依赖 BACKUP_OK/sha256sum"
+fi
+grep -q '未自动恢复原版' uninstall.sh && ok "U1：卸载不自动恢复" \
+  || bad "U1 卸载文案不对"
+if grep -q 'PATCH_SCRIPT" restore' uninstall.sh; then
+  bad "U1 卸载仍调用 restore"
+else
+  ok "U1 卸载不再调用 restore"
+fi
+grep -q '版本不匹配时不能用原版备份覆盖' scripts/si-patch.sh \
+  && ok "U2：CLI restore 版本门禁" || bad "U2 CLI 没有版本门禁"
 grep -q 'assets/main.dex' tools/build.sh && ok "构建脚本包含 main.dex 资产" \
   || bad "构建脚本没有 main.dex 资产"
-grep -q '6d4058bc' tools/build.sh && ok "构建脚本校验补丁 sha" \
+grep -q 'PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' tools/build.sh && ok "构建脚本校验完整补丁 sha" \
   || bad "构建脚本没有校验补丁 sha"
-grep -q '99104' tools/build.sh && ok "构建脚本校验补丁大小" \
+grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
   || bad "构建脚本没有校验补丁大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.4' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.5' CHANGELOG.md \
+  && ! grep -q '^## 1.5.4' CHANGELOG.md \
   && ! grep -q '^## 1.5.3' CHANGELOG.md \
   && ! grep -q '^## 1.5.2' CHANGELOG.md \
   && ! grep -q '^## 1.5.1' CHANGELOG.md \
   && ! grep -q '^## 1.5.0' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.4" || bad "CHANGELOG 不是只含 1.5.4"
+  && ok "CHANGELOG 只列出 1.5.5" || bad "CHANGELOG 不是只含 1.5.5"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
+grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md \
+  && ok "README 写自建 main.dex 大小/完整哈希" || bad "README 哈希/大小不对"
+grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
+  && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
+_bad_hash=60be88''02
+if grep -q "$_bad_hash" README.md CHANGELOG.md scripts/si-patch.sh tools/build.sh; then
+  bad "仍有 main.dex 哈希笔误"
+else
+  ok "没有 main.dex 哈希笔误"
+fi
+grep -q '446 方法' README.md && grep -q '剥离调试信息' README.md \
+  && ok "README 说明反编译改动与剥离调试信息" || bad "README 缺少反编译说明"
 grep -q 'main.dex' README.md && grep -q 'zygisk-storage-isolation' README.md \
   && ok "README 说明 main.dex / zygisk 模块" || bad "README 缺少 main.dex 说明"
 ! grep -q 'server-v355' README.md && ok "README 已移除 server-v355 描述" \
@@ -796,6 +1064,10 @@ grep -q 'patch-backup/main.dex' README.md && ok "README 说明 main.dex 备份�
 grep -q '重启手机' README.md && ok "README 说明重启生效" || bad "README 缺少重启说明"
 grep -q '官方更新' README.md && grep -q '覆盖' README.md \
   && ok "README 说明官方更新覆盖后需重打" || bad "README 缺少更新覆盖说明"
+grep -q '卸载不会自动恢复' README.md && ok "README 说明 U1 卸载不自动恢复" \
+  || bad "README 缺少 U1 说明"
+grep -q '版本不匹配时' README.md && ok "README 说明 U2 版本门禁" \
+  || bad "README 缺少 U2 说明"
 grep -q '^## ' HISTORY.md && ok "HISTORY 保留演化记录" || bad "HISTORY 缺失"
 if grep -q '^[[:space:]]*\.result\.info' webroot/index.html; then
   ok "info 结果有独立样式"
@@ -803,7 +1075,7 @@ else
   bad "缺少 .result.info 样式"
 fi
 
-# ---------- 20) WebUI 动作判定（node 实跑生产函数） ----------
+# ---------- 25) WebUI 动作判定（node 实跑生产函数） ----------
 if command -v node >/dev/null 2>&1; then
   sed -n '/PATCH-VERDICT-START/,/PATCH-VERDICT-END/p' webroot/index.html \
     | sed '/PATCH-VERDICT-START/d;/PATCH-VERDICT-END/d' > "$T/verdict.js"
@@ -815,24 +1087,28 @@ function t(name, got, tone, titlePart, bodyPart) {
   if (!ok) process.exitCode = 1;
 }
 t('apply 成功→good/重启提示', patchActionVerdict('apply',
-  '已应用补丁：/x/main.dex\n重启生效（Zygisk 模块在开机时加载）。', true, 0),
+  '已应用补丁：/x/main.dex\n重启生效（Zygisk 模块在开机时加载）。', true, 0, false),
   'good', '已应用，重启手机生效', '重启生效（Zygisk 模块在开机时加载）');
 t('restore 成功（sync 无退出码）→good', patchActionVerdict('restore',
-  '已恢复原版：/x/main.dex', false, null), 'good', '已恢复原版，重启手机生效');
+  '已恢复原版：/x/main.dex', false, null, false), 'good', '已恢复原版，重启手机生效');
 t('force 成功→good', patchActionVerdict('force',
-  '已恢复原版：/x/main.dex', true, 0), 'good', '已恢复原版，重启手机生效');
+  '已恢复原版：/x/main.dex', true, 0, false), 'good', '已恢复原版，重启手机生效');
 t('已 patched 再 apply→info', patchActionVerdict('apply',
-  'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。', true, 0),
+  'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。', true, 0, false),
   'info', '无需重复操作');
-t('apply 退出码非 0→bad', patchActionVerdict('apply', 'si-patch: 写入失败', true, 5),
+t('apply 退出码非 0→bad', patchActionVerdict('apply', 'si-patch: 写入失败', true, 5, false),
   'bad', '补丁应用失败');
-t('restore 退出码非 0→bad', patchActionVerdict('restore', 'si-patch: 没有备份', true, 5),
+t('restore 退出码非 0→bad', patchActionVerdict('restore', 'si-patch: 没有备份', true, 5, false),
   'bad', '恢复失败');
-t('sync 无成功标记→bad', patchActionVerdict('apply', '', false, null),
-  'bad', '补丁应用失败');
+t('sync 无成功标记→结果未知', patchActionVerdict('apply', '', false, null, false),
+  'warn', '结果未知，请刷新检查', '请点「检查补丁」');
+t('超时→结果未知', patchActionVerdict('apply', '', true, null, true),
+  'warn', '结果未知，请刷新检查');
+t('known 0 无输出→good（交给 stat 复核）', patchActionVerdict('apply', '', true, 0, false),
+  'good', '已应用，重启手机生效');
 JS
   if node "$T/verdict.js"; then
-    ok "WebUI 动作判定 7 个场景通过（node 实跑生产函数）"
+    ok "WebUI 动作判定 9 个场景通过（node 实跑生产函数）"
   else
     bad "WebUI 动作判定用例失败"
   fi

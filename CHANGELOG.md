@@ -1,19 +1,26 @@
 # 更新日志
 
-## 1.5.4
+## 1.5.5
 
-- 补丁目标改为 Zygisk 模块 `zygisk-storage-isolation` 的 `main.dex`：只替换
-  `/data/adb/modules/zygisk-storage-isolation/main.dex`，重启手机后由 Zygisk 模块加载并保持。
-  不再依赖 SI 的 server dex —— SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回
-  `server-v355.dex`，补它每次开机必被还原，没有持久意义。
-- 补丁资产换成社区验证的 `assets/main.dex`（99,104 B / sha256
-  `6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7`）；原版 main.dex 为
-  90,740 B / sha256 `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`。
-  apply 前校验资产与目标哈希/大小，备份到 `patch-backup/main.dex.<时间戳>`（600），
-  原子替换为 644 root:root，失败自动回滚。
-- WebUI 去掉 `SERVER_PIDS`、`/proc` 全量扫描和 SI server 重启/等待：apply/restore 只做文件操作，
-  结果直接返回，不再有 18 秒复核；成功提示“已应用，重启手机生效”。补丁卡片改为
-  「Android 17 应用列表修复（main.dex）」，版本/哈希不匹配时置灰，unknown 仅提示/强制恢复。
-- 卸载前恢复改为 `main.dex`；备份保留逻辑不变。文档同步适用条件（zygisk-storage-isolation
-  v29.0.1 / main.dex）、备份/恢复、重启生效，以及官方更新覆盖后需重打。
-- 版本 v1.5.4 / 154。
+- **自建 main.dex**：`assets/main.dex` 换成模块自行反编译重打的版本（88,336 B / sha256
+  `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`），不再使用社区版
+  （99,104 B / `6d4058bc…`）。只改 4 条 invoke：两个 `getInstalledPackages` 的返回类型改为
+  `PackageInfoList`，两处 `getList` 的 owner 改为 `PackageInfoList`；其余 112 类、446 方法、
+  231 字段不变，重打包时剥离调试信息；与社区版反汇编后 112 个 smali 逐字节相同。
+  原版仍为 90,740 B / `a407…`。自建版仍建议先在目标机型抓 logcat 验证。
+- **U1 卸载保留备份**：`uninstall.sh` 不再自动恢复 main.dex。只要 `patch-backup/main.dex.*`
+  存在就只保留该目录并打印路径，其他运行期数据照旧删除；保留不依赖 `BACKUP_OK`/`sha256sum`
+  是否可用，没有 main.dex 备份才删除。需要恢复请在卸载前手动运行 `restore --force`。
+- **U2 版本门禁**：`restore`/`restore --force` 在 zygisk 模块版本不匹配（`SI_MATCH=0`）时拒绝；
+  WebUI 的「强制恢复」在版本不匹配时隐藏/置灰，避免用旧版本备份覆盖。
+- **U3 结果与提示**：restore 成功后卡片显示“已恢复原版，重启生效”，不再显示“未做任何修改”；
+  超时/读不到退出码统一显示“结果未知，请刷新检查”，不直接判失败/成功；动作失败/超时不写
+  状态缓存、不置 prompted，下次打开重新 check；check 进行中动作按钮置灰并提示“检查中”。
+  `loadPatch` 会清掉旧的动作结果；首次提示标记改为按目标文件+适用版本区分，同一目标不重复弹。
+- **UI 不卡死**：补丁检查、体检/修复、重启守护、保存配置、apply/restore 全部改为后台执行 +
+  300ms 轮询，单次 exec 只做启动/读结果；按钮改为独立 busy，只禁用被点的按钮；补丁状态增加
+  30 秒缓存（30 秒内直接复用，过期后校验 mtime+size+sha）与手动「检查补丁」入口，
+  刷新链不再强制跑 check；check 8 秒、
+  fix 30 秒、restart 10 秒超时并显示“检查耗时/超时”反馈。补丁动作后只做一次 `stat+sha256`
+  复核，补丁链路不再全量 check，也没有 `/proc` 全扫。
+- 版本 v1.5.5 / 155。

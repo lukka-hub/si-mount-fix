@@ -59,38 +59,33 @@ if [ "$SI_TEST" != 1 ]; then
   done
 fi
 
-# 卸载前尽量恢复 zygisk 模块原版 main.dex；恢复不了就保留数据目录，不能把唯一备份一起删掉。
+# 卸载不自动恢复 main.dex：只要 patch-backup 里存在 main.dex.* 备份，就只保留该目录，
+# 其余数据照旧删除，并打印备份路径。保留不依赖校验工具是否可用（保守处理）。
 PATCH_SCRIPT=$MOD/scripts/si-patch.sh
 PATCH_DEX=/data/adb/modules/zygisk-storage-isolation/main.dex
-PATCH_RESTORE_FAILED=0
 if [ -f "$PATCH_SCRIPT" ]; then
   _chk=$(SI_DATA="$DATA" sh "$PATCH_SCRIPT" check 2>/dev/null)
-  _state=$(printf '%s\n' "$_chk" | sed -n 's/^STATE=//p' | head -1)
   _dex=$(printf '%s\n' "$_chk" | sed -n 's/^DEX=//p' | head -1)
   [ -n "$_dex" ] && PATCH_DEX=$_dex
-  if [ "$_state" = patched ]; then
-    _out=$(SI_DATA="$DATA" sh "$PATCH_SCRIPT" restore 2>&1)
-    _rc=$?
-    if [ "$_rc" = 0 ]; then
-      printf '%s\n' "$_out"
-      printf '卸载前已恢复 zygisk 模块原版 main.dex：%s\n' "$PATCH_DEX"
-    else
-      PATCH_RESTORE_FAILED=1
-      printf '卸载前恢复补丁失败：\n%s\n' "$_out"
-    fi
-  elif [ -z "$_state" ] && [ -d "$DATA/patch-backup" ]; then
-    PATCH_RESTORE_FAILED=1
-    printf '无法确认 SI 补丁状态，先保留 %s 下的补丁备份。\n' "$DATA"
-  fi
-elif [ -d "$DATA/patch-backup" ]; then
-  PATCH_RESTORE_FAILED=1
-  printf '找不到 %s，无法确认/恢复补丁，先保留 %s。\n' "$PATCH_SCRIPT" "$DATA"
 fi
 
-if [ "$PATCH_RESTORE_FAILED" = 1 ]; then
+PATCH_KEEP_BACKUP=0
+for _b in "$DATA/patch-backup/main.dex".*; do
+  [ -f "$_b" ] || continue
+  PATCH_KEEP_BACKUP=1
+  break
+done
+
+if [ "$PATCH_KEEP_BACKUP" = 1 ]; then
+  # 只保留 patch-backup，其余运行期数据/配置/锁/日志照旧删除。
+  for _e in "$DATA"/* "$DATA"/.[!.]* "$DATA"/..?*; do
+    [ -e "$_e" ] || continue
+    [ "$_e" = "$DATA/patch-backup" ] && continue
+    rm -rf "$_e" 2>/dev/null
+  done
   printf '补丁备份保留在 %s/patch-backup\n' "$DATA"
   printf '当前 main.dex：%s\n' "$PATCH_DEX"
-  printf '请确认该 dex 已恢复原版后，再删除 %s。\n' "$DATA"
+  printf '未自动恢复原版；备份保留在 patch-backup，可手动恢复。\n'
 else
   rm -rf "$DATA"
 fi

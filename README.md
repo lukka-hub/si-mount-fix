@@ -79,7 +79,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - Android 17 可选补丁：SDK 37 下 SI 应用列表为空时，用户确认后替换
   `zygisk-storage-isolation` 的 `main.dex`；自动备份、校验并支持恢复，不动 SI 配置。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
-- 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录。
+- 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录
+  （只要 `patch-backup` 里存在 `main.dex.*` 备份，就只保留该目录）。
 
 ## 安装与升级
 
@@ -91,7 +92,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 升级时手动刷入新 zip 即可。
 
 升级用同一个 zip 覆盖安装即可，配置与状态保存在 `/data/adb/si-mount-fix/`，升级不会清空；
-卸载会删除该目录。安装后无需手动执行脚本。
+卸载会删除该目录（只要 `patch-backup` 里存在 `main.dex.*` 备份，就只保留该目录）。安装后无需手动执行脚本。
 
 **覆盖升级后要重启手机**（或在 WebUI 里点「重启守护」）：模块文件会立即替换，但已经在运行的
 旧守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是旧守护写下的状态，
@@ -103,11 +104,16 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 旧的 server dex 备份不再被读取，可以留作记录，也可以手动删除；新版备份都在
 `patch-backup/main.dex.*`。
 
+**从 1.5.4 升级到 1.5.5**：1.5.4 用的是社区版 main.dex（99,104 B），1.5.5 换成自建版
+（88,336 B），两者哈希不同，`check` 会显示 `unknown`。模块版本仍匹配时，可先在卡片里
+「强制恢复」到原版，再「应用补丁」；已有原版备份可直接用。没有原版备份时，先重刷
+zygisk-storage-isolation 模块恢复原版 `main.dex`，再应用补丁。
+
 ### 版本与更新检查
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.4` 与 `versionCode=154`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.5` 与 `versionCode=155`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -125,7 +131,8 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 
 **现象**：SI 的应用列表为空（其它地方能看到已安装应用，SI 里一个都没有）。根因是
 Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `main.dex` 解析不了新系统返回的数据。
-替换 `zygisk-storage-isolation` 的 `main.dex` 后列表恢复；本机实测从 17 个恢复到 31 个。
+替换 `zygisk-storage-isolation` 的 `main.dex` 后列表恢复；社区版在真机实测从 17 个恢复到
+31 个，自建版与社区版指令级一致。
 
 **为什么补 main.dex**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回自己的
 server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持久的那一半：替换
@@ -134,25 +141,31 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 
 **鸣谢**：酷安用户「无所事事」提供了 Android 17 下 SI「无法读取应用列表」的解决思路。
 
-**来源**：模块内的 `assets/main.dex` 是社区验证的补丁版，已在真机重启验证持久有效。
-补丁只替换 `/data/adb/modules/zygisk-storage-isolation/main.dex`，不改 SI 配置、
-不动 SI 的其它文件。补丁在用户确认后由模块写入。
+**来源**：模块内的 `assets/main.dex` 由本模块对官方 main.dex 自行反编译重打：
+只改 4 条 invoke（两个 `getInstalledPackages` 的返回类型改为 `PackageInfoList`，两处
+`getList` 的 owner 改为 `PackageInfoList`），其余 112 类、446 方法、231 字段不变；
+重打包时剥离调试信息，因此是 88,336 B。自建版与社区版反汇编后的 112 个 smali 文件逐字节
+相同（方法级指令零差异）；社区版已在真机重启验证，自建版仍建议先在目标机型抓 logcat 验证
+`getInstalledPackages` 路径。补丁只替换
+`/data/adb/modules/zygisk-storage-isolation/main.dex`，不改 SI 配置、不动 SI 的其它文件。
+补丁在用户确认后由模块写入。
 
 **版本校验**：
 
 - 原版 `main.dex`：90,740 B，sha256
   `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`
-- 补丁 `main.dex`：99,104 B，sha256
-  `6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7`
+- 自建补丁 `main.dex`：88,336 B，sha256
+  `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`
 
 `check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已应用）、`unknown`
 （既非原版也非补丁，拒绝操作）、`no-target`（未装 zygisk 模块/没有 `main.dex`）、
 `unsupported`（SDK 不是 37）。
 
-`apply` 前还会校验 zygisk 模块版本（`module.prop` 的 `siPatchVersion` /
+`apply` 和 `restore` 都会校验 zygisk 模块版本（`module.prop` 的 `siPatchVersion` /
 `siPatchVersionCode`，当前为 v29.0.1 / 89；`siPatchModule` / `siPatchTarget` 提供模块名和
-`main.dex`）。版本不匹配时只提示、不执行，哈希门禁仍然保留。模块 `module.prop` 读不到版本时，
-以目标 `main.dex` 存在本身作为适用范围依据。
+`main.dex`）。版本不匹配时：`apply` 拒绝执行，`restore` / `restore --force` 也拒绝，
+面板的「强制恢复」不显示；哈希门禁仍然保留。模块 `module.prop` 读不到版本时，以目标
+`main.dex` 存在本身作为适用范围依据。
 
 **重启生效**：`main.dex` 由 Zygisk 模块在开机时加载，apply/restore 只写文件、不重启任何进程。
 写入后必须重启手机；重启前 SI 仍在使用旧 dex。
@@ -161,12 +174,12 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 `/data/adb/si-mount-fix/patch-backup/main.dex.<时间戳>`（权限 600），再把
 `assets/main.dex` 复制到目标，`chown root:root`、`chmod 644`，校验 sha256 与大小后原子替换；
 替换后会再校验一次，不符就用备份覆盖回去。恢复按时间从新到旧扫描备份，选第一份 sha256
-等于原版的；当前是 `unknown` 但存在有效原版备份时，可以用「强制恢复」
+等于原版的；当前是 `unknown` 但存在有效原版备份、且模块版本匹配时，才可以用「强制恢复」
 （命令行 `restore --force`）。
 
 **面板显示**：Android SDK 不是 37、或没有安装 zygisk 模块（`no-target`）时，整张补丁卡片隐藏；
-SDK 37 但模块版本/哈希不在支持范围时显示卡片但按钮置灰；当前不是原版且存在有效原版备份时，
-可用「强制恢复」；只有版本匹配且状态为 `original` 才启用「应用补丁」，`patched` 才启用
+SDK 37 但模块版本/哈希不在支持范围时显示卡片但按钮置灰；只有模块版本匹配且状态为 `unknown`
+时才显示「强制恢复」；只有版本匹配且状态为 `original` 才启用「应用补丁」，`patched` 才启用
 「恢复原版」。首次提示也只在 SDK 37 且版本匹配时出现。
 
 **在 WebUI 里操作**：
@@ -174,12 +187,19 @@ SDK 37 但模块版本/哈希不在支持范围时显示卡片但按钮置灰；
 1. 首次打开面板、SDK 为 37 且状态为 `original`（版本匹配）时，顶部会提示
    「Android 17 应用列表可能为空」。点「应用补丁」先进入确认（按钮需再点一次「确认应用」），
    确认框会显示目标模块版本和「仅适用于 v29.0.1（main.dex）」；点「暂不」不会改动任何文件。
-   首次提示后会写 `/data/adb/si-mount-fix/.patch_prompted`，之后不再自动弹，手动入口在
-   「Android 17 应用列表修复（main.dex）」卡片里。
+   首次提示标记按目标文件+版本区分（`/data/adb/si-mount-fix/.patch_prompted.main.dex.v29.0.1`），
+   点「暂不」或应用成功后才写，同一目标只提示一次；失败/超时不会写标记，下次打开仍会重新 check。
+   手动入口在「Android 17 应用列表修复（main.dex）」卡片里。
 2. 应用、恢复、强制恢复都是两步确认；确认后 10 秒内不操作会自动取消。
-3. 应用/恢复只做文件操作，结果直接返回；成功提示“已应用，重启手机生效”或
-   “已恢复原版，重启手机生效”，不再全量扫描 `/proc`、不重启 SI server，面板不会卡住。
-4. 恢复：在卡片里点「恢复原版」，或运行 `restore`。
+3. 长动作在后台执行：体检/修复、重启守护、保存配置、apply/restore 都不会阻塞界面，
+   apply/restore 成功后只做一次 `stat + sha256` 复核，不再跑第二次全量 `check`。
+   成功提示“已应用，重启手机生效”或“已恢复原版，重启手机生效”；超时/读不到退出码时
+   显示“结果未知，请刷新检查”，不会直接判失败或成功。动作失败/超时不会写状态缓存或提示
+   标记，下次打开会重新 `check`；`check` 进行中应用/恢复/强制恢复按钮置灰并提示“检查中”。
+4. 补丁状态有 30 秒缓存：30 秒内直接复用；过期后先比目标 mtime+size+sha，全部未变才复用，
+   否则重跑 `check`。刷新不会每次都跑 `check`；需要强制重查时点卡片里的「检查补丁」；
+   卡片会显示“检查 42ms / 检查超时（8 秒）”等耗时反馈。
+5. 恢复：在卡片里点「恢复原版」，或运行 `restore`。
 
 **命令行**（root）：
 
@@ -193,19 +213,22 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 
 `check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_VERSION_CODE` / `SI_TARGET_MODULE` /
 `SI_TARGET_VERSION` / `SI_TARGET_VERSION_CODE` / `SI_TARGET_FILE` / `SI_MATCH` / `DEX` /
-`SIZE` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` / `PATCH_SIZE` / `PATCH_SHA` /
-`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` 十九个 `KEY=VALUE`。任何状态都返回 0；
+`SIZE` / `MTIME` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` / `PATCH_SIZE` / `PATCH_SHA` /
+`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` 二十个 `KEY=VALUE`。任何状态都返回 0；
 `apply`/`restore` 失败时非 0 退出，并在 stderr 说明原因。
 
 **注意**：
 
 - 不会自动应用：必须由用户点按钮并二次确认，或手动执行 `apply`。
 - 没有可用原版备份时，`restore` 无法回退；`check` 的 `BACKUP_OK` 会显示 0。
+- 模块版本不匹配时不允许 `apply`/`restore`/`restore --force`，避免把别的模块版本覆盖坏。
 - 官方更新 zygisk-storage-isolation 可能覆盖 `main.dex`，补丁会失效；更新后重新 `check`，
   只有模块版本仍是 v29.0.1 且状态为 `original` 时才重新应用。版本变化后会显示 `unknown`，
   不要强行用旧版本原版备份恢复。
-- 卸载模块时会先尝试恢复原版 `main.dex`；恢复成功才删除 `/data/adb/si-mount-fix/`。
-  恢复失败时会保留该目录（含 `patch-backup`）并打印路径，不会静默删掉备份。
+- **卸载不会自动恢复 `main.dex`**：只要 `/data/adb/si-mount-fix/patch-backup/main.dex.*`
+  存在，卸载时就只保留该目录并打印路径，其余运行期数据照旧删除；保留不依赖 `BACKUP_OK`
+  或 `sha256sum` 是否可用（保守处理）。需要恢复请在卸载前运行 `restore --force`
+  （模块版本匹配时）。
 - 只支持 SDK 37；其它 Android 版本 `check` 显示 `unsupported`，`apply` 直接拒绝。
 
 ## 配置
