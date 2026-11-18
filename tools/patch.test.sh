@@ -71,8 +71,8 @@ grep -q '^LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff
   && ok "脚本识别社区旧补丁 sha" || bad "脚本缺少 LEGACY_PATCH_SHA"
 grep -q '^LEGACY_PATCH_SIZE=99104$' "$PATCH" \
   && ok "脚本识别社区旧补丁大小" || bad "脚本缺少 LEGACY_PATCH_SIZE"
-grep -q '^version=v1.5.6$' module.prop && grep -q '^versionCode=156$' module.prop \
-  && ok "module.prop 版本 v1.5.6 / 156" || bad "module.prop 版本不对"
+grep -q '^version=v1.5.7$' module.prop && grep -q '^versionCode=157$' module.prop \
+  && ok "module.prop 版本 v1.5.7 / 157" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -81,8 +81,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.6"' update.json && grep -q '"versionCode": 156' update.json \
-  && ok "update.json 指向 v1.5.6/156" || bad "update.json 版本不对"
+grep -q '"version": "v1.5.7"' update.json && grep -q '"versionCode": 157' update.json \
+  && ok "update.json 指向 v1.5.7/157" || bad "update.json 版本不对"
 
 # check 不能有进程扫描或 server 重启代码。
 if grep -q '/proc/' "$PATCH"; then bad "si-patch.sh 仍引用 /proc（check 不应扫进程）"; else
@@ -937,7 +937,7 @@ grep -q 'PROMPT_TAG' scripts/si-patch.sh && grep -q '\.patch_prompted\.\$PROMPT_
   && ok "si-patch.sh 提示标记按目标/版本区分" || bad "si-patch.sh 提示标记没有按目标/版本区分"
 grep -q 'Android 17 应用列表修复（main.dex）' webroot/index.html \
   && ok "补丁卡片标题含 main.dex" || bad "补丁卡片标题没含 main.dex"
-for _id in patchCard patchHint patchActions patchCheckRow patchTiming btnPatchCheck \
+for _id in patchCard patchHint patchActions patchTiming btnPatchCheck \
            btnPatchApply btnPatchRestore btnPatchForce \
            patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult; do
   grep -q "id=\"$_id\"" webroot/index.html || bad "WebUI 缺少元素 $_id"
@@ -1007,15 +1007,16 @@ grep -q "applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply
   && ok "版本/哈希不匹配时 apply 置灰且独立 busy" || bad "apply 置灰/独立 busy 不对"
 grep -q "restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchRestore')" webroot/index.html \
   && ok "restore 置灰条件与独立 busy" || bad "restore 置灰条件不对"
-grep -q "forceBtn.disabled = !canAct || !p || !p.match || actionBusy('patchForce')" webroot/index.html \
-  && ok "强制恢复置灰条件与独立 busy" || bad "强制恢复置灰条件不对"
-grep -q "forceOk = !!(p && p.match && p.backupOk && st === 'unknown')" webroot/index.html \
-  && ok "U2：版本不匹配时隐藏强制恢复" || bad "U2 强制恢复仍不检查版本"
+grep -q "forceBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchForce')" webroot/index.html \
+  && ok "强制恢复置灰条件（match && backupOk）" || bad "强制恢复置灰条件不对"
+grep -q "forceBtn.hidden = !(st === 'unknown')" webroot/index.html \
+  && ok "unknown 的强制恢复始终占网格单元（不隐藏）" || bad "强制恢复隐藏条件不对"
 grep -q "(action === 'force' && p.match && p.backupOk && p.state === 'unknown')" webroot/index.html \
   && ok "U2：arm 强制恢复也检查版本" || bad "U2 arm 强制恢复缺版本门禁"
 grep -q "applyBtn.hidden = !(st === 'original' || st === 'patched-legacy')" webroot/index.html \
   && grep -q "restoreBtn.hidden = !(st === 'patched' || st === 'patched-legacy')" webroot/index.html \
-  && grep -q "forceBtn.hidden = !forceOk" webroot/index.html \
+  && grep -q "forceBtn.hidden = !(st === 'unknown')" webroot/index.html \
+  && grep -q "\$('patchActions').hidden = false" webroot/index.html \
   && ok "original/legacy 可升级 / patched+legacy 可恢复 / unknown 强制恢复" \
   || bad "补丁按钮显示条件不对"
 grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
@@ -1090,29 +1091,42 @@ grep -q 'p.legacy = toInt(p.LEGACY, 0) === 1' webroot/index.html \
 grep -q 'badge = .未知版本.' webroot/index.html \
   && grep -q 'badge = .版本不匹配.' webroot/index.html \
   && ok "未知版本/版本不匹配 badge 文案" || bad "badge 文案不对"
-grep -q 'btn primary act-btn' webroot/index.html \
-  && grep -q 'btn ghost act-btn' webroot/index.html \
-  && grep -q 'btn danger act-btn' webroot/index.html \
-  && grep -q 'id="btnPatchCheck" disabled' webroot/index.html \
-  && grep -q 'patch-actions' webroot/index.html \
-  && grep -q 'patch-check-row' webroot/index.html \
-  && ok "动作按钮统一 act-btn/patch-actions" || bad "动作按钮 class 不统一"
-if grep -q 'btn tiny ghost" id="btnPatchCheck"' webroot/index.html; then
-  bad "检查补丁仍是 tiny/无统一 class"
+grep -Fq 'class="btn-grid" id="patchActions"' webroot/index.html \
+  && grep -Fq '<div class="btn-grid">' webroot/index.html \
+  && grep -Fq '.btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}' webroot/index.html \
+  && ok "补丁动作区复用操作卡片的 btn-grid 2 列网格" || bad "补丁网格没有复用 btn-grid"
+for _id in btnPatchApply btnPatchRestore btnPatchForce btnPatchCheck; do
+  grep -q "class=\"[^\"]*act-btn[^\"]*\" id=\"$_id\"" webroot/index.html \
+    || bad "补丁按钮缺少 act-btn：$_id"
+done
+_pa_block=$(sed -n '/<div class="btn-grid" id="patchActions"/,/^  <\/div>/p' webroot/index.html)
+for _id in btnPatchApply btnPatchRestore btnPatchForce btnPatchCheck; do
+  case "$_pa_block" in
+    *"id=\"$_id\""*) ;;
+    *) bad "补丁网格缺少按钮：$_id" ;;
+  esac
+done
+case "$_pa_block" in
+  *patchTiming*) bad "检查耗时仍在按钮网格内" ;;
+  *) ok "检查耗时已移出按钮网格" ;;
+esac
+_patch_html=$(sed -n '/<section class="card" id="patchCard"/,/^<\/section>/p' webroot/index.html)
+if printf '%s\n' "$_patch_html" | grep -Eq 'style="[^"]*(width|flex|height|padding|margin|font-size)'; then
+  bad "补丁卡片仍有内联尺寸样式"
 else
-  ok "检查补丁不再 tiny"
-fi
-if grep -q 'style="flex:1"' webroot/index.html || grep -q 'style="margin-top:10px"' webroot/index.html; then
-  bad "动作按钮仍有内联大小样式"
-else
-  ok "动作按钮无内联大小样式"
+  ok "补丁按钮无内联尺寸样式"
 fi
 grep -q '.btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}' webroot/index.html \
-  && grep -q '.patch-actions{display:grid' webroot/index.html \
-  && grep -q '.patch-check-row .btn{flex:0 0 auto;width:auto}' webroot/index.html \
+  && grep -q '#patchActions{margin-top:14px}' webroot/index.html \
+  && grep -q '#patchTiming{display:block;margin-top:8px' webroot/index.html \
   && grep -q '#patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap' webroot/index.html \
   && grep -q '#patchCard .card-head{.*flex-wrap:wrap' webroot/index.html \
-  && ok "按钮同尺寸/网格对齐/badge 右对齐 CSS" || bad "按钮/badge CSS 未归一化"
+  && ok "按钮同尺寸/检查耗时独立行/badge 右对齐 CSS" || bad "按钮/badge CSS 未归一化"
+if grep -q '\.patch-actions{\|\.patch-check-row{' webroot/index.html; then
+  bad "仍存在单独的 patch-actions/patch-check-row 网格规则"
+else
+  ok "补丁网格没有单独的一套 CSS"
+fi
 grep -q '是未知版本' webroot/index.html && ok "WebUI unknown 提示改为未知版本" \
   || bad "WebUI 缺少未知版本提示"
 grep -q '版本不匹配时不允许强制恢复' webroot/index.html \
@@ -1170,7 +1184,8 @@ grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
   || bad "构建脚本没有校验补丁大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.6' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.7' CHANGELOG.md \
+  && ! grep -q '^## 1.5.6' CHANGELOG.md \
   && ! grep -q '^## 1.5.5' CHANGELOG.md \
   && ! grep -q '^## 1.5.4' CHANGELOG.md \
   && ! grep -q '^## 1.5.3' CHANGELOG.md \
@@ -1178,13 +1193,14 @@ grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh
   && ! grep -q '^## 1.5.1' CHANGELOG.md \
   && ! grep -q '^## 1.5.0' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.6" || bad "CHANGELOG 不是只含 1.5.6"
+  && ok "CHANGELOG 只列出 1.5.7" || bad "CHANGELOG 不是只含 1.5.7"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md \
-  && ok "README 写自建 main.dex 大小/完整哈希" || bad "README 哈希/大小不对"
+  && grep -q 'version=v1.5.7' README.md && grep -q 'versionCode=157' README.md \
+  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.7 版本" || bad "README 哈希/大小/版本不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
   && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7' CHANGELOG.md README.md \
