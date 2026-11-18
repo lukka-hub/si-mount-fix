@@ -3,7 +3,9 @@
 #   SDK≠37、无 SI、原版→apply（备份存在）、已 patched no-op、unknown 拒绝、
 #   asset 缺失/哈希不对、备份创建哈希、复制失败回滚、mv 后校验与真实回滚、
 #   chown、umask 022 下 600、restore 从新到旧选有效备份、坏备份/全坏、unknown 强制恢复、
-#   restore 当前副本回滚、无备份/非 patched、持锁后重查、并发锁、卸载前恢复/失败保留。
+#   restore 当前副本回滚、无备份/非 patched、持锁后重查、并发锁、卸载前恢复/失败保留、
+#   SI server 重启的精确匹配（.bak/daemon 不杀、(deleted) 后缀、符号链接、连字符 cmdline、
+#   非 root 新进程、TERM 后 KILL 前复核、skip 2/3）。
 #   fake SI 目录 + SI_TEST 钩子；补丁资产用仓库里的真实 dex。
 #
 # 用法：sh tools/patch.test.sh
@@ -73,6 +75,7 @@ PRELOCK_MARK=
 CORRUPT_MARK=
 PROC_OVERRIDE=$T/proc-empty
 KILL_OVERRIDE=
+BIN_OVERRIDE=
 RESTART_WAIT=
 TERM_WAIT=0
 TEST_RESTART=
@@ -81,7 +84,7 @@ ERR=
 RC=0
 
 run_patch() {
-  SI_TEST=1 SI_PATCH_DATA=$DATA SI_PATCH_BIN=$BIN SI_PATCH_ASSET=$ASSET_OVERRIDE \
+  SI_TEST=1 SI_PATCH_DATA=$DATA SI_PATCH_BIN=${BIN_OVERRIDE:-$BIN} SI_PATCH_ASSET=$ASSET_OVERRIDE \
     SI_PATCH_SDK=$SDK SI_PATCH_VERSION=$SI_VER_OK \
     SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_CP=$CP_OVERRIDE \
     SI_PATCH_CHOWN=$CHOWN_OVERRIDE SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP \
@@ -142,6 +145,7 @@ reset_hooks() {
   CORRUPT_MARK=
   PROC_OVERRIDE=$T/proc-empty
   KILL_OVERRIDE=
+  BIN_OVERRIDE=
   RESTART_WAIT=
   TERM_WAIT=0
   TEST_RESTART=
@@ -247,6 +251,8 @@ has "$OUT" '版本不匹配' && ok "status 显示版本不匹配" || bad "status
 run_capture apply
 [ "$RC" != 0 ] && ok "unknown apply 拒绝" || bad "unknown apply 没有拒绝"
 has "$ERR" '已拒绝操作' && ok "unknown 拒绝原因明确" || bad "unknown 拒绝原因不清：$ERR"
+has "$ERR" 'restore --force' && ok "unknown 提示先 restore --force" \
+  || bad "unknown 没有提示 restore --force：$ERR"
 [ "$(target_sha)" = "$reset_sha" ] && ok "unknown 没动目标" || bad "unknown 改动了目标"
 run_capture restore
 [ "$RC" != 0 ] && ok "unknown 且无备份 restore 拒绝" || bad "unknown restore 没有拒绝"
@@ -613,10 +619,25 @@ done
 [ -n "$pid" ] || exit 1
 case " $* " in
   *" -TERM "*)
+    # 测试 TERM 后地图变化：不动进程，只把 maps 换成 .bak，验证 KILL 前复核。
+    if [ -e "$SI_PATCH_PROC/.term_drop" ]; then
+      printf '%s\n' "$SI_PATCH_TEST_FAKE_DEX.bak" > "$SI_PATCH_PROC/$pid/maps"
+      exit 0
+    fi
     rm -rf "$SI_PATCH_PROC/$pid"
     if [ "$SI_PATCH_TEST_RESTART" = 1 ]; then
       mkdir -p "$SI_PATCH_PROC/101"
       printf '%s\n' "$SI_PATCH_TEST_FAKE_DEX" > "$SI_PATCH_PROC/101/maps"
+      if [ -e "$SI_PATCH_PROC/.new_other" ]; then
+        # 模拟 dex 被另一个普通应用映射：不是 SI server，不能算重启成功。
+        printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$SI_PATCH_PROC/101/status"
+        printf 'com.example.other\000--scan\000' > "$SI_PATCH_PROC/101/cmdline"
+      elif [ -e "$SI_PATCH_PROC/.new_nonroot" ]; then
+        # 模拟新 server 不是 root、cmdline 也没有特征：只按 maps 仍应认出来。
+        printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$SI_PATCH_PROC/101/status"
+      else
+        printf 'Uid:\t0\t0\t0\t0\n' > "$SI_PATCH_PROC/101/status"
+      fi
     fi ;;
   *" -KILL "*)
     rm -rf "$SI_PATCH_PROC/$pid" ;;
@@ -631,7 +652,9 @@ clean_data
 reset_original
 rm -rf "$T/proc-found" "$T/fakebin/kill.log"
 mkdir -p "$T/proc-found/100"
-printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-found/100/maps"
+# apply 已经 mv 掉旧 inode，真机上这条 maps 会带 " (deleted)"；精确匹配必须容忍。
+printf '%s\n' "$BIN/server-v355.dex (deleted)" > "$T/proc-found/100/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-found/100/status"
 PROC_OVERRIDE=$T/proc-found
 KILL_OVERRIDE=$T/fakebin/kill
 RESTART_WAIT=2
@@ -649,6 +672,9 @@ grep -q -- '-TERM 100' "$T/fakebin/kill.log" 2>/dev/null \
   && ok "只对映射 dex 的 PID 发 TERM" || bad "没有对映射 dex 的 PID 发 TERM"
 grep -q -- '-KILL' "$T/fakebin/kill.log" 2>/dev/null \
   && bad "TERM 后进程已退出仍发了 KILL" || ok "TERM 后没有多余 KILL"
+run_capture check
+[ "$(kv SERVER_PIDS)" = 1 ] && ok "check 输出 SERVER_PIDS=1（新 server 已起来）" \
+  || bad "check 的 SERVER_PIDS 不对：$(kv SERVER_PIDS)"
 
 # 20b) 没有运行中的 server → skip，不影响 apply
 reset_hooks
@@ -661,6 +687,9 @@ has "$OUT" '没有运行中的 SI server' && ok "没有 server 时提示打开 S
   || bad "没有 server 时提示不对：$OUT"
 grep -q 'SERVER-RESTART skip' "$DATA/patch.log" 2>/dev/null \
   && ok "没有 server 时写入 skip 日志" || bad "没有 server 时没有 skip 日志"
+run_capture check
+[ "$(kv SERVER_PIDS)" = 0 ] && ok "没有 server 时 SERVER_PIDS=0" \
+  || bad "没有 server 时 SERVER_PIDS 不为 0：$(kv SERVER_PIDS)"
 
 # 20c) 杀掉旧 server 但没有新进程 → fail，不回滚 dex
 reset_hooks
@@ -669,6 +698,7 @@ reset_original
 rm -rf "$T/proc-fail" "$T/fakebin/kill.log"
 mkdir -p "$T/proc-fail/100"
 printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-fail/100/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-fail/100/status"
 PROC_OVERRIDE=$T/proc-fail
 KILL_OVERRIDE=$T/fakebin/kill
 RESTART_WAIT=1
@@ -682,6 +712,165 @@ has "$OUT" 'SI server 自动重启失败' && ok "server 重启失败有提示" \
   || bad "server 重启失败把 dex 回滚了"
 grep -q 'SERVER-RESTART fail' "$DATA/patch.log" 2>/dev/null \
   && ok "server 重启失败写入 fail 日志" || bad "server 重启失败没有 fail 日志"
+
+# 20d) .bak 路径也含 $DEX 子串：精确匹配不能误杀
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-bak" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-bak/150"
+printf '%s\n' "$BIN/server-v355.dex.bak" > "$T/proc-bak/150/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-bak/150/status"
+printf 'backup\n' > "$BIN/server-v355.dex.bak"
+PROC_OVERRIDE=$T/proc-bak
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=1
+run_capture apply
+[ "$RC" = 0 ] && ok ".bak 场景 apply 成功" || bad ".bak 场景 apply 失败：$ERR"
+has "$OUT" '没有运行中的 SI server' && ok ".bak 不当作 SI server" \
+  || bad ".bak 被误判：$OUT"
+grep -q -- '-TERM 150' "$T/fakebin/kill.log" 2>/dev/null \
+  && bad ".bak 进程被 TERM" || ok ".bak 进程没有被杀"
+[ -f "$BIN/server-v355.dex.bak" ] && ok ".bak 文件原样保留" || bad ".bak 文件被动了"
+rm -f "$BIN/server-v355.dex.bak"
+
+# 20e) 模块 daemon 即使映射同名 dex、uid=0，也不能杀
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-daemon" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-daemon/151"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-daemon/151/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-daemon/151/status"
+printf '/system/bin/sh\000/data/adb/si-mount-fix/scripts/si-mount-eventd.sh\000' \
+  > "$T/proc-daemon/151/cmdline"
+PROC_OVERRIDE=$T/proc-daemon
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=1
+run_capture apply
+[ "$RC" = 0 ] && ok "daemon 场景 apply 成功" || bad "daemon 场景 apply 失败：$ERR"
+has "$OUT" '身份不符' && ok "身份拒绝走 skip=3 提示" \
+  || bad "daemon 没有按身份拒绝处理：$OUT"
+grep -q 'SERVER-RESTART refuse pid=151' "$DATA/patch.log" 2>/dev/null \
+  && ok "身份拒绝记录 PID" || bad "身份拒绝没有记录 PID"
+grep -q -- '-TERM 151' "$T/fakebin/kill.log" 2>/dev/null \
+  && bad "模块 daemon 被 TERM" || ok "模块 daemon 没有被杀"
+
+# 20f) TERM 后进程不再映射 $DEX：KILL 前复核，不补刀
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-termdrop" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-termdrop/160"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-termdrop/160/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-termdrop/160/status"
+: > "$T/proc-termdrop/.term_drop"
+PROC_OVERRIDE=$T/proc-termdrop
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=1
+run_capture apply
+grep -q -- '-TERM 160' "$T/fakebin/kill.log" 2>/dev/null \
+  && ok "TERM 先发给映射目标 dex 的 PID" || bad "没有发 TERM"
+grep -q -- '-KILL 160' "$T/fakebin/kill.log" 2>/dev/null \
+  && bad "TERM 后已不映射 $DEX 仍被 KILL" || ok "KILL 前复核生效（未补刀）"
+grep -q 'server-v355.dex.bak' "$T/proc-termdrop/160/maps" 2>/dev/null \
+  && ok "复核看到进程 maps 已换掉" \
+  || bad "测试桩没有把 maps 换掉：$(cat "$T/proc-termdrop/160/maps" 2>/dev/null)"
+has "$OUT" 'SI server 自动重启失败' && ok "没有新 server 时提示重开 SI" \
+  || bad "没有新 server 时提示不对：$OUT"
+
+# 20g) 非 root server，cmdline 只有 storage-isolation（连字符）：身份正例
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-dash" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-dash/152"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-dash/152/maps"
+printf 'Uid:\t10123\t10123\t10123\t10123\n' > "$T/proc-dash/152/status"
+printf '/system/bin/app_process\000/data/adb/storage-isolation/bin/server-v355.dex\000' \
+  > "$T/proc-dash/152/cmdline"
+PROC_OVERRIDE=$T/proc-dash
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=2
+TERM_WAIT=0
+TEST_RESTART=1
+run_capture apply
+[ "$RC" = 0 ] && ok "连字符 cmdline 的非 root server 场景 apply 成功" \
+  || bad "连字符 cmdline 场景 apply 失败：$ERR"
+grep -q -- '-TERM 152' "$T/fakebin/kill.log" 2>/dev/null \
+  && ok "非 root + storage-isolation 路径被认作 SI server" \
+  || bad "连字符 cmdline 的 server 没有被杀"
+grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
+  && ok "连字符场景重启成功" || bad "连字符场景没有重启 ok 日志"
+
+# 20h) BIN 是符号链接：maps 里的真实路径与 $DEX 归一化后相等
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-link" "$T/fakebin/kill.log" "$T/linkbin"
+mkdir -p "$T/proc-link/155"
+ln -s "$BIN" "$T/linkbin"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-link/155/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-link/155/status"
+PROC_OVERRIDE=$T/proc-link
+KILL_OVERRIDE=$T/fakebin/kill
+BIN_OVERRIDE=$T/linkbin
+RESTART_WAIT=2
+TERM_WAIT=0
+TEST_RESTART=1
+run_capture apply
+[ "$RC" = 0 ] && ok "BIN 符号链接场景 apply 成功" || bad "符号链接场景 apply 失败：$ERR"
+grep -q -- '-TERM 155' "$T/fakebin/kill.log" 2>/dev/null \
+  && ok "符号链接 BIN 仍能按 readlink -f 命中旧 server" \
+  || bad "符号链接 BIN 没有命中旧 server"
+grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
+  && ok "符号链接场景重启成功" || bad "符号链接场景没有重启 ok 日志"
+BIN_OVERRIDE=
+rm -rf "$T/linkbin"
+
+# 20i) 新 server 不是 root、cmdline 无特征：_new 只按 maps 仍要认出来
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-newuser" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-newuser/156"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-newuser/156/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-newuser/156/status"
+: > "$T/proc-newuser/.new_nonroot"
+PROC_OVERRIDE=$T/proc-newuser
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=2
+TERM_WAIT=0
+TEST_RESTART=1
+run_capture apply
+grep -q 'SERVER-RESTART ok pid=101' "$DATA/patch.log" 2>/dev/null \
+  && ok "_new 只按 maps 认出非 root 新 server" \
+  || bad "非 root 新 server 没有被认出来"
+has "$OUT" 'SI server 已自动重启' && ok "非 root 新 server 仍提示已重启" \
+  || bad "非 root 新 server 提示不对：$OUT"
+
+# 20j) 其他应用映射 dex（uid 非 0、cmdline 带 com.）：不能算新 server
+reset_hooks
+clean_data
+reset_original
+rm -rf "$T/proc-other" "$T/fakebin/kill.log"
+mkdir -p "$T/proc-other/157"
+printf '%s\n' "$BIN/server-v355.dex" > "$T/proc-other/157/maps"
+printf 'Uid:\t0\t0\t0\t0\n' > "$T/proc-other/157/status"
+: > "$T/proc-other/.new_other"
+PROC_OVERRIDE=$T/proc-other
+KILL_OVERRIDE=$T/fakebin/kill
+RESTART_WAIT=1
+TERM_WAIT=0
+TEST_RESTART=1
+run_capture apply
+has "$OUT" 'SI server 自动重启失败' && ok "其他应用映射 dex 不算重启成功" \
+  || bad "其他应用映射 dex 被当成新 server：$OUT"
+grep -q 'SERVER-RESTART fail' "$DATA/patch.log" 2>/dev/null \
+  && ok "其他应用场景写入 fail 日志" || bad "其他应用场景没有 fail 日志"
+run_capture check
+[ "$(kv SERVER_PIDS)" = 0 ] && ok "其他应用不计入 SERVER_PIDS" \
+  || bad "其他应用被计入 SERVER_PIDS：$(kv SERVER_PIDS)"
 
 # ---------- 21) WebUI / action / build 接线（静态） ----------
 
@@ -717,6 +906,24 @@ grep -q 'patchError' webroot/index.html && ok "WebUI 有补丁错误状态" \
 _run_refs=$(grep -c 'runPatchAction' webroot/index.html)
 [ "$_run_refs" = 2 ] && ok "runPatchAction 只在确认后调用（2 处）" \
   || bad "runPatchAction 调用点不对：$_run_refs"
+grep -q 'errnoKnown: false' webroot/index.html \
+  && grep -q 'res.errnoKnown !== false' webroot/index.html \
+  && ok "sync 桥接不伪造 errno=0" || bad "sync 桥接仍把 errno 固定为 0"
+grep -q 'patchActionVerdict' webroot/index.html \
+  && grep -q "var expect = isApply ? 'patched' : 'original'" webroot/index.html \
+  && ok "动作后用 check 的 STATE 判成败" || bad "动作后没有按 check 复核"
+grep -q '补丁应用结果未知' webroot/index.html && grep -q '恢复结果未知' webroot/index.html \
+  && ok "读不到 STATE 时显示结果未知" || bad "没有结果未知文案"
+grep -q "showPatchResult(title, text, 'good')" webroot/index.html \
+  && bad "仍有按 errno 直接报成功的旧路径" || ok "没有按 errno 直接报成功的旧路径"
+grep -q "return verifyPatchAction(action, parts.join" webroot/index.html \
+  && ok "命令返回后总是先跑 check（含 errno≠0）" || bad "errno≠0 时仍可能直接判红"
+grep -q 'SERVER_PIDS' webroot/index.html && grep -q 'p.serverPids = toInt(p.SERVER_PIDS, 0)' webroot/index.html \
+  && ok "WebUI 读取 SERVER_PIDS" || bad "WebUI 没读 SERVER_PIDS"
+grep -q "if (isApply && pids <= 0)" webroot/index.html \
+  && ok "apply 要求 SERVER_PIDS>0 才报成功" || bad "apply 没有 SERVER_PIDS 门槛"
+grep -q "var styles = \['cb3', 'cb2', 'sync'\]" webroot/index.html \
+  && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
 grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
   || bad "WebUI 缺少已应用文案"
 grep -q '当前 SI 版本/哈希不在支持范围，未做任何修改' webroot/index.html \
@@ -749,16 +956,66 @@ grep -q '7a941f35' tools/build.sh && ok "构建脚本校验补丁 sha" \
   || bad "构建脚本没有校验补丁 sha"
 grep -q 'siPatchVersion' tools/build.sh && ok "构建脚本校验适用版本字段" \
   || bad "构建脚本没有校验适用版本字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.2' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.3' CHANGELOG.md \
   && ! grep -q '^## 1.5.0' CHANGELOG.md \
   && ! grep -q '^## 1.5.1' CHANGELOG.md \
-  && ok "CHANGELOG 只列出 1.5.2" || bad "CHANGELOG 不是只含 1.5.2"
+  && ! grep -q '^## 1.5.2' CHANGELOG.md \
+  && ok "CHANGELOG 只列出 1.5.3" || bad "CHANGELOG 不是只含 1.5.3"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '反编译改动' README.md && ok "README 有反编译改动一节" \
   || bad "README 缺少反编译改动"
+
+if grep -q "SI server ' + toInt(p.serverPids, 0)" webroot/index.html; then
+  ok "serverPids 在补丁卡片里有展示（不是只赋值）"
+else
+  bad "p.serverPids 赋值后没有使用"
+fi
+if grep -q '^[[:space:]]*\.result\.info' webroot/index.html; then
+  ok "info 结果有独立样式"
+else
+  bad "缺少 .result.info 样式"
+fi
+if grep -q "补丁操作异常" webroot/index.html; then
+  ok "runPatchAction 有异常兜底（复位 patchBusy）"
+else
+  bad "runPatchAction 缺异常兜底"
+fi
+
+# WebUI 动作判定：抽出 PATCH-VERDICT 之间的纯函数，用 node 直接跑真实逻辑。
+if command -v node >/dev/null 2>&1; then
+  sed -n '/PATCH-VERDICT-START/,/PATCH-VERDICT-END/p' webroot/index.html \
+    | sed '/PATCH-VERDICT-START/d;/PATCH-VERDICT-END/d' > "$T/verdict.js"
+  cat >> "$T/verdict.js" <<'JS'
+function t(name, got, tone, titlePart) {
+  var ok = got && got.tone === tone && (!titlePart || got.title.indexOf(titlePart) >= 0);
+  console.log((ok ? '  ok   ' : '  FAIL ') + name + (ok ? '' : ' -> ' + JSON.stringify(got)));
+  if (!ok) process.exitCode = 1;
+}
+t('重启失败→warn', patchActionVerdict('apply', 'patched', '1',
+  '已应用补丁：x\nSI server 自动重启失败，请重开 SI。', true, 0), 'warn', '未自动重启');
+t('已 patched 再 apply→info', patchActionVerdict('apply', 'patched', '1',
+  'SI 补丁已应用，无需重复操作（恢复原版请用 restore）。', true, 0), 'info', '无需重复操作');
+t('errno≠0 但状态正确→成功', patchActionVerdict('apply', 'patched', '2',
+  '已应用补丁：x\n已自动重启', true, 1), 'good', '补丁已应用');
+t('apply 但 SERVER_PIDS=0→warn', patchActionVerdict('apply', 'patched', '0',
+  '已应用补丁：x', true, 0), 'warn', '没检测到');
+t('身份拒绝→warn', patchActionVerdict('apply', 'patched', '1',
+  '已应用补丁：x\n找到映射该 dex 的进程但身份不符，已跳过', true, 0), 'warn', '未自动重启');
+t('状态不符→bad', patchActionVerdict('apply', 'original', '1', 'x', true, 0), 'bad', '失败');
+t('restore 0 server→good', patchActionVerdict('restore', 'original', '0',
+  '已恢复原版：x', true, 0), 'good', '已恢复原版');
+JS
+  if node "$T/verdict.js"; then
+    ok "WebUI 动作判定 7 个场景通过（node 实跑生产函数）"
+  else
+    bad "WebUI 动作判定用例失败"
+  fi
+else
+  echo "  note 未安装 node，跳过 WebUI 动作判定用例"
+fi
 
 echo
 [ "$fail" = 0 ] && { echo "patch.test: PASS"; exit 0; }

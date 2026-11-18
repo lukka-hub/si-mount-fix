@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.2）
+# 演化过程（1.0 → 1.5.3）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -222,6 +222,38 @@
 - **测试**：新增 fake `/proc` + stub kill 的 server 重启成功/跳过/失败三条路径；补 SDK 14/15
   隐藏、版本不匹配置灰、unknown + 有效备份只留强制恢复的静态断言。
 - **版本**：`v1.5.2` / `versionCode 152`；`CHANGELOG.md` 只展示 1.5.2。
+
+## 1.5.3 失败可见性与重启加固
+
+- **WebUI 补丁结果**：sync 桥接只回字符串、拿不到退出码，旧代码把它当成 errno=0，
+  apply/restore 失败也会显示绿色“已应用/已恢复”。现在字符串结果标记为 errno 未知，
+  动作结束后重新执行 `check`（已知 errno≠0 也先复核）：`STATE` 等于预期
+  （apply→patched、restore→original）才继续判定；apply 还要求 `SERVER_PIDS>0`。
+  输出含“自动重启失败/身份不符”降为警告，“无需重复操作”只作信息提示，读不到 STATE
+  报“结果未知”；cb3/cb2 优先的探测顺序不变。
+- **SERVER_PIDS**：`check` 输出映射该 dex 且排除明确其他应用后的进程数，面板据此避免“dex 写了但 server 没起来”
+  也报成功。
+- **跳过标签**：RESULT 会输出 `target_missing`（锚点/目标目录缺失）与
+  `pid_changed`（扫描后进程变化），action 与 WebUI 补上中文标签；测试改为从 fix/awk
+  自动抽取生产端 token，与两端标签双向比对，新增 token 漏标签会直接变红。
+- **重启 SI server**：maps 路径与 `$DEX` 都用 `readlink -f` 归一化后比较，兼容符号链接、
+  `/./` 和 ` (deleted)`，不再因子串命中误杀 `.bak/.orig`；身份正例放宽为 uid=0 或
+  cmdline 含 `storage_isolation` / `storage-isolation`；没有 server 返回 2、身份不符返回 3
+  并记录 PID；新进程只按 maps 识别，兼容非 root/无特征 cmdline，但排除 cmdline 明确带
+  `com.`/`/data/app/` 等路径的其他应用；TERM 后、KILL 前复核，等待改为 0.1 秒计数、约 5 秒。
+- **多 PID churn**：同包多个 PID 时 shell 会即时累加 churn，旧代码随后被 awk 的 Z 行
+  扫描计数覆盖成 0；改为累加，`.churn` 行的写入/清理行为不变。第二个 PID 由失败退避
+  挡住，不重复 bind。
+- **@sandbox 撞键**：沙箱重建失败的退避键从 `@sandbox` 改为不可作目录名的 `/@sandbox`，
+  合法的用户目录 `@sandbox` 恢复可用；配置缓存头从 `#SI2` 升到 `#SI3` 并带解析器+修复脚本指纹，
+  旧缓存（可能仍写着旧目录列表）自动失效，避免升级后继续 bind 旧目录。
+- **文档**：明确 1.5.0 旧补丁用户先 `restore --force` 再 `apply`，apply 遇到 unknown
+  的报错也带同样提示。
+- **测试**：补 `.bak` 不杀、模块 daemon 不杀、TERM 后 maps 变化不 KILL、` (deleted)`
+  仍重启、符号链接 BIN、非 root/连字符 cmdline、非 root 新 server、两 PID churn 退避、
+  `custom_dirs:["@sandbox"]` 合法目录与旧 `#SI2` 缓存失效，以及 WebUI 动作判定
+  （node 实跑 STATE/SERVER_PIDS/输出文本组合）。
+- **版本**：`v1.5.3` / `versionCode 153`；`CHANGELOG.md` 只展示 1.5.3。
 
 ## 兼容与边界
 

@@ -94,6 +94,8 @@ skip_label() {
     template)  echo "未知模板 id" ;;
     dir_space) echo "目录名无法安全表示" ;;
     dir_invalid) echo "目录路径不合法" ;;
+    target_missing) echo "锚点/目标目录缺失" ;;
+    pid_changed) echo "进程已变化（需重新扫描）" ;;
     *)         echo "$1" ;;
   esac
 }

@@ -38,6 +38,9 @@
 #  49) P2 目标被别层占用：报 sandbox_skip（需重启应用），不报 gone/不重试
 #  50) 子进程 pkg:push 单独 ns：按基础包名查配置，两个 ns 都重建
 #  51) custom_dirs 含 sandbox + 沙箱失败：目录失败行不撞沙箱退避键
+#  51b) 合法目录 @sandbox 与内部 /@sandbox 键互不干扰
+#  51c) 旧 #SI2 缓存失效，不再 bind 缓存里的 @sandbox
+#  51d) 反例：当前 #SI3 缓存确实会 bind，证明 51c 不是 grep 假绿
 #  52) dry-run 不清理/不改写已有 old-format .sandbox_seen
 #  53) 没有 mount_dirs 的 app（Q 有 P 无）不计入 checked
 #  54) 退避只看单调时钟：系统时间跳变不改变退避
@@ -1087,12 +1090,85 @@ NS_HIDE_PREFIX="$SRC/0"
 out=$(run_fix "$D51" 0); r=$(result "$out")
 has "$r" 'sandbox_gone' && ok "沙箱失败首次仍会尝试（未被目录键退避）" || bad "沙箱被目录失败行挡住：$r"
 [ -s "$T/nsenter.log" ] && ok "沙箱失败确实探测过（nsenter）" || bad "沙箱没有探测"
-grep -q ' com.victim @sandbox failed' "$D51/.repairs" 2>/dev/null \
-  && ok "沙箱失败行用 @sandbox 键" || bad "沙箱失败键不对：$(cat "$D51/.repairs" 2>/dev/null)"
+grep -q ' com.victim /@sandbox failed' "$D51/.repairs" 2>/dev/null \
+  && ok "沙箱失败行用 /@sandbox 键" || bad "沙箱失败键不对：$(cat "$D51/.repairs" 2>/dev/null)"
 out=$(run_fix "$D51" 0); r=$(result "$out")
 has "$r" 'retry=' && ok "@sandbox 自己的退避生效" || bad "@sandbox 退避没有生效：$r"
 [ ! -s "$T/nsenter.log" ] && ok "@sandbox 退避期不再探测" || bad "退避期仍探测"
 CONF_FILE=$T/conf.json; NS_HIDE_PREFIX=""; TEST_NOW=""; TEST_MONO=""; BIND_FAIL_TGT=""
+
+# ---------- 51b) 合法目录 @sandbox 与内部 /@sandbox 键互不干扰 ----------
+D51B=$T/data51b; seed_seen "$D51B" || exit 1
+sandbox_ok_mi; setup_src || exit 1
+mkdir -p "$DATA/media/0/Android/data/com.victim/sdcard/@sandbox" "$SRC/0/@sandbox" || exit 1
+cat > "$T/conf51b.json" <<'J'
+{"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":{"custom_dirs":["@sandbox"]}}]}
+J
+CONF_FILE=$T/conf51b.json; BIND_FAIL_TGT=/storage/emulated/0/@sandbox; TEST_NOW=3100; TEST_MONO=7100
+out=$(run_fix "$D51B" 0); r=$(result "$out")
+BIND_FAIL_TGT=""
+has "$r" 'dir_invalid' && bad "合法目录 @sandbox 被误判无效：$r" \
+  || ok "合法目录 @sandbox 不再被黑名单拒绝"
+grep -qE ' com\.victim @sandbox($| )' "$D51B/.repairs" 2>/dev/null \
+  && ok "目录 @sandbox 的失败行按普通目标记录" \
+  || bad "目录 @sandbox 没有失败行：$(cat "$D51B/.repairs" 2>/dev/null)"
+grep -qE ' com\.victim /@sandbox($| )' "$D51B/.repairs" 2>/dev/null \
+  && bad "目录 @sandbox 写了内部分箱键" || ok "目录 @sandbox 没有写内部 /@sandbox 键"
+grep -qE -- '--bind .* /storage/emulated/0/@sandbox$' "$T/mount.log" 2>/dev/null \
+  && ok "@sandbox 目录失败前确实尝试过 bind" \
+  || bad "没有尝试 bind @sandbox：$(cat "$T/mount.log" 2>/dev/null)"
+grep -q ' /storage/emulated/0/@sandbox ' "$MI" 2>/dev/null \
+  && bad "失败目录 @sandbox 仍挂进了 mountinfo" || ok "@sandbox 目录失败后未挂进 mountinfo"
+# 制造沙箱丢失：同 NOW 再跑，沙箱必须照常探测，不能被目录 @sandbox 的失败行挡住
+awk '$5 != "/storage/emulated/0"' "$MI" > "$MI.tmp" 2>/dev/null && mv -f "$MI.tmp" "$MI"
+NS_HIDE_PREFIX="$SRC/0"
+out=$(run_fix "$D51B" 0); r=$(result "$out")
+has "$r" 'sandbox_gone' && ok "沙箱退避未被目录 @sandbox 挡住" || bad "沙箱被目录 @sandbox 挡住：$r"
+[ -s "$T/nsenter.log" ] && ok "@sandbox 用例中沙箱仍会探测" || bad "沙箱没有探测"
+grep -qE ' com\.victim /@sandbox($| )' "$D51B/.repairs" 2>/dev/null \
+  && ok "沙箱失败行使用内部 /@sandbox 键" \
+  || bad "沙箱失败键不对：$(cat "$D51B/.repairs" 2>/dev/null)"
+CONF_FILE=$T/conf.json; NS_HIDE_PREFIX=""; TEST_NOW=""; TEST_MONO=""
+
+# ---------- 51c) 旧 #SI2 缓存（写着 @sandbox 目录）必须失效，不再 bind @sandbox ----------
+D51C=$T/data51c; seed_seen "$D51C" || exit 1
+sandbox_ok_mi; setup_src || exit 1
+cat > "$T/conf51c.json" <<'J'
+{"apps":[{"package_name":"com.victim","enabled":true,"mount_dirs":{"custom_dirs":[]}}]}
+J
+mkdir -p "$D51C" || exit 1
+mkdir -p "$SRC/0/@sandbox" || exit 1
+printf '#SI2 %s\n' "$(stat -c '%y:%s' "$T/conf51c.json" 2>/dev/null)" > "$D51C/.conf.cache"
+printf '|com.victim=1:@sandbox \n@PKGS com.victim\n' >> "$D51C/.conf.cache"
+CONF_FILE=$T/conf51c.json; TEST_NOW=3200; TEST_MONO=7200
+out=$(run_fix "$D51C" 0); r=$(result "$out")
+CONF_FILE=$T/conf.json; TEST_NOW=""; TEST_MONO=""
+grep -qE -- '--bind .* /storage/emulated/0/@sandbox$' "$T/mount.log" 2>/dev/null \
+  && bad "旧 #SI2 缓存仍被信任：尝试 bind 了 @sandbox" \
+  || ok "旧 #SI2 缓存已失效，没有再 bind @sandbox"
+grep -q ' /storage/emulated/0/@sandbox ' "$MI" 2>/dev/null \
+  && bad "旧 #SI2 缓存把 @sandbox 挂进了 mountinfo" \
+  || ok "旧 #SI2 缓存没有把 @sandbox 挂进 mountinfo"
+head -1 "$D51C/.conf.cache" 2>/dev/null | grep -q '^#SI3 ' \
+  && ok "新缓存头为 #SI3（带解析器+修复脚本指纹）" \
+  || bad "缓存头没有升级：$(head -1 "$D51C/.conf.cache" 2>/dev/null)"
+grep -q '^|com.victim=1:@sandbox ' "$D51C/.conf.cache" 2>/dev/null \
+  && bad "新缓存仍保留 @sandbox" || ok "新缓存按当前配置重建"
+
+# ---------- 51d) 反例：同样的缓存内容用当前 #SI3 头会真的 bind @sandbox ----------
+# 证明 51c 的“没有 bind”不是 grep 写错造成的假绿。
+D51D=$T/data51d; seed_seen "$D51D" || exit 1
+sandbox_ok_mi; setup_src || exit 1
+mkdir -p "$SRC/0/@sandbox" "$D51D" || exit 1
+cache_sig=$(cat scripts/si-config.awk scripts/fix-si-mounts.sh 2>/dev/null | sha256sum | awk '{print $1}')
+printf '#SI3 %s %s\n' "$(stat -c '%y:%s' "$T/conf51c.json" 2>/dev/null)" "$cache_sig" > "$D51D/.conf.cache"
+printf '|com.victim=1:@sandbox \n@PKGS com.victim\n' >> "$D51D/.conf.cache"
+CONF_FILE=$T/conf51c.json; TEST_NOW=3300; TEST_MONO=7300
+out=$(run_fix "$D51D" 0); r=$(result "$out")
+CONF_FILE=$T/conf.json; TEST_NOW=""; TEST_MONO=""
+grep -q ' /storage/emulated/0/@sandbox ' "$MI" 2>/dev/null \
+  && ok "当前 #SI3 缓存确实会 bind @sandbox（51c 反例有效）" \
+  || bad "当前 #SI3 缓存也没有 bind @sandbox，51c 断言不可信"
 
 # ---------- 52) dry-run 不清理已有 old-format .sandbox_seen ----------
 D52=$T/data52; mkdir -p "$D52"
@@ -1144,7 +1220,7 @@ NS_HIDE_PREFIX=""; TEST_NOW=""; TEST_MONO=""
 # ---------- 55) 旧格式（只有墙钟）失败行不参与退避 ----------
 D55=$T/data55; seed_seen "$D55" || exit 1
 base_mi; setup_src || exit 1
-printf '1000.000 com.victim @sandbox failed ctx=0:50@testboot@%s\n' "$TEST_NS" > "$D55/.repairs"
+printf '1000.000 com.victim /@sandbox failed ctx=0:50@testboot@%s\n' "$TEST_NS" > "$D55/.repairs"
 TEST_NOW=1000; TEST_MONO=9000
 out=$(run_fix "$D55" 0); r=$(result "$out")
 TEST_NOW=""; TEST_MONO=""

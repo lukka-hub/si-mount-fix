@@ -137,6 +137,7 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .result.good{background:var(--good-bg);color:var(--good)}
 .result.warn{background:var(--warn-bg);color:var(--warn)}
 .result.bad{background:var(--bad-bg);color:var(--bad)}
+.result.info{background:var(--info-bg);color:var(--info)}
 .result .r-title{font-weight:600;margin-bottom:3px}
 .result .r-body{color:var(--fg);opacity:.86;white-space:pre-wrap;word-break:break-word;margin-top:3px}
 .tbl{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
@@ -349,7 +350,9 @@ details.card[open] summary{margin-bottom:8px}
     churn: '频繁被拆已熔断',
     template: '未知模板 id',
     dir_space: '目录名无法安全表示',
-    dir_invalid: '目录路径不合法'
+    dir_invalid: '目录路径不合法',
+    target_missing: '锚点/目标目录缺失',
+    pid_changed: '进程已变化（需重新扫描）'
   };
 
   function skipText(tags) {
@@ -460,10 +463,13 @@ details.card[open] summary{margin-bottom:8px}
   var cbSeq = 0;
 
   function normalize(res) {
-    if (typeof res === 'string') { return { errno: 0, stdout: res, stderr: '' }; }
-    if (!res || typeof res !== 'object') { return { errno: 0, stdout: '', stderr: '' }; }
+    /* sync 桥接只回字符串，拿不到退出码：errno 必须标成未知，不能伪装成 0。
+       否则 apply/restore 失败也会被当成成功（绿条），只能靠事后再跑 check 判真伪。 */
+    if (typeof res === 'string') { return { errno: null, errnoKnown: false, stdout: res, stderr: '' }; }
+    if (!res || typeof res !== 'object') { return { errno: null, errnoKnown: false, stdout: '', stderr: '' }; }
     return {
       errno: toInt(res.errno, 0),
+      errnoKnown: true,
       stdout: typeof res.stdout === 'string' ? res.stdout : (res.stdout == null ? '' : String(res.stdout)),
       stderr: typeof res.stderr === 'string' ? res.stderr : (res.stderr == null ? '' : String(res.stderr))
     };
@@ -514,7 +520,10 @@ details.card[open] summary{margin-bottom:8px}
         });
         return;
       }
-      if (typeof ret === 'string') { finish({ errno: 0, stdout: ret, stderr: '' }); return; }
+      if (typeof ret === 'string') {
+        finish({ errno: null, errnoKnown: false, stdout: ret, stderr: '' });
+        return;
+      }
       if (ret && typeof ret === 'object') { finish(normalize(ret)); return; }
       /* undefined：等回调 */
     });
@@ -592,8 +601,12 @@ details.card[open] summary{margin-bottom:8px}
     }).then(function (res) {
       BR.latency = Date.now() - t0;
       if (!res) { throw new Error('命令无响应（' + Math.round(CMD_TIMEOUT / 1000) + ' 秒超时）'); }
-      if (res.errno !== 0 && !String(res.stdout || '').trim()) {
-        throw new Error(String(res.stderr || '').trim() || ('退出码 ' + res.errno));
+      /* errnoKnown=false 是 sync 桥接：没有退出码，不在这里判失败，交给调用方用结果/check 判断。 */
+      if (res.errnoKnown !== false && res.errno !== 0 && !String(res.stdout || '').trim()) {
+        var e = new Error(String(res.stderr || '').trim() || ('退出码 ' + res.errno));
+        /* 带上退出码/输出：补丁动作收到后仍要先跑 check 再判，不能只留一条错误消息。 */
+        e.errno = res.errno; e.errnoKnown = true; e.stdout = res.stdout || '';
+        throw e;
       }
       return res;
     });
@@ -1093,6 +1106,7 @@ details.card[open] summary{margin-bottom:8px}
         p.backup = toInt(p.BACKUP_COUNT, 0);
         p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
         p.prompted = toInt(p.PROMPTED, 0) === 1;
+        p.serverPids = toInt(p.SERVER_PIDS, 0);
         state.patch = p;
         state.patchError = '';
         renderPatch();
@@ -1250,6 +1264,7 @@ details.card[open] summary{margin-bottom:8px}
       bits.push('SI ' + (p.si || '版本未知'));
       bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
+      bits.push('SI server ' + toInt(p.serverPids, 0) + ' 个');
       if (p.match) {
         badge = '已应用';
         hint.textContent = '';
@@ -1313,6 +1328,68 @@ details.card[open] summary{margin-bottom:8px}
     el.hidden = false;
   }
 
+  /* PATCH-VERDICT-START */
+  /* 补丁动作判定（纯函数，tools/patch.test.sh 用 node 直接跑）：
+     1) STATE 必须是预期值；2) “无需重复操作”只算信息；3) 输出含自动重启失败要降级；
+     4) apply 还要有映射该 dex 的 SI server（SERVER_PIDS>0）才报成功；
+     5) 已知非 0 退出码只作附注，状态复核对了仍按成功处理。 */
+  function patchActionVerdict(action, st, serverPids, text, errnoKnown, errno) {
+    var isApply = action === 'apply';
+    var expect = isApply ? 'patched' : 'original';
+    var expectText = isApply ? '补丁版' : '原版';
+    var detail = text ? '\n' + text : '';
+    var pids = parseInt(serverPids, 10);
+    if (!isFinite(pids) || pids < 0) { pids = 0; }
+    var failTitle = isApply ? '补丁应用失败' : '恢复失败';
+    var unknownTitle = isApply ? '补丁应用结果未知' : '恢复结果未知';
+    st = String(st || '');
+    text = String(text || '');
+    if (!st) {
+      return { tone: 'warn', title: unknownTitle,
+        body: '动作已执行，但重新检查没有返回 STATE，无法确认结果。' + detail };
+    }
+    if (st !== expect) {
+      return { tone: 'bad', title: failTitle,
+        body: '动作后重新检查：当前为 ' + st + '，不是预期的 ' + expectText + '（' + expect + '）。' + detail };
+    }
+    if (text.indexOf('无需重复操作') >= 0) {
+      return { tone: 'info', title: '无需重复操作',
+        body: text + (isApply ? '\n当前已经是补丁版，本次没有写入新文件。' : '') };
+    }
+    if (text.indexOf('自动重启失败') >= 0 || text.indexOf('身份不符') >= 0) {
+      return { tone: 'warn',
+        title: isApply ? '补丁已应用，但 SI server 未自动重启' : '原版已恢复，但 SI server 未自动重启',
+        body: 'dex 已按预期写入；请重开 SI 或重启手机让新 dex 生效。' + detail };
+    }
+    if (isApply && pids <= 0) {
+      return { tone: 'warn', title: '补丁已应用，但没检测到 SI server',
+        body: 'dex 已写入，但 SERVER_PIDS=0，无法确认新 server 已起来；请打开或重开 SI 后再看。' + detail };
+    }
+    var okTitle = isApply ? '补丁已应用' : (action === 'force' ? '已强制恢复原版' : '已恢复原版');
+    var body = text + (detail ? '\n' : '') + '已重新检查：当前为' + expectText + '（' + st + '）';
+    if (isApply) { body += '，SERVER_PIDS=' + pids; }
+    body += '。';
+    if (errnoKnown && errno !== 0) {
+      body += '\n动作命令退出码 ' + errno + '，但状态复核一致，按成功处理。';
+    }
+    return { tone: 'good', title: okTitle, body: body };
+  }
+  /* PATCH-VERDICT-END */
+
+  function verifyPatchAction(action, text, res) {
+    var known = res && res.errnoKnown !== false;
+    var code = res ? res.errno : null;
+    return run('sh ' + P.patch + ' check').then(function (cres) {
+      var p = parseKv(cres.stdout);
+      var v = patchActionVerdict(action, p.STATE, p.SERVER_PIDS, text, known, code);
+      showPatchResult(v.title, v.body, v.tone);
+    }, function (err) {
+      var v = patchActionVerdict(action, '', 0, text, known, code);
+      v.body += '\n重新检查失败：' + String(err && err.message ? err.message : err);
+      showPatchResult(v.title, v.body, 'warn');
+    });
+  }
+
   function runPatchAction(action) {
     if (state.patchBusy) { return; }
     if (!BR.ok || !state.patch || state.patchSdk !== '37') {
@@ -1322,27 +1399,32 @@ details.card[open] summary{margin-bottom:8px}
     var isApply = action === 'apply';
     var isForce = action === 'force';
     var cmd = isForce ? 'restore --force' : action;
-    var title = isApply ? '补丁已应用' : (isForce ? '已强制恢复原版' : '已恢复原版');
     state.patchBusy = true;
     renderPatch();
     showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…', '请稍候，不要关闭页面。', '');
     run('sh ' + P.patch + ' ' + cmd).then(function (res) {
+      return res;
+    }, function (err) {
+      /* 桥接超时/异常时命令可能其实已执行：不要直接判红，先跑 check 看真实状态。
+         run() 因非 0 退出码抛错时会带上 errno/stdout，仍交给 verify 附注。 */
+      var known = !!(err && err.errnoKnown === true);
+      return { errno: known ? err.errno : null, errnoKnown: known,
+        stdout: known && err.stdout ? err.stdout : '',
+        stderr: '命令未正常返回：' + String(err && err.message ? err.message : err) };
+    }).then(function (res) {
       var parts = [];
       if (String(res.stdout || '').trim()) { parts.push(String(res.stdout).trim()); }
       if (String(res.stderr || '').trim()) { parts.push(String(res.stderr).trim()); }
-      var text = parts.join('\n');
-      if (res.errno !== 0) {
-        showPatchResult(isApply ? '补丁应用失败' : '恢复失败', text || ('退出码 ' + res.errno), 'bad');
-      } else {
-        showPatchResult(title, text, 'good');
-      }
-    }).catch(function (err) {
-      showPatchResult(isApply ? '补丁应用失败' : '恢复失败',
-        String(err && err.message ? err.message : err), 'bad');
+      return verifyPatchAction(action, parts.join('\n'), res);
     }).then(function () {
       state.patchBusy = false;
       markPatchPrompted();
       return loadPatch();
+    }).catch(function (err) {
+      /* 兜底：任何意外异常都要解锁按钮，不能把面板卡在“操作中”。 */
+      state.patchBusy = false;
+      renderPatch();
+      showPatchResult('补丁操作异常', String(err && err.message ? err.message : err), 'bad');
     });
   }
 

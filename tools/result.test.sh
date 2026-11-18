@@ -26,6 +26,10 @@ fi
 [ -f "$RESULT_LIB" ] || { echo "缺少 $RESULT_LIB"; exit 1; }
 . "./$RESULT_LIB"
 
+T=${TMPDIR:-/tmp}/si-result-test.$$
+trap 'rm -rf "$T"' EXIT INT TERM HUP
+mkdir -p "$T" || exit 1
+
 fail=0
 ok()  { echo "  ok   $1"; }
 bad() { echo "  FAIL $1"; fail=1; }
@@ -148,18 +152,70 @@ done
 [ -z "$leak" ] && ok "3 套 daemon 测试 stub 都走 scripts/result.sh" \
   || bad "stub 仍手写 RESULT 或未 source：$leak"
 
-# ---------- 9) fix 可能输出的 skipped token 必须有中文标签 ----------
-# 漏一个标签，action/WebUI 就会把英文 token 原样显示给用户；rollback 是新加的，
-# 但这里把所有 token 一起锁住，避免以后再漏。
-missing=""
-for tok in locked disabled identity layer source source_ns bindfail \
-           sandbox_gone sandbox_stale sandbox_skip rollback churn \
-           template dir_space dir_invalid; do
-  grep -q "^[[:space:]]*$tok)" action.sh 2>/dev/null || missing="$missing action:$tok"
-  grep -q "^[[:space:]]*$tok:" webroot/index.html 2>/dev/null || missing="$missing webui:$tok"
+# ---------- 9) 从生产端自动抽取 skipped token，与 action/WebUI 标签双向比对 ----------
+# 先删整行注释，避免 # skipped=foo 被误报；整段捕获 skipped="$skipped ..." 的引号内容，
+# 按空白切分后只留与 action.sh 标签 key 相同的字符集 [A-Za-z0-9_+.-]。
+# 多 token、带 - 的 token 都能抽到；$var 这类动态占位会被字符集过滤，具体值由
+# si-config.awk 的 return "dir_*" 单独补齐。
+fix_tokens() {   # $1=fix 脚本
+  sed '/^[[:space:]]*#/d' "$1" 2>/dev/null \
+    | sed -n -e 's/.*skipped="\$skipped \([^"]*\)".*/\1/p' \
+             -e 's/.*EXTRA_SKIP="\$EXTRA_SKIP \([^"]*\)".*/\1/p' \
+             -e 's/.*skipped=\([A-Za-z0-9_+.-][A-Za-z0-9_+.-]*\).*/\1/p'
+}
+norm_tokens() {
+  tr -s '[:space:]' '\n' | grep -E '^[A-Za-z0-9_+.-]+$' | sort -u
+}
+{
+  fix_tokens scripts/fix-si-mounts.sh
+  sed -n 's/.*return "\([A-Za-z0-9_+.-]*\)".*/\1/p' scripts/si-config.awk
+} | norm_tokens > "$T/prod"
+
+# 抽取器自身的边界用例：多 token、带 -、$var、整行注释。
+cat > "$T/token-fixture.sh" <<'S'
+# skipped=comment_token
+if true; then skipped="$skipped foo bar"; fi
+EXTRA_SKIP="$EXTRA_SKIP baz-qux"
+skipped="$skipped $var"
+result_line 0 0 0 0 skipped=locked
+S
+fix_tokens "$T/token-fixture.sh" | norm_tokens > "$T/fixture-tokens"
+fixture_bad=""
+for tok in foo bar baz-qux locked; do
+  grep -qxF "$tok" "$T/fixture-tokens" 2>/dev/null || fixture_bad="$fixture_bad 缺:$tok"
 done
-[ -z "$missing" ] && ok "skipped 的每个 token 在 action/WebUI 都有标签" \
-  || bad "缺少标签：$missing"
+for tok in comment_token '$var'; do
+  grep -qxF "$tok" "$T/fixture-tokens" 2>/dev/null && fixture_bad="$fixture_bad 多:$tok"
+done
+[ -z "$fixture_bad" ] && ok "token 抽取器支持多 token/连字符，忽略注释与 \$var" \
+  || bad "token 抽取器边界用例失败：$fixture_bad"
+
+sed -n '/^skip_label() {/,/^}/p' action.sh \
+  | sed -n 's/^[[:space:]]*\([a-z_][a-z0-9_]*\))[[:space:]]*echo.*/\1/p' | sort -u > "$T/lab_action"
+sed -n '/var SKIP_LABEL = {/,/^  };/p' webroot/index.html \
+  | sed -n 's/^[[:space:]]*\([a-z_][a-z0-9_]*\):.*/\1/p' | sort -u > "$T/lab_webui"
+prod_n=$(wc -l < "$T/prod" | tr -d '[:space:]')
+missing=""
+for tok in $(cat "$T/prod"); do
+  grep -qx "$tok" "$T/lab_action" 2>/dev/null || missing="$missing action:$tok"
+  grep -qx "$tok" "$T/lab_webui" 2>/dev/null || missing="$missing webui:$tok"
+done
+[ -z "$missing" ] && ok "生产端 skipped token 在 action/WebUI 都有标签（$prod_n 个）" \
+  || bad "生产端 token 缺少标签：$missing"
+extra=""
+for tok in $(cat "$T/lab_action" "$T/lab_webui"); do
+  grep -qx "$tok" "$T/prod" 2>/dev/null || extra="$extra $tok"
+done
+[ -z "$extra" ] && ok "没有生产端已不发出的旧标签" || bad "残留旧标签：$extra"
+cmp -s "$T/lab_action" "$T/lab_webui" \
+  && ok "action 与 WebUI 的标签集合一致" \
+  || bad "action 与 WebUI 标签集合不一致：$(diff "$T/lab_action" "$T/lab_webui" 2>/dev/null)"
+grep -qx 'locked' "$T/prod" && grep -qx 'target_missing' "$T/prod" \
+  && grep -qx 'pid_changed' "$T/prod" \
+  && ok "自动抽取覆盖 locked/target_missing/pid_changed" \
+  || bad "自动抽取没有拿到关键 token：$(tr '\n' ' ' < "$T/prod")"
+[ "$prod_n" -ge 15 ] && ok "生产端 token 数量合理（$prod_n）" \
+  || bad "生产端 token 抽取过少（$prod_n），抽取规则可能坏了"
 
 echo
 [ "$fail" = 0 ] && { echo "result.test: PASS"; exit 0; }

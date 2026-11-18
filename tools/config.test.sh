@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # 配置解析回归：统一解析器 scripts/si-config.awk + fix 的 fail-closed 行为。
 # 覆盖：真实 schema（顶层 packages + 嵌套 mount_dirs）、多行/空格 JSON、
-#       enabled 缺省/显式 false、未知模板、含空格目录、截断 JSON、未知 schema。
+#       enabled 缺省/显式 false、未知模板、含空格目录、合法目录 @sandbox、截断 JSON、未知 schema。
 # 用法：sh tools/config.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
@@ -211,6 +211,25 @@ else
   ok "解析器对非法包名 fail-closed（无 Q/P/D 行）"
 fi
 if grep -q '^Q|com.ok$' "$T/p11.txt"; then ok "解析器保留合法包名"; else bad "解析器丢失合法包名"; fi
+
+# 12) @sandbox 是合法目录名：内部沙箱退避键改用 /@sandbox，不能再黑名单用户目录
+cat > "$T/c12.json" <<'J'
+{"packages":[{"package_name":"com.victim","enabled":true,"mount_dirs":{"custom_dirs":["@sandbox"]}}]}
+J
+out12=$(run "$T/c12.json")
+case "$out12" in
+  *"允许: com.victim -> @sandbox"*) ok "custom_dirs @sandbox 仍产生挂载目标" ;;
+  *) bad "@sandbox 被误拒：$out12" ;;
+esac
+case "$out12" in
+  *skipped=*dir_invalid*) bad "@sandbox 被误判 dir_invalid：$out12" ;;
+  *) ok "@sandbox 不报 dir_invalid" ;;
+esac
+SI_TEST=1 SI_TEST_NOW=1800000000 awk -f scripts/si-config.awk "$T/c12.json" 2>/dev/null > "$T/p12.txt"
+grep -q '^D|com.victim|@sandbox$' "$T/p12.txt" \
+  && ok "解析器输出 D|com.victim|@sandbox" || bad "解析器丢失 @sandbox：$(cat "$T/p12.txt")"
+grep -q '^X|com.victim|dir_invalid|@sandbox$' "$T/p12.txt" \
+  && bad "解析器仍把 @sandbox 标为 dir_invalid" || ok "解析器不把 @sandbox 标为 dir_invalid"
 
 echo
 [ "$fail" = 0 ] && { echo "config.test: PASS"; exit 0; }

@@ -122,50 +122,133 @@ find_original_backup() {
   done
 }
 
-# 只结束映射了目标 dex 的 server 进程；daemon 由 PPID 1 拉起，不会映射这个 dex，不碰。
-restart_si_server() {
-  _old=
+# maps 路径与目标 dex 都按 readlink -f 归一化后比较（处理符号链接、/./）。
+# 只认 pathname 最后一段是 $SERVER 的行，先排除库和其它文件；容忍 " (deleted)"。
+maps_has_dex() {   # $1=maps 文件
+  [ -r "$1" ] || return 1
+  _mh_real=$(readlink -f "$DEX" 2>/dev/null)
+  [ -n "$_mh_real" ] || _mh_real=$DEX
+  _mh_list=$(awk -v name="$SERVER" '
+    {
+      p = $0
+      sub(/^[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+[^ ]+[ ]+/, "", p)
+      n = split(p, a, "/")
+      if (a[n] == name || a[n] == name " (deleted)") print p
+    }
+  ' "$1" 2>/dev/null)
+  _mh_sfx=' (deleted)'
+  while IFS= read -r _mh_p; do
+    [ -n "$_mh_p" ] || continue
+    case "$_mh_p" in *"$_mh_sfx") _mh_p=${_mh_p%"$_mh_sfx"} ;; esac
+    [ "$_mh_p" = "$DEX" ] && return 0
+    [ "$_mh_p" = "$_mh_real" ] && return 0
+    _mh_rp=$(readlink -f "$_mh_p" 2>/dev/null)
+    [ -n "$_mh_rp" ] && [ "$_mh_rp" = "$_mh_real" ] && return 0
+  done <<EOF
+$_mh_list
+EOF
+  return 1
+}
+
+# 只认 SI 自己的进程：cmdline 含 storage_isolation / storage-isolation，或 uid=0；
+# 模块守护 si-mount-eventd 即使恰好映射了同名文件也不碰（root 守护同样排除）。
+proc_is_si_server() {   # $1=pid
+  [ -d "$PROC/$1" ] || return 1
+  _cmd=
+  [ -r "$PROC/$1/cmdline" ] && _cmd=$(tr '\0' ' ' < "$PROC/$1/cmdline" 2>/dev/null)
+  case "$_cmd" in
+    *si-mount-eventd*|*si-mount-fix/scripts*) return 1 ;;
+    *storage_isolation*|*storage-isolation*) return 0 ;;
+  esac
+  if [ -r "$PROC/$1/status" ]; then
+    _uid=$(sed -n 's/^Uid:[[:space:]]*//p' "$PROC/$1/status" 2>/dev/null | awk '{print $1}' | head -1)
+    [ "$_uid" = 0 ] && return 0
+  fi
+  return 1
+}
+
+# 明确是别的应用（cmdline 带 com. 包名或 /data/app 等应用路径）的进程，不算 SI server。
+# 空 cmdline / 只有 storage-isolation 路径 / 非 root server 都保留。
+proc_is_other_app() {   # $1=pid
+  [ -r "$PROC/$1/cmdline" ] || return 1
+  _ocmd=$(tr '\0' ' ' < "$PROC/$1/cmdline" 2>/dev/null)
+  case "$_ocmd" in
+    *com.*|*/data/app/*|*/data/data/*|*/data/user/*) return 0 ;;
+  esac
+  return 1
+}
+
+find_dex_pids_any() {   # 只按 maps 精确匹配，不做身份判断
   for _maps in "$PROC"/[0-9]*/maps; do
     [ -r "$_maps" ] || continue
-    grep -q -F "$DEX" "$_maps" 2>/dev/null || continue
-    _p=${_maps%/maps}
-    _p=${_p##*/}
-    case " $_old " in
-      *" $_p "*) continue ;;
-    esac
-    _old="$_old $_p"
+    maps_has_dex "$_maps" || continue
+    _ap=${_maps%/maps}
+    printf '%s\n' "${_ap##*/}"
   done
+}
+
+find_dex_pids_alive() {   # maps 命中且不是明确的其他应用
+  for _lp in $(find_dex_pids_any); do
+    proc_is_other_app "$_lp" && continue
+    printf '%s\n' "$_lp"
+  done
+}
+
+count_dex_pids() {  # check 的 SERVER_PIDS：排除明确其他应用后的映射进程数
+  find_dex_pids_alive | wc -l | tr -d '[:space:]'
+}
+
+# 只结束映射了目标 dex 的 SI server 进程；daemon 由 PPID 1 拉起，不映射这个 dex，不碰。
+restart_si_server() {
+  _old=
+  _refused=
+  for _p in $(find_dex_pids_any); do
+    if proc_is_si_server "$_p"; then
+      _old="$_old $_p"
+    else
+      _refused="$_refused $_p"
+      log_action "SERVER-RESTART refuse pid=$_p"
+    fi
+  done
+  _skip_pids="$_old $_refused"
   if [ -z "$_old" ]; then
+    if [ -n "$_refused" ]; then
+      log_action "SERVER-RESTART skip refused"
+      return 3
+    fi
     log_action "SERVER-RESTART skip"
     return 2
   fi
 
   for _p in $_old; do
+    # TERM 前复核：准备期间进程可能已退出，或 PID 被复用
+    maps_has_dex "$PROC/$_p/maps" || continue
+    proc_is_si_server "$_p" || continue
     "$KILL" -TERM "$_p" 2>/dev/null
   done
   sleep "$TERM_WAIT"
   for _p in $_old; do
-    if [ -r "$PROC/$_p/maps" ] && grep -q -F "$DEX" "$PROC/$_p/maps" 2>/dev/null; then
-      "$KILL" -KILL "$_p" 2>/dev/null
-    fi
+    # KILL 前再复核一次：已退出/不再映射 $DEX 的不补刀，避免误杀复用后的 PID
+    maps_has_dex "$PROC/$_p/maps" || continue
+    proc_is_si_server "$_p" || continue
+    "$KILL" -KILL "$_p" 2>/dev/null
   done
 
   _new=
-  _i=0
-  while [ "$_i" -lt $((RESTART_WAIT * 10)) ]; do
-    for _maps in "$PROC"/[0-9]*/maps; do
-      [ -r "$_maps" ] || continue
-      grep -q -F "$DEX" "$_maps" 2>/dev/null || continue
-      _p=${_maps%/maps}
-      _p=${_p##*/}
-      case " $_old " in
+  # 0.1 秒粒度计数（mksh 算术 32 位，不能用 date +%s%N）；总等待约 RESTART_WAIT 秒。
+  _ticks=$((RESTART_WAIT * 10))
+  while [ "$_ticks" -gt 0 ]; do
+    # 新进程只按 maps 认（SI server 可能不是 root，cmdline 也未必带特征），
+    # 但明确属于其他应用的进程不算。
+    for _p in $(find_dex_pids_alive); do
+      case " $_skip_pids " in
         *" $_p "*) continue ;;
       esac
       _new=$_p
       break 2
     done
     sleep 0.1
-    _i=$((_i + 1))
+    _ticks=$((_ticks - 1))
   done
 
   if [ -n "$_new" ]; then
@@ -180,6 +263,7 @@ restart_note() {   # $1=应用|恢复 $2=restart_si_server 的返回码
   case "$2" in
     0) printf '已%s，SI server 已自动重启；若列表未刷新请重开 SI。\n' "$1" ;;
     2) printf '已%s；当前没有运行中的 SI server，打开 SI 后生效。\n' "$1" ;;
+    3) printf '已%s；找到映射该 dex 的进程但身份不符，已跳过；请重开 SI 或重启手机。\n' "$1" ;;
     *) printf '已%s；SI server 自动重启失败，请重开 SI 或重启手机。\n' "$1" ;;
   esac
 }
@@ -257,6 +341,7 @@ print_check() {
   printf 'BACKUP_COUNT=%s\n' "$BACKUP_COUNT"
   printf 'BACKUP_OK=%s\n' "$BACKUP_OK"
   printf 'PROMPTED=%s\n' "$PROMPTED"
+  printf 'SERVER_PIDS=%s\n' "$(count_dex_pids)"
 }
 
 status_line() {
@@ -441,7 +526,7 @@ do_apply() {
     no-si)
       die "找不到 $DEX，未检测到可修复的 SI server" 2 ;;
     unknown)
-      die "当前 $SERVER 的 sha256 既不是原版也不是补丁版（${SHA:-读取失败}），已拒绝操作" 3 ;;
+      die "当前 $SERVER 的 sha256 既不是原版也不是补丁版（${SHA:-读取失败}），已拒绝操作；如果当前是旧版本补丁，请先运行 restore --force 再 apply" 3 ;;
     original) ;;
     *) die "补丁状态异常（$STATE），已取消" 4 ;;
   esac

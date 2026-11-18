@@ -1,11 +1,21 @@
 # 更新日志
 
-## 1.5.2
+## 1.5.3
 
-- apply/restore 成功后会找到映射 `server-v355.dex` 的 SI server 进程，只结束这些进程；
-  SI daemon 会在约 3 秒内用新 dex 重启 server，不再需要手动杀进程或重开 SI。
-- 不会杀 daemon 或应用；5 秒内没有看到新 server 时只提示重开 SI/重启手机，不回滚已写入的 dex。
-- 面板分级显示：非 Android 17 或未装 SI 时隐藏补丁卡片；SI 版本/哈希不匹配时显示卡片但按钮置灰，
-  当前不是原版且存在有效原版备份时可用「强制恢复」；只有匹配的原版才启用「应用补丁」。
-- 版本 v1.5.2 / 152。
-- 酷安用户「无所事事」提供了 Android 17 下 SI「无法读取应用列表」的解决思路。
+- WebUI：sync 桥接不再把命令返回当成退出码 0；apply/restore 结束后重新执行 `check`，
+  已知非 0 退出码也先复核。只有 `STATE` 符合预期才算成功：apply 还要求 `SERVER_PIDS>0`；
+  输出含“自动重启失败/身份不符”时降级为警告，“无需重复操作”只作信息提示，读不到状态
+  显示“结果未知”，不再误报“已应用/已恢复”。
+- `check` 新增 `SERVER_PIDS`（映射该 dex 且排除明确其他应用后的进程数），供面板判断 server 是否真的起来。
+- `action.sh` 与 WebUI 补 `target_missing`（锚点/目标目录缺失）、`pid_changed`（进程已变化）
+  的中文标签；RESULT token 从生产端自动抽取并与标签双向比对。
+- 自动重启 SI server：maps 与目标 dex 用 `readlink -f` 归一化后比较（兼容符号链接、
+  `/./` 和 ` (deleted)`），不再子串命中 `.bak/.orig`；身份正例放宽为 uid=0、cmdline 含
+  `storage_isolation` 或 `storage-isolation`，并排除模块 daemon；没有 server 与身份不符
+  分开返回（身份拒绝记录 PID）；新进程只按 maps 识别，排除 cmdline 明确带 `com.`/`/data/app/`
+  的其他应用；等待改为 0.1 秒计数、约 5 秒。
+- 同包多 PID 时 RESULT 的 `churn` 累加，不再被扫描计数覆盖；`.churn` 记录行为不变。
+- 沙箱内部退避键改为 `/@sandbox`，合法的用户目录 `@sandbox` 重新可用；配置缓存头升级为
+  `#SI3` 并带解析器+修复脚本指纹，旧缓存自动失效，避免继续沿用旧目录列表。
+- 文档同步上述行为与 `SERVER_PIDS`；1.5.0 补丁用户先 `restore --force` 再 `apply`。
+- 版本 v1.5.3 / 153。

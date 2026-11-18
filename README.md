@@ -96,11 +96,21 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 旧守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是旧守护写下的状态，
 版本号却已经是新模块的——这属于正常现象。
 
+**从 1.5.0 补丁升级**：1.5.0 的旧补丁 dex 既不是当前原版，也不是 1.5.1 起的自建补丁版，
+`check` 会显示 `unknown`。先执行 `restore --force` 用有效原版备份恢复，再按需重新 `apply`：
+
+```sh
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force
+sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh apply
+```
+
+不要跳过恢复直接覆盖；`apply` 遇到 `unknown` 也会拒绝，并提示先 `restore --force`。
+
 ### 版本与更新检查
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.2` 与 `versionCode=152`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.3` 与 `versionCode=153`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -157,9 +167,14 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
 为控制体积，重打包时剥离了调试信息（不影响运行逻辑，只影响崩溃堆栈行号）；
 因此体积 325,984 B，与原版 331,520 B 接近。
 
-**自动重启 SI server**：apply/restore 成功后会查找映射 `server-v355.dex` 的进程，只结束这些
-进程（先 TERM 再 KILL），SI daemon 会在约 3 秒内用新 dex 重启 server；不会杀 daemon 或应用。
-最多等 5 秒，失败只提示重开 SI/重启手机，不回滚已经写好的 dex。
+**自动重启 SI server**：apply/restore 成功后会精确查找 maps 中映射 `server-v355.dex` 的进程：
+maps 路径与目标 dex 都用 `readlink -f` 归一化后比较（兼容符号链接、`/./` 和内核在旧 inode
+后加的 ` (deleted)`，不会子串命中 `.bak/.orig`）。结束前校验进程 uid=0 或 cmdline 含
+`storage_isolation` / `storage-isolation`，并排除模块 daemon；只结束这些进程（先 TERM，
+KILL 前复核仍映射、身份未变），SI daemon 会在约 3 秒内用新 dex 重启 server；不会杀 daemon
+或应用。最多等约 5 秒（0.1 秒粒度）；没有 server 与身份不符分开提示（身份不符会记录 PID）；
+只按 maps 识别新 server，但会排除 cmdline 明确带 `com.` 或 `/data/app/` 等路径的其他应用。
+失败只提示重开 SI/重启手机，不回滚已经写好的 dex。
 
 **面板显示**：Android SDK 不是 37、或没有安装 SI 时，整张补丁卡片隐藏；SDK 37 但 SI 版本/哈希
 不在支持范围时显示卡片但按钮置灰；当前不是原版且存在有效原版备份时，可用「强制恢复」；
@@ -180,7 +195,9 @@ Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `server-v355.dex` �
    再把模块 `assets/server-v355.dex` 复制到目标，`chown root:root`、`chmod 600`，
    校验 sha256 后原子替换；替换后会再校验一次，不符就用备份覆盖回去。
 4. 应用/恢复成功后会自动重启 SI server，通常不用手动重开；若列表没有刷新，再重开 SI 或
-   重启手机。已应用状态会显示「已应用，可恢复原版」。
+   重启手机。动作结束后面板会再跑一次 `check`，按 `STATE` 与 `SERVER_PIDS` 复核：apply 只有
+   `patched` 且 `SERVER_PIDS>0` 才显示绿色成功；重启失败、身份不符或读不到状态会显示警告，
+   “无需重复操作”只作信息提示，不会误报“已应用”。
 5. 恢复：在卡片里点「恢复原版」，或运行 `restore`。恢复会按时间从新到旧扫描备份，
    选第一份 sha256 等于原版的；当前是 `unknown` 但存在有效原版备份时，卡片会提供
    「强制恢复」（命令行 `restore --force`），需要显式确认。
@@ -196,9 +213,9 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 ```
 
 `check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_TARGET_VERSION` / `SI_TARGET_SERVER` /
-`SI_MATCH` / `DEX` / `SIZE` / `SHA` / `BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED`
-十二个 `KEY=VALUE`。任何状态都返回 0；`apply`/`restore` 失败时非 0 退出，并在 stderr
-说明原因。
+`SI_MATCH` / `DEX` / `SIZE` / `SHA` / `BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` /
+`SERVER_PIDS` 十三个 `KEY=VALUE`（映射该 dex 且排除明确其他应用后的进程数）。任何状态都返回 0；
+`apply`/`restore` 失败时非 0 退出，并在 stderr 说明原因。
 
 **注意**：
 
@@ -226,6 +243,8 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 - **轮询间隔只在轮询模式下有意义**：面板在 `auto`/`event` 下隐藏该字段，值仍保留在配置里。
 - **`MIN_AGE` 两种模式都用**：太年轻的进程本轮跳过，并在 `MIN_AGE + 2` 秒后补扫一次，
   避免应用刚启动、挂载还没完成时被误判为故障。
+- 配置缓存（`/data/adb/si-mount-fix/.conf.cache`）头里带解析器+修复脚本指纹；模块更新（含修复脚本/解析器）后旧缓存
+  自动失效，不会继续沿用旧目录列表。
 
 ## 状态与上报
 
@@ -312,7 +331,7 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 - 出现 `skipped=*rollback*`：沙箱 `umount` 没卸干净、原 FUSE 根恢复失败，或主扫描发现
   `/storage/emulated/0` 叠了多层。模块保留残留挂载，不会为了“看起来修好了”把父根叠回去，
   也不会自动重试。**重启该应用**即可收敛；不要反复点修复。
-- 出现 `skipped=*target_missing*`：沙箱锚点目录或目标目录不存在（`/data/media` 下的沙箱副本、
+- 出现 `skipped=*target_missing*`：沙箱锚点/目标目录不存在（`/data/media` 下的沙箱副本、
   或 `Android/{data,media,obb}` 目标），模块不会硬 bind，会说明缺的是哪个路径并计入需修复。
   多为 SI 的沙箱目录被清掉，重启该应用让 SI 重建后再看。
 - 出现 `skipped=*pid_changed*`：扫描之后、动手之前进程重启或换了 namespace；模块跳过本轮、

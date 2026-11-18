@@ -7,6 +7,7 @@
 #   C) 重试仍失败 → block；block 状态下不再尝试
 #   D) dry-run 不写 .repairs/.churn、不熔断
 #   E) --trim-only 清旧记录/限 200 行/清 .churn
+#   G) 同包多 PID 去重；同轮失败时 churn 累加不被扫描 Z 行覆盖
 #
 # 用法：sh tools/churn.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
@@ -133,6 +134,12 @@ run_multi() {   # $1=now $2=数据目录；ps 多报同包 PID 102，bind 改各
   SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$2 \
     SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
     SI_TEST_MI=$MI SI_TEST_MI_DIR=$P SI_TEST_PS_EXTRA=1 SI_TEST_BIND_FAIL=0 \
+    SI_MIN_AGE=5 SI_FUSE_WAIT=1 PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
+}
+run_multi_fail() {   # 多 PID 且 bind 失败：第一个 PID 熔断，第二个 PID 走失败退避
+  SI_TEST=1 SI_PROC=$P SI_CONF=$T/conf.json SI_DATA=$2 \
+    SI_TEST_DATA=$DATA SI_TEST_SRC=$SRC SI_TEST_NOW=$1 SI_TEST_MONO=$1 \
+    SI_TEST_MI=$MI SI_TEST_MI_DIR=$P SI_TEST_PS_EXTRA=1 SI_TEST_BIND_FAIL=1 \
     SI_MIN_AGE=5 SI_FUSE_WAIT=1 PATH=$BIN:$PATH "$TEST_SH" "$FIX" -q 2>&1
 }
 
@@ -289,6 +296,27 @@ case "$r" in *"churn=1"*) ok "G2 坏 PID 仍被判 churn=1" ;; *) bad "G2 churn 
 grep -qxF 'com.churn|DCIM|1700007600|wait' "$DATA_M2/.churn" 2>/dev/null \
   && ok "G2 健康 PID 没有清掉同包的 .churn" \
   || bad "G2 .churn 被误清：$(cat "$DATA_M2/.churn" 2>/dev/null)"
+
+# G3) 同包两个 PID：第一个 retry 失败熔断，第二个走 180s 退避；
+#     churn 由 shell 即时累加，不能被 Z 行的扫描计数覆盖成 0。
+DATA_M3=$T/data-multi-churn-new
+rm -rf "$DATA_M3"; mkdir -p "$DATA_M3"
+root_mi
+multi_broken_mi
+printf 'com.churn|DCIM|1700007000|wait\n' > "$DATA_M3/.churn"
+out=$(run_multi_fail 1700008000 "$DATA_M3"); r=$(result "$out")
+case "$r" in *"churn=1"*) ok "G3 第一个 PID 失败熔断后 churn=1（未被 Z 行覆盖）" ;; \
+  *) bad "G3 churn 被 Z 行覆盖：$r" ;; esac
+case "$r" in *"retry=180"*) ok "G3 第二个 PID 走 180s 失败退避" ;; \
+  *) bad "G3 第二个 PID 没有按 180s 退避：$r" ;; esac
+case "$r" in *"fixed=0"*) ok "G3 失败轮 fixed=0" ;; *) bad "G3 失败轮仍计 fixed：$r" ;; esac
+case "$r" in *"skipped="*"churn"*) ok "G3 RESULT 标记 skipped=churn" ;; *) bad "G3 没有 skipped=churn：$r" ;; esac
+n=$(grep -c ' com.churn DCIM failed' "$DATA_M3/.repairs" 2>/dev/null)
+[ "$n" = 1 ] && ok "G3 只写一条失败退避行（第二个 PID 被退避挡住）" \
+  || bad "G3 失败退避行数不对：$n"
+grep -qxF 'com.churn|DCIM|1700011600|block' "$DATA_M3/.churn" 2>/dev/null \
+  && ok "G3 .churn 行为不变（失败后 block 1 小时）" \
+  || bad "G3 .churn 状态不对：$(cat "$DATA_M3/.churn" 2>/dev/null)"
 
 echo
 [ "$fail" = 0 ] && { echo "churn.test: PASS"; exit 0; }

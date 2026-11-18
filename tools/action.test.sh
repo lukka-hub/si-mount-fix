@@ -75,6 +75,11 @@ has "$out" '约 180 秒后自动重试' && ok "retry= 显示倒计时" || bad "r
 out=$(run_action "RESULT checked=1 broken=0 fixed=0 young=0 skipped=identity")
 has "$out" '沙箱身份不符（需重启应用）' && ok "identity 标签带需重启应用" || bad "identity 标签缺提示：$out"
 
+# target_missing / pid_changed 也要有中文标签（RESULT 实际会带这两个 token）
+out=$(run_action "RESULT checked=1 broken=1 fixed=0 young=0 skipped=target_missing+pid_changed")
+has "$out" '锚点/目标目录缺失' && ok "target_missing 有中文标签" || bad "target_missing 没有标签：$out"
+has "$out" '进程已变化' && ok "pid_changed 有中文标签" || bad "pid_changed 没有标签：$out"
+
 # ---------- 4) R8：sandbox_stale/gone 上主报告 ----------
 set_status '{"mode":"event","reason":"ok","reason_text":"正常","pid":0,"since":0,"last_fixed":0,"total_fixed":0,"min_age":15,"interval":60,"tracefs":"rw","churn":0,"blind":0,"sandbox_gone":0,"sandbox_stale":1}'
 out=$(run_action "RESULT checked=1 broken=0 fixed=0 young=0")

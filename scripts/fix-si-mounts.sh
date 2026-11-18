@@ -113,6 +113,9 @@ set_mono() {
 set_mono
 REP=$RC/.repairs
 CH=$RC/.churn
+# 沙箱重建失败退避用的内部键。故意以 / 开头：dir_tag 拒绝绝对路径，
+# 用户自定义目录不可能和它撞键（合法的 @sandbox 仍是普通目录）。
+SAND_KEY='/@sandbox'
 # 修复失败后的每包退避：120~300s 区间内取 180s；dev/boot/ns 变化会立即失效。
 SB_BACKOFF=180
 CACHE=$RC/.conf.cache
@@ -428,9 +431,14 @@ allow_of() {     # pkg -> 配置缓存里的 allow 目录（缓存键里的 . �
 # 也只能靠碰巧命中；新解析器切 JSON 结构，缓存层只做格式转换，不再二次猜语义。
 cache_ok=0
 CONF_STAT=$(stat -c '%y:%s' "$CONF" 2>/dev/null)
+# 缓存头带解析器+修复脚本指纹：两者任一更新，旧缓存都自动失效。版本号从 SI2 升到
+# SI3，同时让上个版本留下的 .conf.cache 不再被信任（旧缓存里可能还写着旧目录列表）。
+CACHE_VER='#SI3'
+PARSER_SIG=$(cat "$PARSER" "$0" 2>/dev/null | sha256sum | awk '{print $1}')
+case "$PARSER_SIG" in ''|*[!0-9a-f]*) PARSER_SIG=0 ;; esac
 if [ -s "$CACHE" ] && [ -n "$CONF_STAT" ]; then
   read -r chdr < "$CACHE" 2>/dev/null
-  [ "$chdr" = "#SI2 $CONF_STAT" ] && cache_ok=1
+  [ "$chdr" = "$CACHE_VER $CONF_STAT $PARSER_SIG" ] && cache_ok=1
 fi
 
 if [ "$cache_ok" = 0 ]; then
@@ -473,7 +481,7 @@ if [ "$cache_ok" = 0 ]; then
     say "警告：配置里有未知模板 id，已跳过（skipped=template）"
   fi
 
-  printf '#SI2 %s\n' "$META1" > "$CACHE.tmp.$$" 2>/dev/null || {
+  printf '%s %s %s\n' "$CACHE_VER" "$META1" "$PARSER_SIG" > "$CACHE.tmp.$$" 2>/dev/null || {
     say "配置缓存写入失败，跳过本轮"
     result_line 0 0 0 0 error=config
     exit 2
@@ -1117,7 +1125,7 @@ rebuild_sandbox() {   # pid uid pkg ns
   rb_mi=$PROC/$rb_pid/mountinfo
 
   # 0) 失败退避：dev/boot/ns 不变时，同一坏包不再每轮 bind/回滚。
-  rb_left=$(backoff_left "$rb_pkg" @sandbox "$rb_ns")
+  rb_left=$(backoff_left "$rb_pkg" "$SAND_KEY" "$rb_ns")
   if [ "$rb_left" -gt 0 ]; then
     backoff_note "$rb_left"
     sand_report gone "$rb_pkg"
@@ -1147,7 +1155,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       ambiguous) say "  跳过沙箱 $rb_pkg（多个源变体且无 SB，拒绝猜测）" ;;
       *)       say "  跳过沙箱 $rb_pkg（源不可用）" ;;
     esac
-    rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+    rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -1164,7 +1172,7 @@ rebuild_sandbox() {   # pid uid pkg ns
   # 3) 目标必须存在，且当前不是沙箱；普通 FUSE 根可先卸掉再 bind。
   if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_tgt" </dev/null 2>/dev/null; then
     say "  跳过沙箱 $rb_pkg（目标不存在）"
-    rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+    rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -1193,7 +1201,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       if [ "$rb_n" -ne 0 ]; then
         rb_root_src=""; rb_root_dev=""
         say "  跳过沙箱 $rb_pkg（umount 未生效 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}），保留现状"
-        rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+        rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
         sand_report gone "$rb_pkg"
         return 1
       fi
@@ -1237,7 +1245,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       sand_report stale "$rb_pkg"
       return 4
     fi
-    rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+    rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -1255,7 +1263,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       sand_report stale "$rb_pkg"
       return 4
     fi
-    rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+    rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
     sand_report gone "$rb_pkg"
     return 1
   fi
@@ -1331,7 +1339,7 @@ rebuild_sandbox() {   # pid uid pkg ns
         sand_report stale "$rb_pkg"
         return 4
       fi
-      rep_add_pkg "$rb_pkg" @sandbox failed "$rb_ns"
+      rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
       sand_report gone "$rb_pkg"
       return 1
       ;;
@@ -1339,10 +1347,10 @@ rebuild_sandbox() {   # pid uid pkg ns
   rm -f "$rb_repbak" "$rb_listbak" 2>/dev/null
 
   # 沙箱本身算一条 fixed；同包多 PID 每个 namespace 都要 bind，但只计一次。
-  if ! grep -qxF "$rb_pkg|$rb_ns|@sandbox" "$FIXED_LIST" 2>/dev/null; then
+  if ! grep -qxF "$rb_pkg|$rb_ns|$SAND_KEY" "$FIXED_LIST" 2>/dev/null; then
     fixed=$((fixed + 1))
     SAND_REBUILT=$((SAND_REBUILT + 1))
-    printf '%s|%s|%s\n' "$rb_pkg" "$rb_ns" "@sandbox" >> "$FIXED_LIST" 2>/dev/null
+    printf '%s|%s|%s\n' "$rb_pkg" "$rb_ns" "$SAND_KEY" >> "$FIXED_LIST" 2>/dev/null
   fi
   say "重建沙箱: $rb_pkg (pid $rb_pid)"
   sand_report rebuilt "$rb_pkg"
@@ -1510,7 +1518,12 @@ while IFS='|' read -r tag f1 f2 f3 f4 f5 f6 f7; do
       churn_put "$f1" "$f2" "$f3" "$f4"
       ;;
     Z)
-      checked=$f1; young=$f2; churn=$f3; retry_in=$f4
+      checked=$f1; young=$f2; retry_in=$f4
+      # 同包多 PID 时，retry 失败会在 shell 里即时累加 churn，而 Z 行是扫描时的计数；
+      # 直接赋值会把本轮新熔断的目标抹成 0。扫描时已 churn 的目标不会再进 repair，
+      # 两处计的是不同目标，所以累加；.churn 文件行为不变。
+      case "$f3" in ''|*[!0-9]*) f3=0 ;; esac
+      churn=$((churn + f3))
       flush_proc
       if [ "$BOFF_IN" -gt 0 ] && { [ "$retry_in" -eq 0 ] || [ "$BOFF_IN" -lt "$retry_in" ]; }; then
         retry_in=$BOFF_IN
