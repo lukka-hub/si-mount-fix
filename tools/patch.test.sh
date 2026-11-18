@@ -71,8 +71,8 @@ grep -q '^LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff
   && ok "脚本识别社区旧补丁 sha" || bad "脚本缺少 LEGACY_PATCH_SHA"
 grep -q '^LEGACY_PATCH_SIZE=99104$' "$PATCH" \
   && ok "脚本识别社区旧补丁大小" || bad "脚本缺少 LEGACY_PATCH_SIZE"
-grep -q '^version=v1.5.7$' module.prop && grep -q '^versionCode=157$' module.prop \
-  && ok "module.prop 版本 v1.5.7 / 157" || bad "module.prop 版本不对"
+grep -q '^version=v1.5.7.1$' module.prop && grep -q '^versionCode=1571$' module.prop \
+  && ok "module.prop 版本 v1.5.7.1 / 1571" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -81,12 +81,19 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.7"' update.json && grep -q '"versionCode": 157' update.json \
-  && ok "update.json 指向 v1.5.7/157" || bad "update.json 版本不对"
+grep -q '"version": "v1.5.7.1"' update.json && grep -q '"versionCode": 1571' update.json \
+  && ok "update.json 指向 v1.5.7.1/1571" || bad "update.json 版本不对"
 
-# check 不能有进程扫描或 server 重启代码。
-if grep -q '/proc/' "$PATCH"; then bad "si-patch.sh 仍引用 /proc（check 不应扫进程）"; else
-  ok "si-patch.sh 不引用 /proc"
+# check 不能有进程扫描；只允许读 boot_id/uptime 两个定点文件。
+if grep -q '/proc/sys/kernel/random/boot_id' "$PATCH" && grep -q '/proc/uptime' "$PATCH"; then
+  ok "si-patch.sh 只读 boot_id/uptime 定点文件"
+else
+  bad "si-patch.sh 缺少 boot_id/uptime 读取"
+fi
+if grep -qE '/proc/\[0-9\]|/proc/\*|for [^;]* in /proc' "$PATCH"; then
+  bad "si-patch.sh 仍遍历 /proc"
+else
+  ok "si-patch.sh 不遍历 /proc"
 fi
 for _n in SERVER_PIDS restart_si_server SERVER-RESTART TERM_WAIT RESTART_WAIT           find_dex_pids maps_has_dex count_dex_pids; do
   if grep -q "$_n" "$PATCH"; then bad "si-patch.sh 仍含 server 逻辑：$_n"; fi
@@ -112,6 +119,7 @@ printf 'fake legacy community main.dex fixture\n' > "$T/legacy.bin"
 LEGACY_SHA=$(sha_of "$T/legacy.bin")
 LEGACY_SIZE=$(size_of "$T/legacy.bin")
 SDK=37
+BOOT_ID=boot-test
 CP_OVERRIDE=
 ASSET_OVERRIDE=$ASSET_REAL
 CHOWN_OVERRIDE=
@@ -134,7 +142,7 @@ run_patch() {
     SI_PATCH_ASSET=$ASSET_OVERRIDE SI_PATCH_SDK=$SDK \
     SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
     SI_PATCH_LEGACY_SHA=$LEGACY_SHA SI_PATCH_LEGACY_SIZE=$LEGACY_SIZE \
-    SI_PATCH_CP=$CP_OVERRIDE SI_PATCH_CHOWN=$CHOWN_OVERRIDE \
+    SI_PATCH_BOOT_ID=$BOOT_ID SI_PATCH_CP=$CP_OVERRIDE SI_PATCH_CHOWN=$CHOWN_OVERRIDE \
     SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP SI_PATCH_PRELOCK_MARK=$PRELOCK_MARK \
     SI_PATCH_CORRUPT_AFTER_MV=$CORRUPT_MARK \
     "$TEST_SH" "$PATCH" "$@"
@@ -191,7 +199,8 @@ backup_count() { backups | wc -l | tr -d '[:space:]'; }
 latest_backup() { backups | tail -1; }
 clean_data() {
   rm -rf "$DATA/patch-backup" "$DATA/.si-patch.lock" 2>/dev/null
-  rm -f "$DATA/patch.log" "$DATA/.patch_prompted" 2>/dev/null
+  rm -f "$DATA/patch.log" "$DATA/.patch_prompted" "$DATA"/.patch_prompted.* 2>/dev/null
+  rm -f "$DATA/patch-pending-reboot" 2>/dev/null
   rm -f "$TARGET_DIR"/.main.dex.* 2>/dev/null
 }
 reset_hooks() {
@@ -202,6 +211,7 @@ reset_hooks() {
   PRELOCK_MARK=
   CORRUPT_MARK=
   SDK=37
+  BOOT_ID=boot-test
   write_prop
 }
 
@@ -278,8 +288,8 @@ esac
   || bad "初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
 [ "$(kv PROMPTED)" = 0 ] && ok "初始未提示" || bad "初始 PROMPTED 不对：$(kv PROMPTED)"
 [ "$(kv LEGACY)" = 0 ] && ok "原版 LEGACY=0" || bad "原版 LEGACY 不对：$(kv LEGACY)"
-[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 21 ] \
-  && ok "check 输出 21 个 KEY=VALUE" || bad "check 字段数不对"
+[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 22 ] \
+  && ok "check 输出 22 个 KEY=VALUE" || bad "check 字段数不对"
 has "$OUT" 'SERVER_PIDS=' && bad "check 仍输出 SERVER_PIDS" \
   || ok "check 不输出 SERVER_PIDS"
 [ ! -f "$DATA/patch.log" ] && ok "check 不写 patch.log" || bad "check 写了 patch.log"
@@ -536,6 +546,10 @@ run_capture_umask apply
   || bad "目标哈希不是补丁：$(target_sha)"
 [ "$(target_size)" = "$PATCH_SIZE_EXPECT" ] && ok "目标大小 88336 B" \
   || bad "目标大小不对：$(target_size)"
+[ -f "$DATA/patch-pending-reboot" ] && [ "$(cat "$DATA/patch-pending-reboot" 2>/dev/null)" = "$BOOT_ID" ] \
+  && ok "apply 写入待重启标记（当前 boot id）" || bad "apply 没有写入待重启标记"
+[ "$(stat -c %a "$DATA/patch-pending-reboot" 2>/dev/null)" = 600 ] \
+  && ok "待重启标记权限 600" || bad "待重启标记权限不对"
 has "$OUT" '重启生效（Zygisk 模块在开机时加载）' && ok "apply 提示重启生效" \
   || bad "apply 没提示重启生效：$OUT"
 ! has "$OUT" 'server' && ok "apply 输出不再提 server" || bad "apply 输出仍提 server：$OUT"
@@ -565,6 +579,15 @@ run_capture check
   || bad "check 备份数不对：$(kv BACKUP_COUNT)"
 [ "$(kv BACKUP_OK)" = 1 ] && ok "check 报告有可用原版备份" \
   || bad "check BACKUP_OK 不对：$(kv BACKUP_OK)"
+[ "$(kv PENDING_REBOOT)" = 1 ] && ok "同一 boot id 时 PENDING_REBOOT=1" \
+  || bad "同一 boot id 的 PENDING_REBOOT 不对：$(kv PENDING_REBOOT)"
+BOOT_ID=boot-rebooted
+run_capture check
+[ "$(kv PENDING_REBOOT)" = 0 ] && ok "boot id 变化后 PENDING_REBOOT=0" \
+  || bad "重启后 PENDING_REBOOT 不对：$(kv PENDING_REBOOT)"
+[ ! -f "$DATA/patch-pending-reboot" ] && ok "boot id 变化后待重启标记已删除" \
+  || bad "重启后待重启标记仍在"
+BOOT_ID=boot-test
 run_capture apply
 [ "$RC" = 0 ] && ok "已 patched apply 返回成功" || bad "已 patched apply 失败（$RC）"
 has "$OUT" '无需重复' && ok "已 patched 提示无需重复" || bad "已 patched 提示不对：$OUT"
@@ -580,9 +603,13 @@ run_capture check
   || bad "备份总数不对：$(kv BACKUP_COUNT)"
 [ "$(kv BACKUP_OK)" = 1 ] && ok "最新坏但旧的有效时 BACKUP_OK=1" \
   || bad "BACKUP_OK 没跳过坏备份：$(kv BACKUP_OK)"
+printf '%s\n' "$BOOT_ID" > "$DATA/patch-pending-reboot"
+chmod 600 "$DATA/patch-pending-reboot"
 run_capture restore
 [ "$RC" = 0 ] && ok "最新备份坏时 restore 仍成功" || bad "restore 没选旧的有效备份（$RC）：$ERR"
 [ "$(target_sha)" = "$ORIG_SHA" ] && ok "restore 回到原版" || bad "restore 后哈希不对"
+[ ! -f "$DATA/patch-pending-reboot" ] && ok "restore 删除待重启标记" \
+  || bad "restore 后待重启标记仍在"
 has "$OUT" '重启生效（Zygisk 模块在开机时加载）' && ok "restore 提示重启生效" \
   || bad "restore 没提示重启生效：$OUT"
 
@@ -1027,6 +1054,13 @@ grep -q 'p.originalSha' webroot/index.html && grep -q 'p.originalSize' webroot/i
   && ok "WebUI 用原版哈希/大小更新恢复后的卡片" || bad "WebUI 没记录原版哈希/大小"
 grep -q 'MTIME' scripts/si-patch.sh && grep -q 'p.mtime' webroot/index.html \
   && ok "check 输出 mtime 且 WebUI 读入缓存键" || bad "mtime 缓存键缺失"
+grep -q 'PENDING_REBOOT' scripts/si-patch.sh \
+  && grep -q 'p.pendingReboot = toInt(p.PENDING_REBOOT, 0) === 1' webroot/index.html \
+  && grep -q 'patchPendingHint(p)' webroot/index.html \
+  && grep -q "p.pendingReboot = action === 'apply'" webroot/index.html \
+  && ok "check/UI 接线 PENDING_REBOOT 与动作后待重启" || bad "PENDING_REBOOT 接线缺失"
+grep -q 'if (rebootHint)' webroot/index.html && grep -q 'hint.hidden = true;' webroot/index.html \
+  && ok "patched 只在待重启时显示重启提示" || bad "patched 重启提示未按 pending 分支"
 grep -q 'PATCH_CACHE_TTL = 30000' webroot/index.html \
   && grep -q 'patchCacheUsable' webroot/index.html \
   && grep -q 'statPatchTarget' webroot/index.html \
@@ -1184,23 +1218,24 @@ grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
   || bad "构建脚本没有校验补丁大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.7' CHANGELOG.md \
-  && ! grep -q '^## 1.5.6' CHANGELOG.md \
-  && ! grep -q '^## 1.5.5' CHANGELOG.md \
-  && ! grep -q '^## 1.5.4' CHANGELOG.md \
-  && ! grep -q '^## 1.5.3' CHANGELOG.md \
-  && ! grep -q '^## 1.5.2' CHANGELOG.md \
-  && ! grep -q '^## 1.5.1' CHANGELOG.md \
-  && ! grep -q '^## 1.5.0' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.7.1$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.7$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.6$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.5$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.4$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.3$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.2$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.1$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.0$' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.7" || bad "CHANGELOG 不是只含 1.5.7"
+  && ok "CHANGELOG 只列出 1.5.7.1" || bad "CHANGELOG 不是只含 1.5.7.1"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md \
-  && grep -q 'version=v1.5.7' README.md && grep -q 'versionCode=157' README.md \
-  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.7 版本" || bad "README 哈希/大小/版本不对"
+  && grep -q 'version=v1.5.7.1' README.md && grep -q 'versionCode=1571' README.md \
+  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.7.1 版本" || bad "README 哈希/大小/版本不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
   && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7' CHANGELOG.md README.md \
@@ -1209,7 +1244,7 @@ grep -q 'patched-legacy' README.md && grep -q 'main.dex.legacy' README.md \
   && grep -q 'LEGACY' README.md \
   && ok "README 说明 patched-legacy/legacy 备份/LEGACY" \
   || bad "README 缺少 legacy 说明"
-grep -q '二十一个' README.md && ok "README 说明 check 21 个字段" \
+grep -q '二十二个' README.md && ok "README 说明 check 22 个字段" \
   || bad "README 字段数说明不对"
 _bad_hash=60be88''02
 if grep -q "$_bad_hash" README.md CHANGELOG.md scripts/si-patch.sh tools/build.sh; then
@@ -1243,6 +1278,8 @@ fi
 if command -v node >/dev/null 2>&1; then
   sed -n '/PATCH-VERDICT-START/,/PATCH-VERDICT-END/p' webroot/index.html \
     | sed '/PATCH-VERDICT-START/d;/PATCH-VERDICT-END/d' > "$T/verdict.js"
+  sed -n '/PATCH-PENDING-HINT-START/,/PATCH-PENDING-HINT-END/p' webroot/index.html \
+    | sed '/PATCH-PENDING-HINT-START/d;/PATCH-PENDING-HINT-END/d' >> "$T/verdict.js"
   cat >> "$T/verdict.js" <<'JS'
 function t(name, got, tone, titlePart, bodyPart) {
   var ok = got && got.tone === tone && (!titlePart || got.title.indexOf(titlePart) >= 0) &&
@@ -1273,9 +1310,20 @@ t('known 0 无输出→good（交给 stat 复核）', patchActionVerdict('apply'
 t('legacy 升级文本（sync 无退出码）→good', patchActionVerdict('apply',
   '已从社区版升级到自建补丁：/x/main.dex', false, null, false),
   'good', '已应用，重启手机生效');
+(function () {
+  var p1 = {state:'patched', match:true, pendingReboot:true, lastAction:''};
+  var p0 = {state:'patched', match:true, pendingReboot:false, lastAction:''};
+  var h1 = patchPendingHint(p1);
+  var h0 = patchPendingHint(p0);
+  var ok1 = h1.indexOf('重启手机生效') >= 0;
+  var ok0 = h0 === '';
+  console.log((ok1 ? '  ok   ' : '  FAIL ') + 'pending=1 显示重启提示');
+  console.log((ok0 ? '  ok   ' : '  FAIL ') + 'pending=0 不显示重启提示');
+  if (!ok1 || !ok0) process.exitCode = 1;
+})();
 JS
   if node "$T/verdict.js"; then
-    ok "WebUI 动作判定 10 个场景通过（node 实跑生产函数）"
+    ok "WebUI 动作判定 10 个场景 + pending 提示 2 个场景通过（node）"
   else
     bad "WebUI 动作判定用例失败"
   fi

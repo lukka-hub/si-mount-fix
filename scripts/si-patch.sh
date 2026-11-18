@@ -75,6 +75,7 @@ MODULE_PROP=$TARGET_DIR/module.prop
 # 首次提示标记按目标文件+适用版本区分；旧版单一 .patch_prompted 不再命中。
 PROMPT_TAG=$(printf '%s.%s' "$TARGET" "$PATCH_FOR_VERSION" | tr -c 'A-Za-z0-9._-' '_')
 PROMPT_FILE=$DATA/.patch_prompted.$PROMPT_TAG
+PENDING_FILE=$DATA/patch-pending-reboot
 BACKUP_DIR=$DATA/patch-backup
 LOCK=$DATA/.si-patch.lock
 
@@ -84,6 +85,48 @@ detect_sdk() {
     return 0
   fi
   getprop ro.build.version.sdk 2>/dev/null | tr -d '[:space:]'
+}
+
+# 启动标识：优先 boot_id；没有时用当前时间减 /proc/uptime 秒数得到本次开机时刻。
+# 只读这两个定点文件，不遍历 /proc。
+current_boot_id() {
+  if [ "$SI_TEST" = 1 ] && [ -n "${SI_PATCH_BOOT_ID:-}" ]; then
+    printf '%s\n' "$SI_PATCH_BOOT_ID"
+    return 0
+  fi
+  _bid=
+  if [ -r /proc/sys/kernel/random/boot_id ]; then
+    _bid=$(sed -n '1p' /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]')
+  fi
+  if [ -n "$_bid" ]; then
+    printf 'id:%s\n' "$_bid"
+    return 0
+  fi
+  _up=
+  if [ -r /proc/uptime ]; then
+    _up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+  fi
+  _now=$(date +%s 2>/dev/null)
+  case "$_up" in ''|*[!0-9]*) _up= ;; esac
+  case "$_now" in ''|*[!0-9]*) _now= ;; esac
+  if [ -n "$_up" ] && [ -n "$_now" ]; then
+    printf 'uptime:%s\n' "$((_now - _up))"
+    return 0
+  fi
+  return 1
+}
+
+mark_pending_reboot() {
+  _bid=$(current_boot_id) || return 1
+  [ -n "$_bid" ] || return 1
+  mkdir -p "$DATA" 2>/dev/null || return 1
+  ( umask 077; printf '%s\n' "$_bid" > "$PENDING_FILE" ) 2>/dev/null || return 1
+  chmod 600 "$PENDING_FILE" 2>/dev/null
+  return 0
+}
+
+clear_pending_reboot() {
+  rm -f "$PENDING_FILE" 2>/dev/null
 }
 
 sha256_of() {
@@ -160,6 +203,7 @@ SI_MATCH=0
 BACKUP_COUNT=0
 BACKUP_OK=0
 PROMPTED=0
+PENDING_REBOOT=0
 FORCE=0
 TMP_TARGET=
 TMP_CUR=
@@ -195,6 +239,17 @@ collect_state() {
   BACKUP_OK=0
   if [ -n "$(find_original_backup)" ]; then BACKUP_OK=1; fi
   if [ -f "$PROMPT_FILE" ]; then PROMPTED=1; else PROMPTED=0; fi
+  PENDING_REBOOT=0
+  if [ -f "$PENDING_FILE" ]; then
+    _cur_boot=$(current_boot_id)
+    _pending_boot=$(sed -n '1p' "$PENDING_FILE" 2>/dev/null)
+    if [ -n "$_cur_boot" ] && [ "$_pending_boot" = "$_cur_boot" ]; then
+      PENDING_REBOOT=1
+    else
+      # 已经重启（启动标识变化）或读不到当前标识：清掉旧标记。
+      rm -f "$PENDING_FILE" 2>/dev/null
+    fi
+  fi
 
   LEGACY=0
   if [ "$SDK" != 37 ]; then
@@ -235,6 +290,7 @@ print_check() {
   printf 'BACKUP_COUNT=%s\n' "$BACKUP_COUNT"
   printf 'BACKUP_OK=%s\n' "$BACKUP_OK"
   printf 'PROMPTED=%s\n' "$PROMPTED"
+  printf 'PENDING_REBOOT=%s\n' "$PENDING_REBOOT"
 }
 
 status_line() {
@@ -526,6 +582,7 @@ do_apply() {
     log_action "APPLY target=$TARGET original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
     printf '已应用补丁：%s\n' "$DEX"
   fi
+  mark_pending_reboot || log_action "PENDING-FAILED target=$TARGET"
   printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
@@ -621,6 +678,7 @@ do_restore() {
   else
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"
   fi
+  clear_pending_reboot
   printf '已恢复原版：%s\n' "$DEX"
   printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }

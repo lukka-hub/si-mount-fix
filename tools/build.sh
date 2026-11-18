@@ -66,25 +66,39 @@ V_CODE=$(prop_get versionCode)
 [ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用模块版本）'
 [ -n "$(prop_get siPatchVersionCode)" ] || die 'module.prop 缺少 siPatchVersionCode（补丁适用模块 versionCode）'
 
-# ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140）----------
+# ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140；v1.5.7.1 ↔ 1571）----------
 VERSION=${V_PROP#v}
 case "$VERSION" in
   *.*.*) ;;
-  *) die "version 必须是 v<major>.<minor>.<patch>：$V_PROP" ;;
+  *) die "version 必须是 v<major>.<minor>.<patch>[.<micro>]：$V_PROP" ;;
 esac
 V_MAJOR=${VERSION%%.*}
 V_REST=${VERSION#*.}
 V_MINOR=${V_REST%%.*}
-V_PATCH=${V_REST#*.}
-case "$V_MAJOR$V_MINOR$V_PATCH" in
+V_TAIL=${V_REST#*.}
+case "$V_TAIL" in
+  *.*)
+    V_PATCH=${V_TAIL%%.*}
+    V_MICRO=${V_TAIL#*.}
+    case "$V_MICRO" in
+      ''|*[!0-9]*) die "version 各段必须是数字：$V_PROP" ;;
+      *.*) die "version 最多四段：$V_PROP" ;;
+    esac ;;
+  *)
+    V_PATCH=$V_TAIL
+    V_MICRO= ;;
+esac
+case "$V_MAJOR$V_MINOR$V_PATCH$V_MICRO" in
   ''|*[!0-9]*) die "version 各段必须是数字：$V_PROP" ;;
 esac
-case "$V_PATCH" in
-  *.*) die "version 只能有三段：$V_PROP" ;;
-esac
 [ "$V_MINOR" -le 9 ] && [ "$V_PATCH" -le 9 ] \
-  || die "versionCode 规则为 major*100+minor*10+patch，要求 minor/patch <= 9：$V_PROP"
-V_CODE_EXPECT=$((V_MAJOR * 100 + V_MINOR * 10 + V_PATCH))
+  || die "versionCode 规则要求 minor/patch <= 9：$V_PROP"
+if [ -n "$V_MICRO" ]; then
+  [ "$V_MICRO" -le 9 ] || die "versionCode 规则要求 micro <= 9：$V_PROP"
+  V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10 + V_MICRO))
+else
+  V_CODE_EXPECT=$((V_MAJOR * 100 + V_MINOR * 10 + V_PATCH))
+fi
 case "$V_CODE" in
   ''|*[!0-9]*) die "versionCode 必须是数字：[$V_CODE]" ;;
 esac

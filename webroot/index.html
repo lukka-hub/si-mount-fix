@@ -1218,6 +1218,7 @@ details.card[open] summary{margin-bottom:8px}
     p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
     p.prompted = toInt(p.PROMPTED, 0) === 1;
     p.legacy = toInt(p.LEGACY, 0) === 1;
+    p.pendingReboot = toInt(p.PENDING_REBOOT, 0) === 1;
     p.lastAction = '';
     var promptKey = patchPromptPath(p);
     if (state.patchMarkedKey && state.patchMarkedKey !== promptKey) { state.patchMarked = false; }
@@ -1500,6 +1501,16 @@ details.card[open] summary{margin-bottom:8px}
     runPatchAction(action);
   }
 
+  /* PATCH-PENDING-HINT-START */
+  /* 只有“补丁版 + 版本匹配 + 待重启”才显示重启提示；重启后 check 清标记即为空。 */
+  function patchPendingHint(p) {
+    if (!p || p.state !== 'patched' || !p.match || !p.pendingReboot) { return ''; }
+    return p.lastAction === 'applied'
+      ? '已应用，重启手机生效（Zygisk 模块在开机时加载）。'
+      : '重启手机生效（Zygisk 模块在开机时加载）。';
+  }
+  /* PATCH-PENDING-HINT-END */
+
   function renderPatch() {
     var card = $('patchCard');
     if (state.patchSdk && state.patchSdk !== '37') { card.hidden = true; return; }
@@ -1553,18 +1564,22 @@ details.card[open] summary{margin-bottom:8px}
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-      if (p.lastAction === 'applied') {
+      if (p.match) {
         badge = '已应用';
-        hint.textContent = '已应用，重启手机生效（Zygisk 模块在开机时加载）。';
-      } else if (p.match) {
-        badge = '已应用';
-        hint.textContent = '重启手机生效（Zygisk 模块在开机时加载）。';
+        var rebootHint = patchPendingHint(p);
+        if (rebootHint) {
+          hint.textContent = rebootHint;
+          hint.hidden = false;
+        } else {
+          hint.textContent = '';
+          hint.hidden = true;
+        }
       } else {
         badge = '版本不匹配';
         hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
           '版本不匹配时不允许恢复或强制恢复。';
+        hint.hidden = false;
       }
-      hint.hidden = false;
     } else if (st === 'patched-legacy') {
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('社区版旧补丁' + (p.size ? ' · ' + p.size + ' B' : ''));
@@ -1722,6 +1737,7 @@ details.card[open] summary{margin-bottom:8px}
     var p = state.patch;
     if (!p) { return; }
     p.lastAction = action === 'apply' ? 'applied' : 'restored';
+    p.pendingReboot = action === 'apply';
     if (action === 'apply') {
       /* 原版升级会新建原版备份；社区旧版升级只新建 legacy 备份，原版备份状态不变。 */
       p.legacy = false;

@@ -113,8 +113,8 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.7` 与 `versionCode=157`
-  （规则 `versionCode = major*100 + minor*10 + patch`）。
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.7.1` 与 `versionCode=1571`
+  （三段按 `major*100 + minor*10 + patch`；1.5.7.1 这类四段按 `major*1000 + minor*100 + patch*10 + micro`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
@@ -175,6 +175,13 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 提示「缺少原版备份，可先升级到自建版」。升级/恢复成功都回到 `patched` / `original`，
 `LEGACY` 回到 0。
 
+**重启提示与标记**：apply/升级成功后写
+`/data/adb/si-mount-fix/patch-pending-reboot`（600，内容为本次启动标识：优先 boot_id，缺失时用
+当前时间减 `/proc/uptime` 秒数得到开机时刻）。`check` 输出 `PENDING_REBOOT`：启动标识一致为 1；
+重启后标识变化则自动删除标记并输出 0。WebUI 的黄色“重启手机生效”只在 `PENDING_REBOOT=1` 时显示；
+重启后打开面板不再出现。`restore` 成功后删除标记。`check` 只读 boot_id/uptime 两个定点文件，
+不遍历 `/proc`。
+
 **重启生效**：`main.dex` 由 Zygisk 模块在开机时加载，apply/restore 只写文件、不重启任何进程。
 写入后必须重启手机；重启前 SI 仍在使用旧 dex。
 
@@ -225,7 +232,7 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 `check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_VERSION_CODE` / `SI_TARGET_MODULE` /
 `SI_TARGET_VERSION` / `SI_TARGET_VERSION_CODE` / `SI_TARGET_FILE` / `SI_MATCH` / `DEX` /
 `SIZE` / `MTIME` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` / `PATCH_SIZE` / `PATCH_SHA` /
-`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` / `LEGACY` 二十一个 `KEY=VALUE`。任何状态都返回 0；
+`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` / `LEGACY` / `PENDING_REBOOT` 二十二个 `KEY=VALUE`。任何状态都返回 0；
 `apply`/`restore` 失败时非 0 退出，并在 stderr 说明原因。
 
 **注意**：
