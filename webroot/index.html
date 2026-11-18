@@ -120,7 +120,7 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .stepper button:disabled,.stepper input:disabled{opacity:.45}
 .field-error{color:var(--bad);font-size:12px;margin-top:5px}
 .hint{background:var(--warn-bg);color:var(--warn);border-radius:9px;padding:9px 11px;font-size:12.5px;margin-bottom:10px}
-.row-actions{display:flex;gap:8px;margin-top:14px}
+.row-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
 .btn{
   appearance:none;border:1px solid var(--line);background:transparent;color:var(--fg);
   font:inherit;font-size:13.5px;height:42px;border-radius:11px;padding:0 14px;cursor:pointer;
@@ -131,8 +131,19 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .btn.ghost{background:transparent}
 .btn.tiny{height:30px;font-size:12.5px;padding:0 10px;border-radius:8px}
 .btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}
 .btn[disabled]{opacity:.42;cursor:default;transform:none}
 .btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row-actions .act-btn{flex:1 1 120px}
+#patchCard .card-head{align-items:flex-start;flex-wrap:wrap;gap:6px 10px}
+#patchCard .card-head h2{flex:1 1 auto;min-width:0;line-height:1.35;overflow-wrap:anywhere}
+#patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap;line-height:1.6}
+#patchDetail{overflow-wrap:anywhere}
+.patch-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,160px));justify-content:start;gap:8px;align-items:stretch;margin-top:14px}
+.patch-actions .btn{width:100%;min-width:0;margin:0}
+.patch-check-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 10px;margin-top:14px}
+.patch-check-row .btn{flex:0 0 auto;width:auto}
+#patchTiming{min-width:0;line-height:1.4;overflow-wrap:anywhere}
 .result{margin-top:12px;background:var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px}
 .result.good{background:var(--good-bg);color:var(--good)}
 .result.warn{background:var(--warn-bg);color:var(--warn)}
@@ -213,18 +224,18 @@ details.card[open] summary{margin-bottom:8px}
   </div>
   <div class="field-error" id="cfgMinAgeErr" hidden>最小进程年龄需为 5–120 之间的整数</div>
   <div class="row-actions" id="cfgActions" hidden>
-    <button class="btn primary" id="cfgSave" style="flex:1" disabled>保存并重启守护</button>
-    <button class="btn ghost" id="cfgDiscard" disabled>撤销</button>
+    <button class="btn primary act-btn" id="cfgSave" disabled>保存并重启守护</button>
+    <button class="btn ghost act-btn" id="cfgDiscard" disabled>撤销</button>
   </div>
 </section>
 
 <section class="card">
   <div class="card-head"><h2>操作</h2><span class="muted small" id="opStamp"></span></div>
   <div class="btn-grid">
-    <button class="btn ghost" id="btnRefresh">刷新</button>
-    <button class="btn ghost" id="btnCheck" disabled>体检</button>
-    <button class="btn primary" id="btnFix" disabled>立即修复</button>
-    <button class="btn ghost" id="btnRestart" disabled>重启守护</button>
+    <button class="btn ghost act-btn" id="btnRefresh">刷新</button>
+    <button class="btn ghost act-btn" id="btnCheck" disabled>体检</button>
+    <button class="btn primary act-btn" id="btnFix" disabled>立即修复</button>
+    <button class="btn ghost act-btn" id="btnRestart" disabled>重启守护</button>
   </div>
   <div id="opResult" class="result" role="status" aria-live="polite" hidden></div>
 </section>
@@ -233,21 +244,21 @@ details.card[open] summary{margin-bottom:8px}
   <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
-  <div class="row-actions" id="patchCheckRow">
-    <button class="btn tiny ghost" id="btnPatchCheck" disabled>检查补丁</button>
+  <div class="row-actions patch-check-row" id="patchCheckRow">
+    <button class="btn ghost act-btn" id="btnPatchCheck" disabled>检查补丁</button>
     <span class="muted small" id="patchTiming">—</span>
   </div>
-  <div class="row-actions" id="patchActions" hidden>
-    <button class="btn primary" id="btnPatchApply" disabled>应用补丁</button>
-    <button class="btn ghost" id="btnPatchRestore" hidden disabled>恢复原版</button>
-    <button class="btn danger" id="btnPatchForce" hidden disabled>强制恢复</button>
+  <div class="row-actions patch-actions" id="patchActions" hidden>
+    <button class="btn primary act-btn" id="btnPatchApply" disabled>应用补丁</button>
+    <button class="btn ghost act-btn" id="btnPatchRestore" hidden disabled>恢复原版</button>
+    <button class="btn danger act-btn" id="btnPatchForce" hidden disabled>强制恢复</button>
   </div>
   <div id="patchConfirm" class="result warn" role="alert" hidden>
     <div class="r-title" id="patchConfirmTitle"></div>
     <div class="r-body" id="patchConfirmBody"></div>
-    <div class="row-actions" style="margin-top:10px">
-      <button class="btn primary" id="btnPatchConfirmGo" disabled>确认执行</button>
-      <button class="btn ghost" id="btnPatchConfirmCancel">取消</button>
+    <div class="row-actions patch-actions">
+      <button class="btn primary act-btn" id="btnPatchConfirmGo" disabled>确认执行</button>
+      <button class="btn ghost act-btn" id="btnPatchConfirmCancel">取消</button>
     </div>
   </div>
   <div id="patchResult" class="result" role="status" aria-live="polite" hidden></div>
@@ -1211,6 +1222,7 @@ details.card[open] summary{margin-bottom:8px}
     p.backup = toInt(p.BACKUP_COUNT, 0);
     p.backupOk = toInt(p.BACKUP_OK, 0) === 1;
     p.prompted = toInt(p.PROMPTED, 0) === 1;
+    p.legacy = toInt(p.LEGACY, 0) === 1;
     p.lastAction = '';
     var promptKey = patchPromptPath(p);
     if (state.patchMarkedKey && state.patchMarkedKey !== promptKey) { state.patchMarked = false; }
@@ -1426,13 +1438,19 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function patchConfirmTitle(action) {
-    if (action === 'apply') { return '确认应用 main.dex 补丁？'; }
+    var p = state.patch || {};
+    if (action === 'apply') {
+      return p.state === 'patched-legacy' ? '确认升级到自建版？' : '确认应用 main.dex 补丁？';
+    }
     if (action === 'force') { return '确认强制恢复原版？'; }
     return '确认恢复原版？';
   }
 
   function patchConfirmGoLabel(action) {
-    if (action === 'apply') { return '确认应用'; }
+    var p = state.patch || {};
+    if (action === 'apply') {
+      return p.state === 'patched-legacy' ? '确认升级' : '确认应用';
+    }
     if (action === 'force') { return '确认强制恢复'; }
     return '确认恢复原版';
   }
@@ -1444,7 +1462,9 @@ details.card[open] summary{margin-bottom:8px}
     var ver = p.targetVersion || '未知版本';
     var what;
     if (action === 'apply') {
-      what = '把 ' + mod + ' 的 ' + file + ' 替换为补丁版';
+      what = p.state === 'patched-legacy'
+        ? '把 ' + mod + ' 的社区版 ' + file + ' 升级为自建版（先备份当前社区 dex）'
+        : '把 ' + mod + ' 的 ' + file + ' 替换为补丁版';
     } else if (action === 'force') {
       what = '用有效原版备份强制覆盖 ' + mod + ' 的 ' + file;
     } else {
@@ -1458,8 +1478,10 @@ details.card[open] summary{margin-bottom:8px}
     if (patchBusy() || actionBusy('patchCheck') || !BR.ok || state.noRoot || state.patchError ||
         state.locked || state.patchSdk !== '37' || !state.patch) { return; }
     var p = state.patch;
-    var ok = (action === 'apply' && p.state === 'original' && p.match) ||
-      (action === 'restore' && p.state === 'patched' && p.match && p.backupOk) ||
+    var ok = (action === 'apply' && p.match &&
+        (p.state === 'original' || p.state === 'patched-legacy')) ||
+      (action === 'restore' && p.match && p.backupOk &&
+        (p.state === 'patched' || p.state === 'patched-legacy')) ||
       (action === 'force' && p.match && p.backupOk && p.state === 'unknown');
     if (!ok) { return; }
     clearPatchConfirmTimer();
@@ -1478,7 +1500,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function confirmPatchAction() {
     var action = state.patchConfirm;
-    if (!action || patchBusy()) { return; }
+    if (!action || patchBusy() || actionBusy('patchCheck')) { return; }
     clearPatchConfirmState();
     runPatchAction(action);
   }
@@ -1490,7 +1512,8 @@ details.card[open] summary{margin-bottom:8px}
     var err = state.patchError;
     if (!p && !err) { card.hidden = true; return; }
     var st = p ? p.state : '';
-    if (!err && st !== 'original' && st !== 'patched' && st !== 'unknown') {
+    if (!err && st !== 'original' && st !== 'patched' && st !== 'patched-legacy' &&
+        st !== 'unknown') {
       card.hidden = true;
       return;
     }
@@ -1526,8 +1549,8 @@ details.card[open] summary{margin-bottom:8px}
         hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用补丁修复。' +
           '补丁只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
       } else {
-        badge = '不支持';
-        hint.textContent = '当前 ' + mod + ' 版本/哈希不在支持范围，未做任何修改。补丁仅适用于 ' +
+        badge = '版本不匹配';
+        hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。补丁仅适用于 ' +
           (p.targetVersion || '未知版本') + '（' + file + '）。';
       }
       hint.hidden = false;
@@ -1542,24 +1565,33 @@ details.card[open] summary{margin-bottom:8px}
         badge = '已应用';
         hint.textContent = '重启手机生效（Zygisk 模块在开机时加载）。';
       } else {
-        badge = '不支持';
-        hint.textContent = '当前 ' + mod + ' 版本/哈希不在支持范围，未做任何修改。' +
+        badge = '版本不匹配';
+        hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
           '版本不匹配时不允许恢复或强制恢复。';
       }
       hint.hidden = false;
+    } else if (st === 'patched-legacy') {
+      bits.push(mod + ' ' + (p.si || '版本未知'));
+      bits.push('社区版旧补丁' + (p.size ? ' · ' + p.size + ' B' : ''));
+      bits.push(p.backupOk ? '有可用的原版备份' : '缺少原版备份');
+      badge = '旧版补丁';
+      hint.textContent = '检测到社区版补丁，可升级到本模块自建版，或恢复原版。' +
+        (p.backupOk ? '' : ' 缺少原版备份，无法直接恢复。') +
+        (p.match ? '' : ' 当前模块版本不匹配，暂不能升级或恢复。');
+      hint.hidden = false;
     } else {
-      badge = '不支持';
+      badge = '未知版本';
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
       if (!p.match) {
-        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+        hint.textContent = '当前 ' + file + ' 是未知版本，且模块版本不匹配；未做任何修改。' +
           '版本不匹配时不允许强制恢复。';
       } else if (p.backupOk) {
-        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+        hint.textContent = '当前 ' + file + ' 是未知版本，未做任何修改。' +
           '检测到有效原版备份，可强制恢复。';
       } else {
-        hint.textContent = '当前 ' + file + ' 既不是原版也不是补丁版，未做任何修改。' +
+        hint.textContent = '当前 ' + file + ' 是未知版本，未做任何修改。' +
           '也没有可用的原版备份。';
       }
       hint.hidden = false;
@@ -1575,13 +1607,15 @@ details.card[open] summary{margin-bottom:8px}
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
       state.patchSdk === '37' && !actionBusy('patchCheck');
     var forceOk = !!(p && p.match && p.backupOk && st === 'unknown');
+    applyBtn.textContent = st === 'patched-legacy' ? '升级到自建版' : '应用补丁';
+    restoreBtn.textContent = '恢复原版';
     if (err) {
       applyBtn.hidden = true;
       restoreBtn.hidden = true;
       forceBtn.hidden = true;
     } else {
-      applyBtn.hidden = !(st === 'original');
-      restoreBtn.hidden = !(st === 'patched');
+      applyBtn.hidden = !(st === 'original' || st === 'patched-legacy');
+      restoreBtn.hidden = !(st === 'patched' || st === 'patched-legacy');
       forceBtn.hidden = !forceOk;
     }
     applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply');
@@ -1638,7 +1672,8 @@ details.card[open] summary{margin-bottom:8px}
     }
     if (errnoKnown !== true) {
       var marker = isApply ? '已应用补丁' : '已恢复原版';
-      if (t.indexOf(marker) < 0) {
+      var legacyMarker = '已从社区版升级到自建补丁';
+      if (t.indexOf(marker) < 0 && !(isApply && t.indexOf(legacyMarker) >= 0)) {
         return { tone: 'warn', title: '结果未知，请刷新检查', body: unknownBody };
       }
     }
@@ -1689,13 +1724,19 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   /* 复核成功后更新卡片状态并写缓存，避免动作后紧接着又跑 check。 */
-  function applyPatchState(action) {
+  function applyPatchState(action, fromLegacy) {
     var p = state.patch;
     if (!p) { return; }
     p.lastAction = action === 'apply' ? 'applied' : 'restored';
     if (action === 'apply') {
-      p.backupOk = 1;
+      /* 原版升级会新建原版备份；社区旧版升级只新建 legacy 备份，原版备份状态不变。 */
+      p.legacy = false;
+      p.LEGACY = 0;
+      if (!fromLegacy) { p.backupOk = 1; }
       p.backup = toInt(p.backup, 0) + 1;
+    } else {
+      p.legacy = false;
+      p.LEGACY = 0;
     }
     storePatchCache(p);
   }
@@ -1719,16 +1760,19 @@ details.card[open] summary{margin-bottom:8px}
     var key = patchActionKey(action);
     var started = Date.now();
     var actionOk = false;
+    var fromLegacy = state.patch.state === 'patched-legacy';
     state.patch.lastAction = '';
     clearPatchConfirmState();
     beginAction(key);
     renderPatch();
-    showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…',
-      '后台执行中，页面可以继续操作', '');
+    var progressTitle = isApply
+      ? (fromLegacy ? '正在升级到自建版…' : '正在应用补丁…')
+      : '正在恢复原版…';
+    showPatchResult(progressTitle, '后台执行中，页面可以继续操作', '');
     runBg('sh ' + P.patch + ' ' + cmd, {
       timeoutMs: PATCH_ACTION_TIMEOUT,
       onProgress: function (ms) {
-        showPatchResult(isApply ? '正在应用补丁…' : '正在恢复原版…',
+        showPatchResult(progressTitle,
           '后台执行中 · 已运行 ' + (ms / 1000).toFixed(1) + ' 秒', '');
       }
     }).then(function (res) {
@@ -1765,7 +1809,7 @@ details.card[open] summary{margin-bottom:8px}
             state.patch.state + '，不是预期的 ' + expected + '。', 'bad');
           return;
         }
-        applyPatchState(action);
+        applyPatchState(action, fromLegacy);
         actionOk = true;
         var body = text;
         if (body.indexOf('重启生效') < 0) {
@@ -1773,7 +1817,9 @@ details.card[open] summary{margin-bottom:8px}
         }
         body = (body ? body + '\n' : '') + '复核：main.dex=' + state.patch.state +
           '，' + state.patch.size + ' B · ' + elapsed + 'ms';
-        showPatchResult(v.title, body, v.tone);
+        var okTitle = (isApply && fromLegacy)
+          ? '已升级到自建版，重启手机生效' : v.title;
+        showPatchResult(okTitle, body, v.tone);
       });
     }).catch(function (err) {
       /* 动作可能已经执行：异常时按“结果未知”处理，不要直接判失败或成功。 */

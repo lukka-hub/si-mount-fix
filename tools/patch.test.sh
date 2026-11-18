@@ -1,9 +1,9 @@
 #!/system/bin/sh
 # si-patch.sh / WebUI / uninstall 的 main.dex 补丁回归：
-#   check 的 original/patched/unknown/no-target、SDK 门禁、版本门禁、asset 哈希/大小、
+#   check 的 original/patched/patched-legacy/unknown/no-target、SDK 门禁、版本门禁、asset 哈希/大小、
 #   备份创建/恢复/强制恢复、已 patched no-op、apply 失败回滚、restore 无备份报错、
 #   目标 644 / 备份 600 / chown、持锁重查、并发锁；U1 卸载保留 patch-backup、
-#   U2 restore/--force 版本门禁；静态断言 UI 有后台执行/缓存/独立 busy/结果未知。
+#   U2 restore/--force 版本门禁；legacy 识别/升级/恢复；静态断言 UI 后台/缓存/独立 busy/按钮归一化。
 #   另外断言：补丁 check 不扫 /proc、不重启 server；WebUI 无 SERVER_PIDS/二次 check。
 #   fake 模块目录 + SI_TEST 钩子；补丁资产用仓库里的真实 assets/main.dex。
 #
@@ -67,8 +67,12 @@ grep -q "PATCH_SHA=$PATCH_SHA_EXPECT" "$PATCH" \
   && ok "脚本补丁 sha256 常量正确" || bad "脚本补丁 sha256 常量不对"
 grep -q "PATCH_SIZE=$PATCH_SIZE_EXPECT" "$PATCH" \
   && ok "脚本补丁大小常量正确" || bad "脚本补丁大小常量不对"
-grep -q '^version=v1.5.5$' module.prop && grep -q '^versionCode=155$' module.prop \
-  && ok "module.prop 版本 v1.5.5 / 155" || bad "module.prop 版本不对"
+grep -q '^LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7$' "$PATCH" \
+  && ok "脚本识别社区旧补丁 sha" || bad "脚本缺少 LEGACY_PATCH_SHA"
+grep -q '^LEGACY_PATCH_SIZE=99104$' "$PATCH" \
+  && ok "脚本识别社区旧补丁大小" || bad "脚本缺少 LEGACY_PATCH_SIZE"
+grep -q '^version=v1.5.6$' module.prop && grep -q '^versionCode=156$' module.prop \
+  && ok "module.prop 版本 v1.5.6 / 156" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -77,8 +81,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.5"' update.json && grep -q '"versionCode": 155' update.json \
-  && ok "update.json 指向 v1.5.5/155" || bad "update.json 版本不对"
+grep -q '"version": "v1.5.6"' update.json && grep -q '"versionCode": 156' update.json \
+  && ok "update.json 指向 v1.5.6/156" || bad "update.json 版本不对"
 
 # check 不能有进程扫描或 server 重启代码。
 if grep -q '/proc/' "$PATCH"; then bad "si-patch.sh 仍引用 /proc（check 不应扫进程）"; else
@@ -104,6 +108,9 @@ fi
 printf 'fake original main.dex fixture\n' > "$T/original.bin"
 ORIG_SHA=$(sha_of "$T/original.bin")
 ORIG_SIZE=$(size_of "$T/original.bin")
+printf 'fake legacy community main.dex fixture\n' > "$T/legacy.bin"
+LEGACY_SHA=$(sha_of "$T/legacy.bin")
+LEGACY_SIZE=$(size_of "$T/legacy.bin")
 SDK=37
 CP_OVERRIDE=
 ASSET_OVERRIDE=$ASSET_REAL
@@ -126,6 +133,7 @@ run_patch() {
   SI_TEST=1 SI_PATCH_DATA=$DATA SI_PATCH_TARGET_DIR=$TARGET_DIR \
     SI_PATCH_ASSET=$ASSET_OVERRIDE SI_PATCH_SDK=$SDK \
     SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
+    SI_PATCH_LEGACY_SHA=$LEGACY_SHA SI_PATCH_LEGACY_SIZE=$LEGACY_SIZE \
     SI_PATCH_CP=$CP_OVERRIDE SI_PATCH_CHOWN=$CHOWN_OVERRIDE \
     SI_PATCH_PRELOCK_SLEEP=$PRELOCK_SLEEP SI_PATCH_PRELOCK_MARK=$PRELOCK_MARK \
     SI_PATCH_CORRUPT_AFTER_MV=$CORRUPT_MARK \
@@ -157,6 +165,11 @@ reset_original() {
 reset_patched() {
   cp "$ASSET_REAL" "$TARGET_DIR/main.dex" || exit 1
   chmod 644 "$TARGET_DIR/main.dex"
+  write_prop
+}
+reset_legacy() {
+  cp "$T/legacy.bin" "$TARGET_DIR/main.dex" || exit 1
+  chmod 600 "$TARGET_DIR/main.dex"
   write_prop
 }
 reset_unknown() {
@@ -264,8 +277,9 @@ esac
 [ "$(kv BACKUP_OK)" = 0 ] && ok "初始没有可用原版备份" \
   || bad "初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
 [ "$(kv PROMPTED)" = 0 ] && ok "初始未提示" || bad "初始 PROMPTED 不对：$(kv PROMPTED)"
-[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 20 ] \
-  && ok "check 输出 20 个 KEY=VALUE" || bad "check 字段数不对"
+[ "$(kv LEGACY)" = 0 ] && ok "原版 LEGACY=0" || bad "原版 LEGACY 不对：$(kv LEGACY)"
+[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 21 ] \
+  && ok "check 输出 21 个 KEY=VALUE" || bad "check 字段数不对"
 has "$OUT" 'SERVER_PIDS=' && bad "check 仍输出 SERVER_PIDS" \
   || ok "check 不输出 SERVER_PIDS"
 [ ! -f "$DATA/patch.log" ] && ok "check 不写 patch.log" || bad "check 写了 patch.log"
@@ -297,6 +311,94 @@ run_capture check
 [ "$(kv SI_MATCH)" = 1 ] && ok "模块版本读不到时按目标存在视为适用" \
   || bad "版本读不到时 SI_MATCH 不对：$(kv SI_MATCH)"
 reset_hooks
+
+# ---------- 3b) 社区旧补丁 legacy ----------
+reset_hooks
+clean_data
+reset_legacy
+run_capture check
+[ "$(kv STATE)" = patched-legacy ] && ok "社区旧补丁判为 patched-legacy" \
+  || bad "社区旧补丁状态不对：$(kv STATE)"
+[ "$(kv LEGACY)" = 1 ] && ok "社区旧补丁 LEGACY=1" \
+  || bad "社区旧补丁 LEGACY 不对：$(kv LEGACY)"
+[ "$(kv SIZE)" = "$LEGACY_SIZE" ] && [ "$(kv SHA)" = "$LEGACY_SHA" ] \
+  && ok "社区旧补丁输出实际大小/sha" || bad "社区旧补丁大小/sha 不对"
+[ "$(kv BACKUP_OK)" = 0 ] && ok "社区旧补丁初始没有原版备份" \
+  || bad "社区旧补丁初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
+run_capture status
+has "$OUT" '旧版社区补丁' && ok "status 说明旧版社区补丁" \
+  || bad "status 没说明旧版社区补丁：$OUT"
+run_capture restore
+[ "$RC" != 0 ] && ok "社区旧补丁无原版备份 restore 拒绝" \
+  || bad "社区旧补丁无原版备份 restore 仍成功"
+has "$ERR" '缺少原版备份，可先升级到自建版' && ok "无原版备份提示可先升级" \
+  || bad "无原版备份提示不对：$ERR"
+[ "$(target_sha)" = "$LEGACY_SHA" ] && ok "无原版备份拒绝后目标未动" \
+  || bad "无原版备份拒绝后目标被改"
+run_capture apply
+[ "$RC" = 0 ] && ok "社区旧补丁允许升级到自建版" || bad "社区旧补丁升级失败（$RC）：$ERR"
+has "$OUT" '已从社区版升级到自建补丁' && ok "升级输出说明从社区版升级" \
+  || bad "升级输出文案不对：$OUT"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "升级后目标是自建补丁" \
+  || bad "升级后目标不是自建补丁：$(target_sha)"
+[ "$(backup_count)" = 1 ] && ok "升级时产生 1 份社区版备份" \
+  || bad "升级后备份数不对：$(backup_count)"
+_lb=$(latest_backup)
+case "${_lb##*/}" in
+  main.dex.legacy.*) ok "社区版备份名为 main.dex.legacy.<时间戳>" ;;
+  *) bad "社区版备份名不对：$_lb" ;;
+esac
+[ -n "$_lb" ] && [ "$(sha_of "$_lb")" = "$LEGACY_SHA" ] \
+  && ok "社区版备份内容是社区旧补丁" || bad "社区版备份内容不对：$_lb"
+[ "$(stat -c %a "$_lb" 2>/dev/null)" = 600 ] && ok "社区版备份权限 600" \
+  || bad "社区版备份权限不对：$(stat -c %a "$_lb" 2>/dev/null)"
+run_capture check
+[ "$(kv STATE)" = patched ] && [ "$(kv LEGACY)" = 0 ] \
+  && ok "升级后 STATE=patched / LEGACY=0" \
+  || bad "升级后状态不对：$(kv STATE)/$(kv LEGACY)"
+[ "$(kv BACKUP_OK)" = 0 ] && ok "没有原版备份时 BACKUP_OK 仍为 0" \
+  || bad "升级后 BACKUP_OK 不对：$(kv BACKUP_OK)"
+
+# 社区旧补丁 → 原版（已有原版备份）
+reset_hooks
+clean_data
+reset_original
+run_capture apply
+[ "$RC" = 0 ] && ok "为 legacy→原版用例准备原版备份和自建补丁" \
+  || bad "legacy→原版用例准备失败：$ERR"
+reset_legacy
+run_capture check
+[ "$(kv STATE)" = patched-legacy ] && [ "$(kv BACKUP_OK)" = 1 ] \
+  && ok "社区旧补丁且有有效原版备份" \
+  || bad "社区旧补丁备份状态不对：$(kv STATE)/$(kv BACKUP_OK)"
+run_capture restore
+[ "$RC" = 0 ] && ok "社区旧补丁可直接 restore" || bad "社区旧补丁 restore 失败（$RC）：$ERR"
+[ "$(target_sha)" = "$ORIG_SHA" ] && ok "社区旧补丁恢复后回到原版" \
+  || bad "社区旧补丁恢复后哈希不对"
+run_capture check
+[ "$(kv STATE)" = original ] && [ "$(kv LEGACY)" = 0 ] \
+  && ok "legacy→原版后 STATE=original / LEGACY=0" \
+  || bad "legacy→原版后状态不对：$(kv STATE)/$(kv LEGACY)"
+
+# 社区旧补丁 → 自建版，保留原版备份
+reset_hooks
+clean_data
+reset_original
+run_capture apply
+[ "$RC" = 0 ] && ok "为 legacy→自建用例准备原版备份" \
+  || bad "legacy→自建用例准备失败：$ERR"
+reset_legacy
+run_capture apply
+[ "$RC" = 0 ] && ok "已有原版备份时仍允许升级到自建版" \
+  || bad "已有原版备份时升级失败（$RC）：$ERR"
+[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "legacy→自建后目标是自建补丁" \
+  || bad "legacy→自建后目标不对"
+run_capture check
+[ "$(kv STATE)" = patched ] && [ "$(kv BACKUP_OK)" = 1 ] && [ "$(kv BACKUP_COUNT)" = 2 ] \
+  && ok "升级后保留原版备份（原版+legacy 共 2 份）" \
+  || bad "升级后备份状态不对：$(kv STATE)/$(kv BACKUP_OK)/$(kv BACKUP_COUNT)"
+reset_hooks
+clean_data
 
 # ---------- 4) unknown 拒绝 ----------
 reset_hooks
@@ -911,10 +1013,10 @@ grep -q "forceOk = !!(p && p.match && p.backupOk && st === 'unknown')" webroot/i
   && ok "U2：版本不匹配时隐藏强制恢复" || bad "U2 强制恢复仍不检查版本"
 grep -q "(action === 'force' && p.match && p.backupOk && p.state === 'unknown')" webroot/index.html \
   && ok "U2：arm 强制恢复也检查版本" || bad "U2 arm 强制恢复缺版本门禁"
-grep -q "applyBtn.hidden = !(st === 'original')" webroot/index.html \
-  && grep -q "restoreBtn.hidden = !(st === 'patched')" webroot/index.html \
+grep -q "applyBtn.hidden = !(st === 'original' || st === 'patched-legacy')" webroot/index.html \
+  && grep -q "restoreBtn.hidden = !(st === 'patched' || st === 'patched-legacy')" webroot/index.html \
   && grep -q "forceBtn.hidden = !forceOk" webroot/index.html \
-  && ok "original 可应用 / patched 可恢复 / unknown 强制恢复" \
+  && ok "original/legacy 可升级 / patched+legacy 可恢复 / unknown 强制恢复" \
   || bad "补丁按钮显示条件不对"
 grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
   && ok "首次提示只给 SDK37+匹配" || bad "首次提示缺 SDK/匹配门禁"
@@ -975,13 +1077,50 @@ grep -Fq "var styles = ['cb3', 'cb2', 'sync']" webroot/index.html \
   && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
 grep -q '已应用，可恢复原版' webroot/index.html && ok "WebUI 已应用文案" \
   || bad "WebUI 缺少已应用文案"
-grep -q '既不是原版也不是补丁版' webroot/index.html && ok "WebUI unknown 提示" \
-  || bad "WebUI 缺少 unknown 提示"
+grep -q "st === 'patched-legacy'" webroot/index.html \
+  && grep -q 'badge = .旧版补丁.' webroot/index.html \
+  && grep -q '检测到社区版补丁' webroot/index.html \
+  && ok "WebUI 旧版补丁 badge/升级提示" || bad "WebUI legacy 提示缺失"
+grep -q "applyBtn.textContent = st === 'patched-legacy' ? '升级到自建版' : '应用补丁'" webroot/index.html \
+  && grep -q "确认升级到自建版" webroot/index.html \
+  && ok "WebUI legacy 升级按钮/确认文案" || bad "WebUI legacy 升级按钮缺失"
+grep -q 'p.legacy = toInt(p.LEGACY, 0) === 1' webroot/index.html \
+  && grep -q 'applyPatchState(action, fromLegacy)' webroot/index.html \
+  && ok "WebUI 读取 LEGACY 并区分升级来源" || bad "WebUI legacy 状态接线缺失"
+grep -q 'badge = .未知版本.' webroot/index.html \
+  && grep -q 'badge = .版本不匹配.' webroot/index.html \
+  && ok "未知版本/版本不匹配 badge 文案" || bad "badge 文案不对"
+grep -q 'btn primary act-btn' webroot/index.html \
+  && grep -q 'btn ghost act-btn' webroot/index.html \
+  && grep -q 'btn danger act-btn' webroot/index.html \
+  && grep -q 'id="btnPatchCheck" disabled' webroot/index.html \
+  && grep -q 'patch-actions' webroot/index.html \
+  && grep -q 'patch-check-row' webroot/index.html \
+  && ok "动作按钮统一 act-btn/patch-actions" || bad "动作按钮 class 不统一"
+if grep -q 'btn tiny ghost" id="btnPatchCheck"' webroot/index.html; then
+  bad "检查补丁仍是 tiny/无统一 class"
+else
+  ok "检查补丁不再 tiny"
+fi
+if grep -q 'style="flex:1"' webroot/index.html || grep -q 'style="margin-top:10px"' webroot/index.html; then
+  bad "动作按钮仍有内联大小样式"
+else
+  ok "动作按钮无内联大小样式"
+fi
+grep -q '.btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}' webroot/index.html \
+  && grep -q '.patch-actions{display:grid' webroot/index.html \
+  && grep -q '.patch-check-row .btn{flex:0 0 auto;width:auto}' webroot/index.html \
+  && grep -q '#patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap' webroot/index.html \
+  && grep -q '#patchCard .card-head{.*flex-wrap:wrap' webroot/index.html \
+  && ok "按钮同尺寸/网格对齐/badge 右对齐 CSS" || bad "按钮/badge CSS 未归一化"
+grep -q '是未知版本' webroot/index.html && ok "WebUI unknown 提示改为未知版本" \
+  || bad "WebUI 缺少未知版本提示"
 grep -q '版本不匹配时不允许强制恢复' webroot/index.html \
   && ok "WebUI unknown 版本不匹配时提示不能强制恢复" \
   || bad "WebUI unknown 版本不匹配提示不对"
-grep -q "if (!err && st !== 'original' && st !== 'patched' && st !== 'unknown')" webroot/index.html \
-  && ok "no-target/unsupported 隐藏卡片" || bad "no-target 没有隐藏卡片"
+grep -q "st !== 'patched-legacy'" webroot/index.html \
+  && grep -q "st !== 'unknown'" webroot/index.html \
+  && ok "no-target/unsupported 隐藏卡片且 legacy 可见" || bad "no-target/legacy 可见性不对"
 if grep -q 'SERVER_PIDS\|serverPids\|server-v355\|restart_si_server\|TERM_WAIT\|RESTART_WAIT' webroot/index.html; then
   bad "WebUI 仍含 SERVER_PIDS/server 重启残留"
 else
@@ -1031,14 +1170,15 @@ grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
   || bad "构建脚本没有校验补丁大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.5' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.6' CHANGELOG.md \
+  && ! grep -q '^## 1.5.5' CHANGELOG.md \
   && ! grep -q '^## 1.5.4' CHANGELOG.md \
   && ! grep -q '^## 1.5.3' CHANGELOG.md \
   && ! grep -q '^## 1.5.2' CHANGELOG.md \
   && ! grep -q '^## 1.5.1' CHANGELOG.md \
   && ! grep -q '^## 1.5.0' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.5" || bad "CHANGELOG 不是只含 1.5.5"
+  && ok "CHANGELOG 只列出 1.5.6" || bad "CHANGELOG 不是只含 1.5.6"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
@@ -1047,6 +1187,14 @@ grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d
   && ok "README 写自建 main.dex 大小/完整哈希" || bad "README 哈希/大小不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
   && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
+grep -q '6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7' CHANGELOG.md README.md \
+  && ok "README/CHANGELOG 写完整社区旧版哈希" || bad "README/CHANGELOG 缺少社区旧版哈希"
+grep -q 'patched-legacy' README.md && grep -q 'main.dex.legacy' README.md \
+  && grep -q 'LEGACY' README.md \
+  && ok "README 说明 patched-legacy/legacy 备份/LEGACY" \
+  || bad "README 缺少 legacy 说明"
+grep -q '二十一个' README.md && ok "README 说明 check 21 个字段" \
+  || bad "README 字段数说明不对"
 _bad_hash=60be88''02
 if grep -q "$_bad_hash" README.md CHANGELOG.md scripts/si-patch.sh tools/build.sh; then
   bad "仍有 main.dex 哈希笔误"
@@ -1106,9 +1254,12 @@ t('超时→结果未知', patchActionVerdict('apply', '', true, null, true),
   'warn', '结果未知，请刷新检查');
 t('known 0 无输出→good（交给 stat 复核）', patchActionVerdict('apply', '', true, 0, false),
   'good', '已应用，重启手机生效');
+t('legacy 升级文本（sync 无退出码）→good', patchActionVerdict('apply',
+  '已从社区版升级到自建补丁：/x/main.dex', false, null, false),
+  'good', '已应用，重启手机生效');
 JS
   if node "$T/verdict.js"; then
-    ok "WebUI 动作判定 9 个场景通过（node 实跑生产函数）"
+    ok "WebUI 动作判定 10 个场景通过（node 实跑生产函数）"
   else
     bad "WebUI 动作判定用例失败"
   fi

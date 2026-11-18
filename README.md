@@ -104,16 +104,16 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 旧的 server dex 备份不再被读取，可以留作记录，也可以手动删除；新版备份都在
 `patch-backup/main.dex.*`。
 
-**从 1.5.4 升级到 1.5.5**：1.5.4 用的是社区版 main.dex（99,104 B），1.5.5 换成自建版
-（88,336 B），两者哈希不同，`check` 会显示 `unknown`。模块版本仍匹配时，可先在卡片里
-「强制恢复」到原版，再「应用补丁」；已有原版备份可直接用。没有原版备份时，先重刷
-zygisk-storage-isolation 模块恢复原版 `main.dex`，再应用补丁。
+**从 1.5.4 及更早升级**：旧版社区 main.dex（99,104 B / `6d4058bc…`）在 1.5.6 中识别为
+「旧版补丁」（`patched-legacy` / `LEGACY=1`），不需要先恢复：卡片直接提供「升级到自建版」，
+升级时把当前社区版备份为 `main.dex.legacy.<时间戳>`；已有原版备份仍可用于「恢复原版」。
+没有原版备份时不能直接恢复，可先升级到自建版。1.5.5 用户若已经是自建版则无需操作。
 
 ### 版本与更新检查
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.5` 与 `versionCode=155`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.6` 与 `versionCode=156`
   （规则 `versionCode = major*100 + minor*10 + patch`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -154,18 +154,26 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 
 - 原版 `main.dex`：90,740 B，sha256
   `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`
+- 社区旧版补丁 `main.dex`：99,104 B，sha256
+  `6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7`
 - 自建补丁 `main.dex`：88,336 B，sha256
   `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`
 
-`check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已应用）、`unknown`
-（既非原版也非补丁，拒绝操作）、`no-target`（未装 zygisk 模块/没有 `main.dex`）、
-`unsupported`（SDK 不是 37）。
+`check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已应用自建版）、
+`patched-legacy`（已应用社区旧版，`LEGACY=1`）、`unknown`（未知版本，拒绝操作）、
+`no-target`（未装 zygisk 模块/没有 `main.dex`）、`unsupported`（SDK 不是 37）。
 
 `apply` 和 `restore` 都会校验 zygisk 模块版本（`module.prop` 的 `siPatchVersion` /
 `siPatchVersionCode`，当前为 v29.0.1 / 89；`siPatchModule` / `siPatchTarget` 提供模块名和
 `main.dex`）。版本不匹配时：`apply` 拒绝执行，`restore` / `restore --force` 也拒绝，
 面板的「强制恢复」不显示；哈希门禁仍然保留。模块 `module.prop` 读不到版本时，以目标
 `main.dex` 存在本身作为适用范围依据。
+
+**社区旧版升级**：`apply` 允许从 `patched-legacy` 升级到自建版：先把当前社区 dex 备份为
+`patch-backup/main.dex.legacy.<时间戳>`（600），再安装自建版；原版备份（a407）保留不动。
+`restore` 允许从 `patched-legacy` 直接恢复原版，但只认有效原版备份；没有原版备份时拒绝并
+提示「缺少原版备份，可先升级到自建版」。升级/恢复成功都回到 `patched` / `original`，
+`LEGACY` 回到 0。
 
 **重启生效**：`main.dex` 由 Zygisk 模块在开机时加载，apply/restore 只写文件、不重启任何进程。
 写入后必须重启手机；重启前 SI 仍在使用旧 dex。
@@ -178,9 +186,11 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 （命令行 `restore --force`）。
 
 **面板显示**：Android SDK 不是 37、或没有安装 zygisk 模块（`no-target`）时，整张补丁卡片隐藏；
-SDK 37 但模块版本/哈希不在支持范围时显示卡片但按钮置灰；只有模块版本匹配且状态为 `unknown`
-时才显示「强制恢复」；只有版本匹配且状态为 `original` 才启用「应用补丁」，`patched` 才启用
-「恢复原版」。首次提示也只在 SDK 37 且版本匹配时出现。
+SDK 37 但模块版本不匹配时显示卡片但按钮置灰；`unknown` 显示「未知版本」，只有版本匹配且
+存在有效原版备份时才显示「强制恢复」；`original` 启用「应用补丁」，`patched` 启用「恢复原版」，
+`patched-legacy` 显示「旧版补丁」并启用「升级到自建版 / 恢复原版」。首次提示只在 SDK 37
+且状态为 `original` 时出现。动作按钮统一 44px 高、同圆角/字号/间距；应用/升级为主按钮，
+恢复为次按钮，强制恢复仅红色边框/文字、不放大；「检查补丁」与耗时文字同一行。
 
 **在 WebUI 里操作**：
 
@@ -190,7 +200,8 @@ SDK 37 但模块版本/哈希不在支持范围时显示卡片但按钮置灰；
    首次提示标记按目标文件+版本区分（`/data/adb/si-mount-fix/.patch_prompted.main.dex.v29.0.1`），
    点「暂不」或应用成功后才写，同一目标只提示一次；失败/超时不会写标记，下次打开仍会重新 check。
    手动入口在「Android 17 应用列表修复（main.dex）」卡片里。
-2. 应用、恢复、强制恢复都是两步确认；确认后 10 秒内不操作会自动取消。
+2. 应用/升级、恢复、强制恢复都是两步确认；确认后 10 秒内不操作会自动取消。
+   `patched-legacy` 的确认框会说明“把社区版 main.dex 升级为自建版并备份当前社区 dex”。
 3. 长动作在后台执行：体检/修复、重启守护、保存配置、apply/restore 都不会阻塞界面，
    apply/restore 成功后只做一次 `stat + sha256` 复核，不再跑第二次全量 `check`。
    成功提示“已应用，重启手机生效”或“已恢复原版，重启手机生效”；超时/读不到退出码时
@@ -214,13 +225,14 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 `check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_VERSION_CODE` / `SI_TARGET_MODULE` /
 `SI_TARGET_VERSION` / `SI_TARGET_VERSION_CODE` / `SI_TARGET_FILE` / `SI_MATCH` / `DEX` /
 `SIZE` / `MTIME` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` / `PATCH_SIZE` / `PATCH_SHA` /
-`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` 二十个 `KEY=VALUE`。任何状态都返回 0；
+`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` / `LEGACY` 二十一个 `KEY=VALUE`。任何状态都返回 0；
 `apply`/`restore` 失败时非 0 退出，并在 stderr 说明原因。
 
 **注意**：
 
 - 不会自动应用：必须由用户点按钮并二次确认，或手动执行 `apply`。
 - 没有可用原版备份时，`restore` 无法回退；`check` 的 `BACKUP_OK` 会显示 0。
+  `patched-legacy` 缺少原版备份时会提示「缺少原版备份，可先升级到自建版」。
 - 模块版本不匹配时不允许 `apply`/`restore`/`restore --force`，避免把别的模块版本覆盖坏。
 - 官方更新 zygisk-storage-isolation 可能覆盖 `main.dex`，补丁会失效；更新后重新 `check`，
   只有模块版本仍是 v29.0.1 且状态为 `original` 时才重新应用。版本变化后会显示 `unknown`，

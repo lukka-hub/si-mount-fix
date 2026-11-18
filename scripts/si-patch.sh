@@ -28,6 +28,9 @@ ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 ORIGINAL_SIZE=90740
 PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 PATCH_SIZE=88336
+# 早期社区旧版补丁：可识别、可升级到自建版、可在有原版备份时恢复。
+LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
+LEGACY_PATCH_SIZE=99104
 
 case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
 MODDIR=${SI_MOD:-$D/..}
@@ -62,6 +65,8 @@ if [ "$SI_TEST" = 1 ]; then
   [ -n "${SI_PATCH_ASSET:-}" ] && ASSET=$SI_PATCH_ASSET
   [ -n "${SI_PATCH_ORIGINAL_SHA:-}" ] && ORIGINAL_SHA=$SI_PATCH_ORIGINAL_SHA
   [ -n "${SI_PATCH_ORIGINAL_SIZE:-}" ] && ORIGINAL_SIZE=$SI_PATCH_ORIGINAL_SIZE
+  [ -n "${SI_PATCH_LEGACY_SHA:-}" ] && LEGACY_PATCH_SHA=$SI_PATCH_LEGACY_SHA
+  [ -n "${SI_PATCH_LEGACY_SIZE:-}" ] && LEGACY_PATCH_SIZE=$SI_PATCH_LEGACY_SIZE
   [ -n "${SI_PATCH_CP:-}" ] && CP=$SI_PATCH_CP
   [ -n "${SI_PATCH_CHOWN:-}" ] && CHOWN=$SI_PATCH_CHOWN
 fi
@@ -159,6 +164,8 @@ FORCE=0
 TMP_TARGET=
 TMP_CUR=
 BACKUP=
+LEGACY_BACKUP=
+LEGACY=0
 LOCK_HELD=0
 
 collect_state() {
@@ -189,6 +196,7 @@ collect_state() {
   if [ -n "$(find_original_backup)" ]; then BACKUP_OK=1; fi
   if [ -f "$PROMPT_FILE" ]; then PROMPTED=1; else PROMPTED=0; fi
 
+  LEGACY=0
   if [ "$SDK" != 37 ]; then
     STATE=unsupported
   elif [ "$DEX_EXISTS" != 1 ]; then
@@ -197,6 +205,9 @@ collect_state() {
     STATE=original
   elif [ "$SHA" = "$PATCH_SHA" ] && [ "$SIZE" = "$PATCH_SIZE" ]; then
     STATE=patched
+  elif [ "$SHA" = "$LEGACY_PATCH_SHA" ] && [ "$SIZE" = "$LEGACY_PATCH_SIZE" ]; then
+    STATE=patched-legacy
+    LEGACY=1
   else
     STATE=unknown
   fi
@@ -220,6 +231,7 @@ print_check() {
   printf 'ORIGINAL_SHA=%s\n' "$ORIGINAL_SHA"
   printf 'PATCH_SIZE=%s\n' "$PATCH_SIZE"
   printf 'PATCH_SHA=%s\n' "$PATCH_SHA"
+  printf 'LEGACY=%s\n' "$LEGACY"
   printf 'BACKUP_COUNT=%s\n' "$BACKUP_COUNT"
   printf 'BACKUP_OK=%s\n' "$BACKUP_OK"
   printf 'PROMPTED=%s\n' "$PROMPTED"
@@ -244,6 +256,12 @@ status_line() {
         printf 'main.dex 补丁：已应用（重启手机生效；可恢复原版）\n'
       else
         printf 'main.dex 补丁：已应用（重启手机生效；没有可用的原版备份）\n'
+      fi ;;
+    patched-legacy)
+      if [ "$BACKUP_OK" = 1 ]; then
+        printf 'main.dex 补丁：旧版社区补丁（可升级到自建版，或恢复原版）\n'
+      else
+        printf 'main.dex 补丁：旧版社区补丁（缺少原版备份，可先升级到自建版）\n'
       fi ;;
     *)
       if [ "$BACKUP_OK" = 1 ]; then
@@ -400,6 +418,38 @@ create_backup() {
   fi
 }
 
+create_legacy_backup() {
+  mkdir -p "$BACKUP_DIR" 2>/dev/null || die "无法创建备份目录 $BACKUP_DIR" 5
+  chmod 700 "$BACKUP_DIR" 2>/dev/null
+  _ts=$(date '+%Y%m%d-%H%M%S' 2>/dev/null)
+  [ -n "$_ts" ] || _ts=$(date +%s 2>/dev/null)
+  _tmp=$BACKUP_DIR/.$TARGET.legacy.$_ts.tmp.$$
+  LEGACY_BACKUP=$BACKUP_DIR/$TARGET.legacy.$_ts
+  _n=0
+  while [ -e "$LEGACY_BACKUP" ]; do
+    _n=$((_n + 1))
+    LEGACY_BACKUP=$BACKUP_DIR/$TARGET.legacy.$_ts.$(printf '%03d' "$_n")
+  done
+  if ! "$CP" "$DEX" "$_tmp"; then
+    rm -f "$_tmp" 2>/dev/null
+    die "备份社区版 main.dex 失败" 5
+  fi
+  if ! chmod 600 "$_tmp" 2>/dev/null; then
+    rm -f "$_tmp" 2>/dev/null
+    die "设置社区版备份权限失败" 5
+  fi
+  _got=$(sha256_of "$_tmp")
+  _gsize=$(file_size "$_tmp")
+  if [ "$_got" != "$LEGACY_PATCH_SHA" ] || [ "$_gsize" != "$LEGACY_PATCH_SIZE" ]; then
+    rm -f "$_tmp" 2>/dev/null
+    die "社区版备份校验失败（sha256=${_got:-读取失败}），未改动目标" 5
+  fi
+  if ! mv -f "$_tmp" "$LEGACY_BACKUP" 2>/dev/null; then
+    rm -f "$_tmp" 2>/dev/null
+    die "社区版备份落盘失败" 5
+  fi
+}
+
 do_apply() {
   collect_state
   case "$STATE" in
@@ -412,7 +462,7 @@ do_apply() {
       die "找不到 $DEX，未检测到 zygisk-storage-isolation 模块" 2 ;;
     unknown)
       die "当前 $TARGET 的 sha256/大小既不是原版也不是补丁版（${SHA:-读取失败}），已拒绝操作；如果当前是旧版本补丁，请先运行 restore --force 再 apply" 3 ;;
-    original) ;;
+    original|patched-legacy) ;;
     *) die "补丁状态异常（$STATE），已取消" 4 ;;
   esac
   if [ "$SI_MATCH" != 1 ]; then
@@ -431,6 +481,7 @@ do_apply() {
       printf 'main.dex 补丁已应用，无需重复操作（恢复原版请用 restore）。\n'
       return 0 ;;
     original) ;;
+    patched-legacy) ;;
     no-target) die "锁定时目标消失：$DEX" 2 ;;
     unknown) die "锁定后目标哈希变化（${SHA:-读取失败}），已取消" 3 ;;
     *) die "锁定后状态异常：$STATE" 4 ;;
@@ -438,6 +489,8 @@ do_apply() {
   if [ "$SI_MATCH" != 1 ]; then
     die "锁定后 zygisk-storage-isolation 版本不适用（当前 ${SI_VERSION:-版本未知}），已取消" 2
   fi
+  _from_legacy=0
+  [ "$STATE" = patched-legacy ] && _from_legacy=1
 
   [ -f "$ASSET" ] || die "模块缺少补丁资产 $ASSET" 5
   _asha=$(sha256_of "$ASSET")
@@ -445,17 +498,34 @@ do_apply() {
   [ "$_asha" = "$PATCH_SHA" ] && [ "$_asize" = "$PATCH_SIZE" ] \
     || die "补丁资产校验失败（sha256=${_asha:-读取失败}，大小=${_asize:-读取失败}），未改动目标" 5
 
-  create_backup
+  if [ "$_from_legacy" = 1 ]; then
+    create_legacy_backup
+  else
+    create_backup
+  fi
   if ! install_file "$ASSET" "$PATCH_SHA" "$PATCH_SIZE"; then
-    if [ -f "$BACKUP" ] && install_file "$BACKUP" "$ORIGINAL_SHA" "$ORIGINAL_SIZE"; then
+    if [ "$_from_legacy" = 1 ] && [ -f "$LEGACY_BACKUP" ] \
+       && install_file "$LEGACY_BACKUP" "$LEGACY_PATCH_SHA" "$LEGACY_PATCH_SIZE"; then
+      log_action "APPLY-FAILED target=$TARGET from=legacy rollback=ok backup=$LEGACY_BACKUP"
+      die "写入自建补丁失败，已回滚到社区版（备份：$LEGACY_BACKUP）" 5
+    fi
+    if [ "$_from_legacy" != 1 ] && [ -f "$BACKUP" ] \
+       && install_file "$BACKUP" "$ORIGINAL_SHA" "$ORIGINAL_SIZE"; then
       log_action "APPLY-FAILED target=$TARGET rollback=ok backup=$BACKUP"
       die "写入补丁失败，已自动回滚到原版（备份：$BACKUP）" 5
     fi
-    log_action "APPLY-FAILED target=$TARGET rollback=failed backup=$BACKUP"
-    die "写入补丁失败，且自动回滚失败；请用 restore 或手动从 $BACKUP 恢复" 6
+    _bk=$BACKUP
+    [ "$_from_legacy" = 1 ] && _bk=$LEGACY_BACKUP
+    log_action "APPLY-FAILED target=$TARGET from=legacy=$_from_legacy rollback=failed backup=$_bk"
+    die "写入补丁失败，且自动回滚失败；请用 restore 或手动从 $_bk 恢复" 6
   fi
-  log_action "APPLY target=$TARGET original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
-  printf '已应用补丁：%s\n' "$DEX"
+  if [ "$_from_legacy" = 1 ]; then
+    log_action "APPLY-LEGACY target=$TARGET from=$LEGACY_PATCH_SHA to=$PATCH_SHA backup=$LEGACY_BACKUP"
+    printf '已从社区版升级到自建补丁：%s\n' "$DEX"
+  else
+    log_action "APPLY target=$TARGET original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
+    printf '已应用补丁：%s\n' "$DEX"
+  fi
   printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
@@ -470,11 +540,16 @@ do_restore() {
   if [ "$SI_MATCH" != 1 ]; then
     die "zygisk-storage-isolation 版本不匹配（当前 ${SI_VERSION:-版本未知}/${SI_VERSION_CODE:-?}，仅适用于 ${PATCH_FOR_VERSION:-未知版本}/${PATCH_FOR_VERSION_CODE:-?}），已拒绝恢复；版本不匹配时不能用原版备份覆盖" 2
   fi
+  _is_legacy=0
+  [ "$STATE" = patched-legacy ] && _is_legacy=1
   _backup=$(find_original_backup)
   if [ -z "$_backup" ]; then
+    if [ "$_is_legacy" = 1 ]; then
+      die "缺少原版备份，可先升级到自建版" 5
+    fi
     die "没有可用的原版备份（$BACKUP_DIR），无法恢复" 5
   fi
-  if [ "$SHA" != "$PATCH_SHA" ] && [ "$FORCE" != 1 ]; then
+  if [ "$SHA" != "$PATCH_SHA" ] && [ "$_is_legacy" != 1 ] && [ "$FORCE" != 1 ]; then
     die "当前 $TARGET 不是已知补丁版（${SHA:-读取失败}）；如确认要用原版备份覆盖，请加 --force" 3
   fi
 
@@ -483,11 +558,16 @@ do_restore() {
   if [ "$SHA" = "$ORIGINAL_SHA" ] && [ "$SIZE" = "$ORIGINAL_SIZE" ]; then
     die "补丁状态已变化：当前已经是原版，已取消恢复" 4
   fi
-  if [ "$SHA" != "$PATCH_SHA" ] && [ "$FORCE" != 1 ]; then
+  _is_legacy=0
+  [ "$STATE" = patched-legacy ] && _is_legacy=1
+  if [ "$SHA" != "$PATCH_SHA" ] && [ "$_is_legacy" != 1 ] && [ "$FORCE" != 1 ]; then
     die "补丁状态已变化（${SHA:-读取失败}），已取消恢复" 4
   fi
   _backup=$(find_original_backup)
   if [ -z "$_backup" ]; then
+    if [ "$_is_legacy" = 1 ]; then
+      die "缺少原版备份，可先升级到自建版" 5
+    fi
     die "没有可用的原版备份（$BACKUP_DIR），已取消恢复" 5
   fi
   _bsha=$(sha256_of "$_backup")
@@ -534,7 +614,9 @@ do_restore() {
   fi
   rm -f "$TMP_CUR" 2>/dev/null
   TMP_CUR=
-  if [ "$FORCE" = 1 ] && [ "$_cur_sha" != "$PATCH_SHA" ]; then
+  if [ "$_is_legacy" = 1 ]; then
+    log_action "RESTORE-LEGACY original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
+  elif [ "$FORCE" = 1 ] && [ "$_cur_sha" != "$PATCH_SHA" ]; then
     log_action "RESTORE-FORCE original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
   else
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"
