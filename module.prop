@@ -1,7 +1,7 @@
 id=si-mount-fix
 name=Storage Isolation Mount Fix
-version=v1.5.7.1
-versionCode=1571
+version=v1.5.8
+versionCode=158
 siPatchModule=zygisk-storage-isolation
 siPatchTarget=main.dex
 siPatchVersion=v29.0.1

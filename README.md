@@ -43,11 +43,19 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
   卸不干净或恢复后对不上就保留现状并报 `rollback`。
 - **重建沙箱的边界**：主扫描只在 `/storage/emulated/0` 栈顶是本包沙箱且只有一层时才认为
   健康；叠层/被其他层盖住会报 `rollback`/`sandbox_stale` 并提示重启应用。拆普通 FUSE 根
-  只认本 boot、同 namespace 的 `.sandbox_seen` 证据；没有同 ns 证据（升级后首次、同 boot
-  换了 namespace）时普通根（root=`/` 或 `/0`）不卸不 bind，报 `sandbox_skip`，只补目标本来
-  没有挂载（n=0）的包。
+  只认本 boot、同 namespace、同进程（uid + `starttime` 都一致）的 `.sandbox_seen` 证据；
+  没有同 ns 证据（升级后首次、同 boot 换了 namespace）时普通根（root=`/` 或 `/0`）不卸不
+  bind，报 `sandbox_skip`，只补目标本来没有挂载（n=0）的包。
   本 boot 有该包任意 namespace 的行（或完全没有历史记录）时，才允许这条“源存在+属主匹配”
-  的回落；只有全部是别的 boot 的旧行才拒绝回落。
+  的回落；只有全部是别的 boot 的旧行才拒绝回落。1.5.7 及更早的 `.sandbox_seen` 只有
+  `pkg|boot|ns|SB` 四段，没有 uid/starttime 指纹，升级后按“无证据”处理（走上面的回落），
+  不会因此放过真实丢失。
+- **isolated 子进程不是隔离对象**：微信 `com.tencent.mm:xweb_sandboxed_process_0…`、浏览器
+  sandboxed 进程等 uid 在 90000–99999 的 isolated 进程本来就没有 `/storage`，扫描直接跳过
+  （不计 checked/broken、不发 G、不写 seen/退避）。漏到重建路径时，只有 isolated uid 或
+  从未隔离过（本 boot 没有该包的 `.sandbox_seen` 证据）的进程才报 `na` 跳过、不写 180 秒
+  退避；有 seen 证据的普通应用即使 namespace 里没有存储根，也仍按真实丢失尝试重建
+  （普通根/退避路径不变）。普通应用 uid（10000–19999）不受影响。
 - **失败退避**：修复失败按 (包, 目标) 记在 `.repairs`，180 秒内不再重试；key 带 FUSE 设备号、
   boot 和 namespace，任一变化立即失效。退避计时用 `/proc/uptime` 的单调时钟，系统时间被
   修改不会让退避提前到期或无限延长；旧版本只写墙钟的失败行按“无退避”处理。沙箱重建与
@@ -72,7 +80,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 开机自启：`service.sh` 拉起监督循环；守护退出后自动重启，状态长时间不更新时看门狗兜底。
 - 修复与回滚：只修 SI 授权范围（允许目录与应用的 data/media/obb）；支持只读体检（`-n`）与详细模式（`-v`）。
 - 进程范围：主进程与 `pkg:push` 这类常见子进程按 `ps args` 的基础包名匹配配置与身份，
-  都能修复；同一包的不同 namespace 分别处理。
+  都能修复；同一包的不同 namespace 分别处理。uid 90000–99999 的 isolated 子进程（如微信
+  xweb_sandboxed）不是 SI 隔离对象，直接跳过。
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
@@ -113,7 +122,7 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.7.1` 与 `versionCode=1571`
+- 版本只有一个来源：`module.prop` 的 `version=v1.5.8` 与 `versionCode=158`
   （三段按 `major*100 + minor*10 + patch`；1.5.7.1 这类四段按 `major*1000 + minor*100 + patch*10 + micro`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
@@ -345,13 +354,20 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 - 视频/图片突然读不到，且体检出现 `skipped=*sandbox_gone*`：ColorOS 上 MediaProvider 被杀后
   vold 会重挂 FUSE，应用 namespace 里的沙箱和共享目录会一起消失。模块会在下一轮**尝试**重建沙箱并补回挂载
   （源目录存在且属主匹配才动手）；重建成功后 WebUI 的修复结果会显示“重建沙箱 N 个”。失败后 180 秒内
-  不再重试，RESULT 会带 `retry=`，所以短时间反复体检看到同一个包是正常的。若这个标记持续出现，
-  说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上 `daemon.log`、`status.json` 反馈。
+  不再重试，RESULT 会带 `retry=`，所以短时间反复体检看到同一个包是正常的。同一事件的日志只记一次
+  （形如 `沙箱丢失: <包> (pid=… uid=… ns=… reason=… isolated=…, 下一轮重试)`），退避/重试期间不会
+  每轮重复刷屏；应用自愈、事件从本轮报告消失后签名会被清掉，下一次真丢会重新记一条。若这个标记
+  持续出现，说明 MediaProvider 被反复杀，检查系统的省电/后台策略，并附上 `daemon.log`、
+  `status.json` 反馈。
 - 出现 `skipped=*sandbox_skip*`：包在跑、沙箱却丢了，但本 boot 没有该包同 namespace 的
   `.sandbox_seen` 证据，而 `/storage/emulated/0` 还是普通 FUSE 根；或者目标被别的挂载层
   占用（例如残留的 f2fs bind）。这时拆根/重建可能挂错目录，模块会 fail-closed：不卸不 bind，
   也不会按 180 秒重试。**重启该应用**让 SI 重建 namespace；下一次健康扫描登记证据后再丢沙箱
   才会自动重建。它和 `sandbox_gone`（可尝试重建）不是一回事。
+- 出现 `skipped=*na*`：进程是 uid 90000–99999 的 isolated 子进程（如微信 xweb_sandboxed），
+  或它从未被隔离过（本 boot 没有该包的 `.sandbox_seen` 证据）且 namespace 里连 `/storage`
+  都没有，不是 SI 的隔离对象。模块只报 `na` 并在日志写“isolated/无 storage，跳过”，不写
+  退避、不计需修复；这属于正常现象，不用处理。有 seen 证据的普通应用不会落到这里。
 - 出现 `skipped=*rollback*`：沙箱 `umount` 没卸干净、原 FUSE 根恢复失败，或主扫描发现
   `/storage/emulated/0` 叠了多层。模块保留残留挂载，不会为了“看起来修好了”把父根叠回去，
   也不会自动重试。**重启该应用**即可收敛；不要反复点修复。
@@ -371,11 +387,13 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
   `sandbox_skip` 都表示需要重启应用，不能只靠反复修复。
 - **只有旧 boot 记录时不兜底**：某个包在 `.sandbox_seen` 里只剩别的 boot 的行、本 boot 一行
   都没有时，模块不拿它当重建资格；要等它下一次被识别为健康沙箱（K）并登记本 boot 的
-  同 namespace 证据后才恢复自愈。本 boot 有该包任意 namespace 的行时，仍允许 n=0 的
-  “源+属主”回落（同 namespace 优先；普通根仍按上面的规则不拆）。这是有意的 fail-closed，
-  不是丢状态。
-- `-n` 是只读体检：不写 `.sandbox_seen`/`.fuse_dev`，不改挂载；已有 `.sandbox_seen` 里的
-  旧格式/空 ns 行也只在非 `-n` 运行（持锁）时清理。升级/重启后的第一次自动扫描才会登记身份。
+  同 namespace + uid/starttime 证据后才恢复自愈。本 boot 有该包任意 namespace 的行时，仍允许
+  n=0 的“源+属主”回落（同 namespace 优先；普通根仍按上面的规则不拆）。这是有意的
+  fail-closed，不是丢状态。1.5.7 及更早的四段旧格式行（`pkg|boot|ns|SB`，没有 uid/starttime）
+  按“无证据”处理，自动回落到“源存在 + 属主匹配”，不会把真实丢失一起放过。
+- `-n` 是只读体检：不写 `.sandbox_seen`/`.fuse_dev`，不改挂载；判定与真跑一致（哪些进程
+  需要修复、哪些报 `na` 不写退避），只是不动挂载。已有 `.sandbox_seen` 里的旧格式/空 ns
+  行也只在非 `-n` 运行（持锁）时清理。升级/重启后的第一次自动扫描才会登记身份。
 - 面板打不开：Magisk 需 KsuWebUI Standalone；没有桥接时面板会显示只读快照。也可直接用模块「操作」按钮。
 - 「操作」按钮体检超过 40 秒或拿不到结果行时显示“执行失败（无结果行）”，不要当成“没有需要修复”；
   先看 `daemon.log` 和 `status.json`。

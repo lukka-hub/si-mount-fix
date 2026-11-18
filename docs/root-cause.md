@@ -168,10 +168,19 @@ key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT
   没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，也会按
   “曾经隔离过”重建，但只限目标本来没有挂载（n=0）；普通 FUSE 根（n>0）不拆，
   报 `sandbox_skip`。
-  `.sandbox_seen` 记录 `pkg|boot|ns|SB`：同 boot 同 ns 直接通过；只有该包只剩别的 boot
-  的旧行、本 boot 一行都没有时才拒绝兜底；本 boot 有任意 ns 行（应用重启换了 ns）时
-  允许 n=0 的“源+属主”回落。
+  `.sandbox_seen` 记录 `pkg|boot|ns|uid|starttime|SB`：同 boot 同 ns 且 uid、
+  `/proc/<pid>/stat` 第 22 字段 starttime 都一致才直接通过（内核会把同一个 ns inode
+  回收复用给别的进程，只按 ns 匹配会把本来没有 `/storage` 的 isolated 子进程误判成
+  主进程）；只有该包只剩别的 boot 的旧行、本 boot 一行都没有时才拒绝兜底；本 boot 有
+  任意 ns 行（应用重启换了 ns）时允许 n=0 的“源+属主”回落。1.5.7 及更早的四段旧行
+  没有 uid/starttime，按“无证据”处理，回落到“源存在 + 属主匹配”。
   注意：如果共享目录源在应用 ns 里不可见，模块会把刚 bind 的沙箱回滚，不会留下空沙箱。
+- **不是隔离对象（`na`）**：uid 90000–99999 的 isolated 子进程，或本 boot 没有任何该包的
+  `.sandbox_seen` 证据、且应用 ns 里连 `/storage` 都没有的进程，只报 `na` 并写
+  “isolated/无 storage，跳过”，不写失败退避、不计 broken。有 seen 证据的普通应用即使
+  has-storage=0 也仍按真实丢失处理（尝试重建/写 180 秒退避），不会被误判成 na。所有
+  `gone` 失败行都会重试，日志统一标“下一轮重试”；同一事件在退避/重试期间只记一次，
+  事件消失后清签名，下次真丢再记。
 - **安全跳过（`sandbox_skip`）**：没有本 boot、同 namespace 的 `.sandbox_seen` 证据，
   而目标 `/storage/emulated/0` 仍是普通 FUSE 根（root=`/` 或 `/0`）；或目标已经被别的
   挂载层/残留沙箱占用。此时拆根或重建可能挂错目录，模块不卸不 bind，不写失败行，也不会

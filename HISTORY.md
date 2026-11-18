@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.7.1）
+# 演化过程（1.0 → 1.5.8）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -309,6 +309,25 @@
   `restore` 删除标记。
 - **UI**：黄色“重启手机生效”只在 `pendingReboot=1` 时显示；重启后不再出现。
 - **版本**：`v1.5.7.1` / `versionCode 1571`；`CHANGELOG.md` 只展示 1.5.7.1。
+
+## 1.5.8 微信 isolated 子进程与 seen 指纹
+
+- **不是隔离对象**：微信按需拉起的 `com.tencent.mm:xweb_sandboxed_process_0…` 等 isolated
+  子进程 uid 在 90000–99999，本来就没有 `/storage`。旧逻辑只按 `.sandbox_seen` 的
+  `pkg|boot|ns` 匹配，ns inode 被内核回收复用后把它们当成主进程，`sandbox_pick(mode=1)`
+  返回 `owner`，于是每轮写 `/@sandbox` 失败退避并在 daemon 里打一条“沙箱丢失”。1.5.8 在
+  扫描阶段直接跳过 isolated uid（不计 checked/broken、不发 G、不写 seen/退避）；漏到重建
+  路径时，只有 isolated uid 或本 boot 无 seen 证据的进程才报 `na` 跳过。有 seen 证据的普通
+  应用即使 namespace 里没有存储根，也仍按真实丢失走重建/退避，避免把真实丢失误判成
+  “无需重建”。普通应用 uid 10000–19999 不受影响。
+- **seen 指纹**：`.sandbox_seen` 行改为 `pkg|boot|ns|uid|starttime|SB`，匹配键加入进程 uid
+  与 `/proc/<pid>/stat` 第 22 字段 starttime；同一 ns inode 被不同进程复用时不再假命中。
+  旧四段行按“无证据”处理，回落到“源存在 + 属主匹配”，真实丢失仍会重建。
+- **日志**：gone/na 报告带 `pid`/`uid`/`ns`/`reason`；gone 都会写 180 秒退避，日志统一标
+  “下一轮重试”，na（isolated/无 storage，不写退避）标“跳过”。daemon 按 pkg/pid/uid/ns
+  去重，退避内不重复刷；每轮用“本轮仍存在的事件”重建签名表，事件消失（应用自愈或进程
+  退出）后自动清签名，下一次真丢会重新记一条。
+- **版本**：`v1.5.8` / `versionCode 158`；`CHANGELOG.md` 只展示 1.5.8。
 
 ## 兼容与边界
 

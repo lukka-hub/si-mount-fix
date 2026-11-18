@@ -89,6 +89,7 @@ skip_label() {
     sandbox_gone)  echo "沙箱丢失（会尝试重建）" ;;
     sandbox_stale) echo "沙箱僵死（需重启应用）" ;;
     sandbox_skip)  echo "沙箱未重建（安全拒绝，需重启应用）" ;;
+    na)            echo "不是隔离对象（isolated/无 storage，无需重建）" ;;
     rollback)      echo "回滚未卸干净（需重启应用）" ;;
     churn)     echo "频繁被拆已熔断" ;;
     template)  echo "未知模板 id" ;;

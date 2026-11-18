@@ -71,8 +71,8 @@ grep -q '^LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff
   && ok "脚本识别社区旧补丁 sha" || bad "脚本缺少 LEGACY_PATCH_SHA"
 grep -q '^LEGACY_PATCH_SIZE=99104$' "$PATCH" \
   && ok "脚本识别社区旧补丁大小" || bad "脚本缺少 LEGACY_PATCH_SIZE"
-grep -q '^version=v1.5.7.1$' module.prop && grep -q '^versionCode=1571$' module.prop \
-  && ok "module.prop 版本 v1.5.7.1 / 1571" || bad "module.prop 版本不对"
+grep -q '^version=v1.5.8$' module.prop && grep -q '^versionCode=158$' module.prop \
+  && ok "module.prop 版本 v1.5.8 / 158" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -81,8 +81,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.7.1"' update.json && grep -q '"versionCode": 1571' update.json \
-  && ok "update.json 指向 v1.5.7.1/1571" || bad "update.json 版本不对"
+grep -q '"version": "v1.5.8"' update.json && grep -q '"versionCode": 158' update.json \
+  && ok "update.json 指向 v1.5.8/158" || bad "update.json 版本不对"
 
 # check 不能有进程扫描；只允许读 boot_id/uptime 两个定点文件。
 if grep -q '/proc/sys/kernel/random/boot_id' "$PATCH" && grep -q '/proc/uptime' "$PATCH"; then
@@ -1218,7 +1218,8 @@ grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
   || bad "构建脚本没有校验补丁大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.7.1$' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.5.8$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.7.1$' CHANGELOG.md \
   && ! grep -q '^## 1.5.7$' CHANGELOG.md \
   && ! grep -q '^## 1.5.6$' CHANGELOG.md \
   && ! grep -q '^## 1.5.5$' CHANGELOG.md \
@@ -1228,14 +1229,14 @@ grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh
   && ! grep -q '^## 1.5.1$' CHANGELOG.md \
   && ! grep -q '^## 1.5.0$' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.7.1" || bad "CHANGELOG 不是只含 1.5.7.1"
+  && ok "CHANGELOG 只列出 1.5.8" || bad "CHANGELOG 不是只含 1.5.8"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md \
-  && grep -q 'version=v1.5.7.1' README.md && grep -q 'versionCode=1571' README.md \
-  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.7.1 版本" || bad "README 哈希/大小/版本不对"
+  && grep -q 'version=v1.5.8' README.md && grep -q 'versionCode=158' README.md \
+  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.8 版本" || bad "README 哈希/大小/版本不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
   && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7' CHANGELOG.md README.md \

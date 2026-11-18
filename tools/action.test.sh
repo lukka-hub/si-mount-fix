@@ -5,7 +5,7 @@
 #   3) 正常 RESULT → 仍显示体检结果，且 rollback/sandbox_skip 有中文标签；
 #   4) R8：status.json 的 sandbox_stale/gone/rollback/skip 要显示在主报告里；
 #   5) fix 最近一轮 error 时，沙箱状态只能标成“上次记录”（SAND_* 只在成功分支更新）；
-#   6) WebUI 主状态卡/banner 读同两个字段，SKIP_LABEL 含 rollback/sandbox_skip。
+#   6) WebUI 主状态卡/banner 读同两个字段，SKIP_LABEL 含 rollback/sandbox_skip/na。
 #
 # 用法：sh tools/action.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
@@ -66,6 +66,11 @@ out=$(run_action "RESULT checked=2 broken=1 fixed=0 young=0 skipped=rollback+san
 has "$out" '检查 2 个隔离进程' && ok "正常 RESULT 仍显示检查数" || bad "正常 RESULT 没显示：$out"
 has "$out" '回滚未卸干净' && ok "rollback 有中文标签" || bad "rollback 没有标签：$out"
 has "$out" '沙箱未重建' && ok "sandbox_skip 有中文标签" || bad "sandbox_skip 没有标签：$out"
+
+# na（isolated/无 storage）不是“需重启应用”，文案要区分开
+out=$(run_action "RESULT checked=1 broken=0 fixed=0 young=0 skipped=na")
+has "$out" '不是隔离对象' && ok "na 有中文标签（isolated/无 storage）" || bad "na 没有标签：$out"
+has "$out" '需重启应用' && bad "na 被误标成需重启应用：$out" || ok "na 不提示重启应用"
 
 # 带 retry= 的体检文案
 out=$(run_action "RESULT checked=1 broken=1 fixed=0 young=0 retry=180 skipped=bindfail")

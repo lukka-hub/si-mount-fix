@@ -116,6 +116,10 @@ CH=$RC/.churn
 # 沙箱重建失败退避用的内部键。故意以 / 开头：dir_tag 拒绝绝对路径，
 # 用户自定义目录不可能和它撞键（合法的 @sandbox 仍是普通目录）。
 SAND_KEY='/@sandbox'
+# Android isolated 子进程的 uid 区间：这类进程不是 SI 的隔离对象（没有 /storage），
+# 扫描与重建路径共用同一组边界，避免两处各写一份数字漂移。
+ISO_UID_MIN=90000
+ISO_UID_MAX=99999
 # 修复失败后的每包退避：120~300s 区间内取 180s；dev/boot/ns 变化会立即失效。
 SB_BACKOFF=180
 CACHE=$RC/.conf.cache
@@ -240,14 +244,19 @@ if [ -z "$BOOT_ID" ] && [ -r /proc/stat ]; then
 fi
 case "$BOOT_ID" in ''|*[!A-Za-z0-9_.-]*) BOOT_ID=0 ;; esac
 
-# .sandbox_seen：每行 pkg|boot|mnt_ns|SB（“曾经识别到合法沙箱”的证据）。
-# 同 pkg 同 boot 同 namespace 只保留一条（SB 变化时更新）；最多 200 行保留最近。
+# .sandbox_seen：每行 pkg|boot|mnt_ns|uid|starttime|SB（“曾经识别到合法沙箱”的证据）。
+# uid 与 /proc/<pid>/stat 第 22 字段 starttime 是匹配键的一部分：内核会把同一个
+# ns inode 回收复用给别的进程，只按 pkg+boot+ns 匹配会把 isolated 子进程误当成
+# “主进程曾经隔离过”。同 pkg 同 boot 同 ns 同 uid/start 只保留一条（SB 变化时更新）；
+# 最多 200 行保留最近。旧版本（4 段及更少）的行没有 uid/start 指纹，按“无证据”处理，
+# 由“源存在 + 属主匹配”的回落兜底，不能因此放过真实丢失。
 load_seen() {
   SEEN_LIST=""; SEEN_N=0
   [ -r "$SANDBOX_SEEN" ] || return 0
-  # 旧版本（13a092a/45f2585）留下的是 pkg / pkg|ns|SB 格式：不是四段就忽略，
-  # 不能让它们计入“任何 boot 有记录”的历史资格。
-  awk -F'|' 'NF == 4 && $3 != ""' "$SANDBOX_SEEN" > "$SEEN_TMP" 2>/dev/null || return 0
+  # 更早版本留下的是 pkg / pkg|ns|SB 格式，上一版留下的是 pkg|boot|ns|SB 四段格式：
+  # 都不是六段（没有 uid/starttime 指纹），直接忽略（无证据）。
+  awk -F'|' 'NF == 6 && $3 != "" && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $6 != ""' \
+    "$SANDBOX_SEEN" > "$SEEN_TMP" 2>/dev/null || return 0
   while IFS= read -r _sl; do
     [ -n "$_sl" ] || continue
     SEEN_LIST="$SEEN_LIST $_sl"
@@ -261,35 +270,40 @@ load_seen() {
   fi
   rm -f "$SEEN_TMP" 2>/dev/null
 }
-seen_match() {   # pkg ns（只看本 boot）
-  _sm_pfx=" $1|$BOOT_ID|$2|"
+seen_match() {   # pkg ns uid starttime（只看本 boot；uid/start 防止同一个 ns inode 被复用后假命中）
+  [ -n "$3" ] || return 1
+  [ -n "$4" ] || return 1
+  _sm_pfx=" $1|$BOOT_ID|$2|$3|$4|"
   case " $SEEN_LIST " in *"$_sm_pfx"*) return 0 ;; esac
   return 1
 }
-seen_sb() {      # pkg ns -> 本 boot 记录的 SB
+seen_sb() {      # pkg ns -> 本 boot 记录的 SB（只作探测路径提示；可用性仍由 sandbox_probe 校验）
   _ss_pkg=$1; _ss_ns=$2
   for _se in $SEEN_LIST; do
     _eifs=$IFS; IFS='|'; set -- $_se; IFS=$_eifs
     if [ "${1:-}" = "$_ss_pkg" ] && [ "${2:-}" = "$BOOT_ID" ] && [ "${3:-}" = "$_ss_ns" ]; then
-      printf '%s\n' "${4:-}"
+      printf '%s\n' "${6:-}"
       return 0
     fi
   done
   return 1
 }
-seen_add() {     # pkg ns sb；正常情况下只 append，不整文件重写
-  _sa=$1; _sn=$2; _ss=$3
+seen_add() {     # pkg ns sb uid starttime；正常情况下只 append，不整文件重写
+  _sa=$1; _sn=$2; _ss=$3; _su=$4; _sst=$5
   case "$_sa" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
   # ns 读不到（进程刚退出）时不落盘：空 ns 行以后既匹配不上，也永远清不掉。
   [ -n "$_sn" ] || return 0
   case "$_ss" in ''|*[!A-Za-z0-9_./-]*) return 0 ;; esac
-  _pfx="$_sa|$BOOT_ID|$_sn|"
+  # uid/starttime 是重建资格的匹配键：读不到就不落盘，避免下次拿残缺行误命中。
+  case "$_su" in ''|*[!0-9]*) return 0 ;; esac
+  case "$_sst" in ''|*[!0-9]*) return 0 ;; esac
+  _pfx="$_sa|$BOOT_ID|$_sn|$_su|$_sst|"
   _old=""; _found=0
   for _se in $SEEN_LIST; do
     case "$_se" in "$_pfx"*) _old=${_se#"$_pfx"}; _found=1 ;; esac
   done
   [ "$_found" = 1 ] && [ "$_old" = "$_ss" ] && return 0
-  _new="$_sa|$BOOT_ID|$_sn|$_ss"
+  _new="$_pfx$_ss"
   if [ "$_found" = 0 ]; then
     printf '%s\n' "$_new" >> "$SANDBOX_SEEN" 2>/dev/null || return 0
     SEEN_LIST="$SEEN_LIST $_new"
@@ -311,6 +325,16 @@ seen_add() {     # pkg ns sb；正常情况下只 append，不整文件重写
     load_seen
   fi
 }
+# -n 只读：把本轮 K 证据登记到内存 SEEN_LIST（不落盘），让 dry-run 与真跑用同一套
+# “是否有 seen 证据”判断。真跑会先写盘，同一轮后面的 G 立刻能匹配到。
+seen_mem_add() {   # pkg ns sb uid start
+  case "$1" in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
+  [ -n "$2" ] || return 0
+  case "$3" in ''|*[!A-Za-z0-9_./-]*) return 0 ;; esac
+  case "$4" in ''|*[!0-9]*) return 0 ;; esac
+  case "$5" in ''|*[!0-9]*) return 0 ;; esac
+  SEEN_LIST="$SEEN_LIST $1|$BOOT_ID|$2|$4|$5|$3"
+}
 load_seen
 [ "$DRY" = 0 ] && : > "$SAND_REPORT" 2>/dev/null
 ns_of() { readlink "$PROC/$1/ns/mnt" 2>/dev/null; }
@@ -328,11 +352,16 @@ seen_cur_boot_any() {  # pkg 在本 boot 任意 ns 有 seen 行
   done
   return 1
 }
-# 重建资格：同 pkg 同 ns 的 seen 直接通过；否则按“源存在+属主匹配”回落。
+# 重建资格：同 pkg 同 ns 同 uid/starttime 的 seen 直接通过；否则按“源存在+属主匹配”回落。
 # 只有该包“只剩别的 boot 的旧行、本 boot 一行都没有”时才拒绝兜底；
 # 本 boot 有任意 ns 行（应用重启换了 ns）就允许回落，是否拆普通根由 R4 门另行判断。
 sandbox_eligible() {   # pid uid pkg ns
-  seen_match "$3" "$4" && return 0
+  # seen 里存的是扫描时刻的真实 uid/starttime：优先用 /proc 现值比对，
+  # 读不到时才用 ps 给的 uid（极少数 ps 与 status 不一致的场景保持旧行为）。
+  _se_uid=$(pid_real_uid "$1")
+  [ -n "$_se_uid" ] || _se_uid=$2
+  _se_start=$(pid_starttime "$1")
+  seen_match "$3" "$4" "$_se_uid" "$_se_start" && return 0
   if seen_any "$3" && ! seen_cur_boot_any "$3"; then
     return 1
   fi
@@ -406,9 +435,13 @@ sb_to_src() {  # mountinfo root(SB) -> FUSE 源路径
     *)        printf '%s/%s\n' "$SRC_ROOT" "$1" ;;
   esac
 }
-sand_report() {  # tag pkg（只写非 dry；daemon 读）
+sand_report() {  # tag pkg [extra]（只写非 dry；daemon 读；extra 给 gone/na 带 pid/uid/ns/reason）
   [ "$DRY" = 1 ] && return 0
-  printf '%s %s\n' "$1" "$2" >> "$SAND_REPORT" 2>/dev/null
+  if [ -n "${3:-}" ]; then
+    printf '%s %s %s\n' "$1" "$2" "$3" >> "$SAND_REPORT" 2>/dev/null
+  else
+    printf '%s %s\n' "$1" "$2" >> "$SAND_REPORT" 2>/dev/null
+  fi
 }
 allow_of() {     # pkg -> 配置缓存里的 allow 目录（缓存键里的 . 被转义过）
   [ -s "$CACHE_USE" ] || return 0
@@ -541,7 +574,8 @@ fi
 
 "$PS_BIN" -A -o pid,uid,etime,args 2>/dev/null | awk -v cache="$CACHE_USE" -v proc="$PROC" \
     -v now="$NOW" -v nowms="$NOW_MS" -v amin="$AGE_MIN" -v verbose="$VERBOSE" -v dry="$DRY" \
-    -v rep="$REP" -v ch="$CH" -v dataroot="$DATA_ROOT" -v hostmi="$HOSTMI" '
+    -v rep="$REP" -v ch="$CH" -v dataroot="$DATA_ROOT" -v hostmi="$HOSTMI" \
+    -v isomin="$ISO_UID_MIN" -v isomax="$ISO_UID_MAX" '
   function secs(e,  p,n,t,d) {
     d = 0
     if (index(e, "-") > 0) { split(e, p, "-"); d = p[1] + 0; e = p[2] }
@@ -659,6 +693,11 @@ fi
     if (n < 4) next
     pid = a[1]; uid = a[2]; et = a[3]; pkg = a[4]
     if (pid !~ /^[0-9]+$/) next
+    # Android isolated 子进程（uid 90000–99999，如微信 xweb_sandboxed / 浏览器的
+    # sandboxed_process）本来就没有 /storage，不是 SI 的隔离对象：直接跳过，不计
+    # checked/broken、不发 G、不写 seen/退避，避免把“没有沙箱”误判成“沙箱丢失”。
+    # 普通应用 uid 10000–19999 不受影响。
+    if (uid + 0 >= isomin && uid + 0 <= isomax) next
     if (int(uid / 100000) != 0) next
     if (pkg !~ ("^(" pkgs ")(:|$)")) next
     # 子进程 argv[0] 可能是 pkg:push（进程名带冒号）；配置/身份/seen 都按基础包名查。
@@ -703,7 +742,10 @@ fi
       # 应用 /storage（或 /mnt）还是旧 FUSE（分叉）：跨 ns 修不了，只报僵死。
       if (APP_S != "" && APP_S != HOSTM && APP_SFT == "fuse") print "ST|" pid "|" uid "|" age "|" pkg "|" APP_S
       else if (APP_S == "" && APP_M != "" && APP_M != HOSTM && APP_MFT == "fuse") print "ST|" pid "|" uid "|" age "|" pkg "|" APP_M
-      else print "G|" pid "|" uid "|" age "|" pkg "|" pst "|" puid
+      # 末列 has-storage：应用 ns 里连存储根（/storage/emulated 或 /mnt/user/0/emulated）
+      # 都没有时，这个进程不是 SI 的隔离对象（isolated 子进程就是这种形态），
+      # 重建沙箱会写无效退避；shell 侧据此报 na 而不是 gone。
+      else print "G|" pid "|" uid "|" age "|" pkg "|" pst "|" puid "|" ((APP_S != "" || APP_M != "") ? 1 : 0)
       next
     }
 
@@ -737,7 +779,9 @@ fi
 
     # 合法沙箱（身份/层都通过、路径形态可解释）→ 供 shell 登记身份证据。
     # pst/puid 是扫描时刻的进程指纹；sbpath 放最后，路径里出现 | 时也不会错位。
-    print "K|" pid "|" pkg "|" SB
+    # K 行带 uid/starttime：seen 证据按 pkg+boot+ns+uid+starttime 匹配，ns inode 被
+    # 复用给别的进程时不会假命中。
+    print "K|" pid "|" pkg "|" SB "|" pst "|" puid
     print "I|" pid "|" age "|" pkg "|" MP "|" pst "|" puid "|" sbpath
 
     m = split(allow, dirs, " ")
@@ -964,8 +1008,8 @@ seen_sb_any() {  # pkg -> 本 boot 任意 ns 记录的 SB
   _sba_pkg=$1
   for _se in $SEEN_LIST; do
     _eifs=$IFS; IFS='|'; set -- $_se; IFS=$_eifs
-    if [ "${1:-}" = "$_sba_pkg" ] && [ "${2:-}" = "$BOOT_ID" ] && [ -n "${4:-}" ]; then
-      printf '%s\n' "${4}"
+    if [ "${1:-}" = "$_sba_pkg" ] && [ "${2:-}" = "$BOOT_ID" ] && [ -n "${6:-}" ]; then
+      printf '%s\n' "${6}"
       return 0
     fi
   done
@@ -1103,10 +1147,12 @@ EOF
   return 1
 }
 
-# 没有本 boot 同 ns 的 seen 时，普通 FUSE 根不拆不 bind（R4 的安全门）。
+# 没有本 boot 同 ns 同进程（uid/starttime 也一致）的 seen 时，普通 FUSE 根不拆不 bind（R4 的安全门）。
 sandbox_stack_blocked() {   # pid pkg ns -> 0=目标栈顶是普通 FUSE 根且无同 ns 证据
   _ssb_pid=$1; _ssb_pkg=$2; _ssb_ns=$3
-  seen_match "$_ssb_pkg" "$_ssb_ns" && return 1
+  _ssb_uid=$(pid_real_uid "$_ssb_pid")
+  _ssb_start=$(pid_starttime "$_ssb_pid")
+  seen_match "$_ssb_pkg" "$_ssb_ns" "$_ssb_uid" "$_ssb_start" && return 1
   _ssb_mi=$mi
   mi=$PROC/$_ssb_pid/mountinfo
   set -- $(stat_src_of /storage/emulated/0)
@@ -1116,25 +1162,60 @@ sandbox_stack_blocked() {   # pid pkg ns -> 0=目标栈顶是普通 FUSE 根且�
     && { [ "$_ssb_s" = "/" ] || [ "$_ssb_s" = "/0" ]; }
 }
 
+# Android isolated 子进程的 uid 区间：这类进程不是 SI 的隔离对象（没有 /storage），
+# 不应触发沙箱重建、更不该写 180 秒失败退避。
+sand_isolated_uid() {   # uid -> 0 表示 isolated
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge "$ISO_UID_MIN" ] && [ "$1" -le "$ISO_UID_MAX" ]
+}
+sand_report_gone() {   # pkg reason：gone 行带 pid/uid/ns/reason，daemon 写进日志并按事件去重
+  sand_report gone "$1" "pid=$rb_pid uid=$rb_uid ns=$rb_ns reason=$2 isolated=${rb_iso:-0}"
+}
+
 # 沙箱丢失重建：只在“曾经见过沙箱，或沙箱目录存在且属主匹配”的进程 ns 里补沙箱根。
 # 返回 0=已重建 1=失败（报 sandbox_gone） 2=无需动作/从未隔离（静默）
-#      3=安全策略拒绝（报 sandbox_skip，不动挂载）。
-rebuild_sandbox() {   # pid uid pkg ns
-  rb_pid=$1; rb_uid=$2; rb_pkg=$3; rb_ns=$4
+#      3=安全策略拒绝（报 sandbox_skip，不动挂载）
+#      5=不是隔离对象（isolated / 应用 ns 没有 /storage，报 na，不写退避、不计 broken）。
+rebuild_sandbox() {   # pid uid pkg ns [has_storage]
+  rb_pid=$1; rb_uid=$2; rb_pkg=$3; rb_ns=$4; rb_hasst=${5:-1}
   rb_tgt=/storage/emulated/0
   rb_mi=$PROC/$rb_pid/mountinfo
+  rb_iso=0
+  sand_isolated_uid "$rb_uid" && rb_iso=1
+
+  # -1) isolated 子进程（微信 xweb_sandboxed 等）本来就不是 SI 隔离对象。正常扫描已在
+  #     awk 里按 uid 过滤、走不到这里；这条分支只作防御（直接调用/未来扫描改动），
+  #     只报 na，不探测、不写 .repairs 退避、不计 broken。
+  if [ "$rb_iso" = 1 ]; then
+    say "  跳过沙箱 $rb_pkg（isolated/无 storage，跳过：pid=$rb_pid uid=$rb_uid reason=isolated）"
+    sand_report na "$rb_pkg" "pid=$rb_pid uid=$rb_uid ns=$rb_ns reason=isolated isolated=1"
+    return 5
+  fi
 
   # 0) 失败退避：dev/boot/ns 不变时，同一坏包不再每轮 bind/回滚。
+  #    退避期内仍上报同一事件（reason=backoff），但 daemon 按 pkg/pid/uid/ns 去重，
+  #    不会每轮刷日志；保留这条报告是为了让 daemon 判断事件是否仍然存在——一旦
+  #    应用自愈（本轮报告里不再有该事件），旧签名会被清掉，下次真丢会重新记一条。
   rb_left=$(backoff_left "$rb_pkg" "$SAND_KEY" "$rb_ns")
   if [ "$rb_left" -gt 0 ]; then
     backoff_note "$rb_left"
-    sand_report gone "$rb_pkg"
+    sand_report_gone "$rb_pkg" backoff
     return 1
   fi
 
   # 1) 资格：本 boot seen 身份，或没有旧 boot 证据时“源存在且属主==uid”。
   if ! sandbox_eligible "$rb_pid" "$rb_uid" "$rb_pkg" "$rb_ns"; then
     return 2
+  fi
+
+  # 1b) 有重建资格、但应用 ns 里连存储根都没有，且该包在本 boot 没有任何 seen 证据：
+  #     从未隔离过（也不是 isolated uid）的进程不是 SI 隔离对象，报 na 跳过，
+  #     不写退避、不计 broken。有 seen 证据的普通应用即使 has-storage=0 也按真实
+  #     丢失处理：继续走下面的拆普通根/重建与失败退避，不能被误判成“无需重建”。
+  if [ "$rb_hasst" = 0 ] && ! seen_cur_boot_any "$rb_pkg"; then
+    say "  跳过沙箱 $rb_pkg（isolated/无 storage，跳过：pid=$rb_pid uid=$rb_uid reason=no-storage）"
+    sand_report na "$rb_pkg" "pid=$rb_pid uid=$rb_uid ns=$rb_ns reason=no-storage isolated=0"
+    return 5
   fi
 
   # 2) 普通 FUSE 根只有在应用重启、本 boot 同 ns 的 seen 仍有效时才允许拆；
@@ -1156,7 +1237,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       *)       say "  跳过沙箱 $rb_pkg（源不可用）" ;;
     esac
     rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-    sand_report gone "$rb_pkg"
+    sand_report_gone "$rb_pkg" "$rb_reason"
     return 1
   fi
   _rb_ifs=$IFS; IFS='|'; set -- $rb_pick; IFS=$_rb_ifs
@@ -1173,7 +1254,7 @@ rebuild_sandbox() {   # pid uid pkg ns
   if ! timeout 2 nsenter -t "$rb_pid" -m -- test -d "$rb_tgt" </dev/null 2>/dev/null; then
     say "  跳过沙箱 $rb_pkg（目标不存在）"
     rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-    sand_report gone "$rb_pkg"
+    sand_report_gone "$rb_pkg" no-target
     return 1
   fi
   mi=$rb_mi
@@ -1202,7 +1283,7 @@ rebuild_sandbox() {   # pid uid pkg ns
         rb_root_src=""; rb_root_dev=""
         say "  跳过沙箱 $rb_pkg（umount 未生效 dev=${rb_dev:-?} n=$rb_n src=${rb_s:-?}），保留现状"
         rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-        sand_report gone "$rb_pkg"
+        sand_report_gone "$rb_pkg" umount
         return 1
       fi
       # 只有确认真的卸空了才记“原根已卸”；否则后续 restore/rollback 都失去依据。
@@ -1246,7 +1327,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       return 4
     fi
     rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-    sand_report gone "$rb_pkg"
+    sand_report_gone "$rb_pkg" bindfail
     return 1
   fi
   [ -n "$err" ] && say "  警告 沙箱 $rb_pkg: 命令有输出但挂载校验通过（$err）"
@@ -1264,7 +1345,7 @@ rebuild_sandbox() {   # pid uid pkg ns
       return 4
     fi
     rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-    sand_report gone "$rb_pkg"
+    sand_report_gone "$rb_pkg" unreadable
     return 1
   fi
 
@@ -1340,7 +1421,7 @@ rebuild_sandbox() {   # pid uid pkg ns
         return 4
       fi
       rep_add_pkg "$rb_pkg" "$SAND_KEY" failed "$rb_ns"
-      sand_report gone "$rb_pkg"
+      sand_report_gone "$rb_pkg" shared
       return 1
       ;;
   esac
@@ -1387,37 +1468,50 @@ while IFS='|' read -r tag f1 f2 f3 f4 f5 f6 f7; do
       fi
       ;;
     K)
-      # 合法沙箱证据：登记 pkg/boot/ns/SB；dry-run 保持只读，不登记。
+      # 合法沙箱证据：登记 pkg/boot/ns/SB + 进程 uid/starttime。
+      # -n 不写盘，但同样登记到内存，保证同一轮后续 G 的资格判断与真跑一致。
       if [ "$DRY" = 0 ]; then
         kns=$(ns_of "$f1")
-        seen_add "$f2" "$kns" "$f3"
+        seen_add "$f2" "$kns" "$f3" "$f5" "$f4"
         # 紧接着的 I 行是同一个进程：ns 读一次就够，也作为动手前的比对基准。
         kp_pid=$f1; kp_ns=$kns
+      else
+        seen_mem_add "$f2" "$(ns_of "$f1")" "$f3" "$f5" "$f4"
       fi
       ;;
     G)
       flush_proc
       gpkg=$f4; gpid=$f1; guid=$f2
       gns=$(ns_of "$gpid")
+      # has-storage（G 行末列）：应用 ns 里连存储根都没有的进程不是隔离对象。
+      ghasst=${f7:-1}
       pid_start=$f5; pid_uid=$f6; pid_ns=$gns
       if [ "$DRY" = 1 ]; then
-        # 体检只报告“有资格重建”的进程；从未隔离过的（无源/属主不符/旧 boot 证据）保持静默。
+        # 体检与真跑用同一套判定：有资格重建的进程才报告（isolated 在扫描阶段已过滤）。
+        # 从未隔离过/旧 boot 证据/isolated 的进程保持静默；has-storage=0 且无本 boot
+        # seen 证据时与真跑一样报 na（不计 broken），有 seen 证据则照常报需修复。
         if sandbox_eligible "$gpid" "$guid" "$gpkg" "$gns"; then
-          broken=$((broken + 1))
-          if sandbox_stack_blocked "$gpid" "$gpkg" "$gns"; then
-            skipped="$skipped sandbox_skip"
+          if [ "$ghasst" = 0 ] && ! seen_cur_boot_any "$gpkg"; then
+            skipped="$skipped na"
           else
-            skipped="$skipped sandbox_gone"
-            say "  跳过 $gpkg（沙箱丢失，体检不重建）"
+            broken=$((broken + 1))
+            if sandbox_stack_blocked "$gpid" "$gpkg" "$gns"; then
+              skipped="$skipped sandbox_skip"
+            else
+              skipped="$skipped sandbox_gone"
+              say "  跳过 $gpkg（沙箱丢失，体检不重建）"
+            fi
           fi
         fi
       else
-        rebuild_sandbox "$gpid" "$guid" "$gpkg" "$gns"
+        rebuild_sandbox "$gpid" "$guid" "$gpkg" "$gns" "$ghasst"
         case $? in
           0) broken=$((broken + 1)) ;;
           1) broken=$((broken + 1)); skipped="$skipped sandbox_gone" ;;
           3) broken=$((broken + 1)); skipped="$skipped sandbox_skip" ;;
           4) broken=$((broken + 1)); skipped="$skipped sandbox_stale" ;;
+          # na：isolated/无 storage，不是隔离对象；不写退避、不计 broken，只报一次 na。
+          5) skipped="$skipped na" ;;
         esac
       fi
       ;;

@@ -139,6 +139,8 @@ FIX_ERR_LOGGED=""
 PUB_KEY=""; PUB_AT=0
 CHURN=0; BLIND=0; BLIND_SINCE=0
 LAST_SANDBOX=0; SAND_GONE=0; SAND_STALE=0; SAND_ROLLBACK=0; SAND_SKIP=0; SAND_REPORT_LAST=""
+# 上一轮仍存在的沙箱事件签名（pkg|pid|uid|ns）：同一事件只记一次，事件消失即清。
+SAND_LOGGED=""
 LAST_FIX_MS=0
 DEFER_COUNT=0; FUSE_GRACE=180; FUSE_BACKOFF_MAX=30; FUSE_RETRY=60
 EVENT_RETRY_AT=0          # kprobe/selftest 失败后，多久再尝试切回事件模式（秒）
@@ -457,24 +459,75 @@ run_fix() {
       TOTAL_SANDBOX=$((TOTAL_SANDBOX + sbx))
       echo "$TOTAL_SANDBOX" > "$DATA/.total_sandbox" 2>/dev/null
     fi
-    # 沙箱报告文件只列“变化过”的包，避免每轮刷日志。
+    # 沙箱报告：gone/na 带 pid/uid/ns/reason；同一事件（包+pid+uid+ns）只记一条日志。
+    # 每个处理轮都用“本轮仍存在的 gone/na 事件”重建签名表：事件消失（应用自愈、
+    # 进程退出）就自动清签名，下次真丢会重新记；退避期内的 backoff 报告让事件继续存在，
+    # 所以不会重复刷。所有 gone 都会写 .repairs 退避并重试，日志统一写“下一轮重试”；
+    # 只有 na（isolated/无 storage，不写退避）写“跳过”。
     _srep=$(cat "$DATA/.sandbox_report" 2>/dev/null)
     if [ -z "$_srep" ]; then
       SAND_REPORT_LAST=""
+      SAND_LOGGED=""
     elif [ "$_srep" != "$SAND_REPORT_LAST" ]; then
+      _snew=""
       # 用 here-doc 让 while 在当前 shell 跑：赋值不能被管道子 shell 吞掉，
       # 否则 SAND_REPORT_LAST 永远是空，同一份报告会每轮重复记日志。
-      while IFS=' ' read -r _skind _spkg; do
+      while IFS=' ' read -r _skind _spkg _srest; do
         [ -n "$_spkg" ] || continue
+        _spid=""; _suid=""; _sns=""; _sreason=""; _siso=0
+        _srest2=$_srest
+        while [ -n "$_srest2" ]; do
+          _skv=${_srest2%% *}
+          case "$_srest2" in
+            *' '*) _srest2=${_srest2#* } ;;
+            *) _srest2="" ;;
+          esac
+          case "$_skv" in
+            pid=*)      _spid=${_skv#pid=} ;;
+            uid=*)      _suid=${_skv#uid=} ;;
+            ns=*)       _sns=${_skv#ns=} ;;
+            reason=*)   _sreason=${_skv#reason=} ;;
+            isolated=*) _siso=${_skv#isolated=} ;;
+          esac
+        done
+        case "$_siso" in 1) ;; *) _siso=0 ;; esac
+        # ns 的 [] 只是 readlink 的显示格式；去掉后日志仍可读，也避免签名被当成 glob。
+        _sns=$(printf '%s' "$_sns" | tr -d '[]')
         case "$_skind" in
           rebuilt) log "沙箱重建: $_spkg" ;;
-          gone)    log "沙箱丢失: $_spkg（下一轮重试）" ;;
+          gone|na)
+            _ssig="$_spkg|$_spid|$_suid|$_sns"
+            _snew="$_snew $_ssig"
+            case " $SAND_LOGGED " in
+              *" $_ssig "*) ;;
+              *)
+                if [ "$_skind" = na ]; then
+                  log "沙箱跳过: $_spkg (pid=${_spid:-?} uid=${_suid:-?} ns=${_sns:-?} reason=${_sreason:-?} isolated=$_siso, 跳过)"
+                else
+                  log "沙箱丢失: $_spkg (pid=${_spid:-?} uid=${_suid:-?} ns=${_sns:-?} reason=${_sreason:-?} isolated=$_siso, 下一轮重试)"
+                fi
+                ;;
+            esac
+            ;;
           stale)   log "沙箱僵死: $_spkg（需重启应用）" ;;
           skip)    log "沙箱未重建: $_spkg（安全拒绝，需重启应用）" ;;
         esac
       done <<EOF
 $_srep
 EOF
+      # 只保留本轮仍存在的事件签名（上限 100，长期运行不无限增长）。
+      _sn=0
+      for _sx in $_snew; do _sn=$((_sn + 1)); done
+      if [ "$_sn" -gt 100 ]; then
+        _keep=""; _si=0
+        for _sx in $_snew; do
+          _si=$((_si + 1))
+          [ "$_si" -le $((_sn - 100)) ] && continue
+          _keep="$_keep $_sx"
+        done
+        _snew=$_keep
+      fi
+      SAND_LOGGED=$_snew
       SAND_REPORT_LAST=$_srep
     fi
   fi
