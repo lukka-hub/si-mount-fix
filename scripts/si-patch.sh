@@ -1,26 +1,24 @@
 #!/system/bin/sh
-# si-patch.sh — Android 17（SDK 37）与 Android 15/16（SDK 35/36）下 SI 应用列表为空、
-# MediaStore 导出规则失效的修复（main.dex）。
+# si-patch.sh — Android 17（SDK 37）下 SI 应用列表为空、MediaStore 导出规则失效的修复（main.dex）。
 #
 # 只替换 zygisk-storage-isolation 模块的 main.dex：
 #   /data/adb/modules/zygisk-storage-isolation/main.dex
 #   原版 90,740 B / sha256 a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 #   A17 补丁 88,808 B / sha256 3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
-#   A15/A16 补丁 88,972 B / sha256 2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a
-# 按 SDK 选择资产：37 → assets/main-a17.dex；35/36 → assets/main-a15.dex；<35 不提供补丁。
-# A17 资产已在 Android 17 真机验证（应用列表 + MediaStore 导出）。A15 资产从原版 90,740
-# 基线重建，u0.invoke 同时处理 getService2 的 IBinder（A15 QPR1）与 android.os.Service
-# （A15 QPR2+/A16/A17）返回，未上机验证，建议先在目标机型抓 logcat。
+# 本版仅分发 A17 资产：SDK 37 → assets/main-a17.dex；SDK 35/36（Android 15/16）与
+# SDK <35 都不提供补丁，A15/A16 待 1.6.1。
+# A17 资产已在 Android 17 真机验证（应用列表 + MediaStore 导出）。
 # 社区版 main.dex 已在真机重启验证：server dex 会被 SI daemon 写回原版，但 main.dex 由
 # Zygisk 模块在开机时加载，替换后跨重启保持。因此不再修补 server dex，也不重启 SI server。
-# 两份补丁 dex 随模块 assets/ 分发，不要修改内容。
+# 补丁 dex 随模块 assets/ 分发，不要修改内容。
 # 适用模块与文件名取自 module.prop 的 siPatchModule / siPatchTarget，版本取自
-# siPatchVersion / siPatchVersionCode；脚本里不写版本字面量。
+# siPatchVersion / siPatchVersionCode；脚本里不写目标模块版本字面量（A15/A16 提示除外）。
 #
 # 用法：sh si-patch.sh check|status|apply|restore [--force]
 #   check          输出 KEY=VALUE，只读文件哈希/大小，不扫 /proc
 #   status         给人看的一行状态
-#   apply          仅 SDK=37、zygisk 模块适用、目标为原版时执行；先备份、再校验、失败回滚
+#   apply          仅 Android 17（SDK 37，A17 资产）、zygisk 模块适用、目标为原版时执行；
+#                  先备份、再校验、失败回滚
 #   restore        当前为补丁版时，从新到旧找第一份 sha==原版的备份恢复
 #   restore --force 当前不是补丁版（如 unknown）但存在有效原版备份时，显式覆盖恢复
 #
@@ -33,9 +31,8 @@ ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 ORIGINAL_SIZE=90740
 A17_SHA=3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
 A17_SIZE=88808
-A15_SHA=2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a
-A15_SIZE=88972
-# 早期社区旧版补丁：可识别、可升级到自建版、可在有原版备份时恢复。
+# 早期社区旧版补丁（99,104 B）：可识别、可升级到自建版、可在有原版备份时恢复。
+# 旧自建补丁（88,336 B）不在此列，按 unknown 处理（restore 需 --force）。
 LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
 LEGACY_PATCH_SIZE=99104
 
@@ -205,8 +202,8 @@ version_ok() {
 SDK=$(detect_sdk)
 [ -n "$SDK" ] || SDK=unknown
 
-# 按 SDK 选择补丁资产：37 → A17；35/36 → A15/A16；<35 不提供补丁。
-# A15 资产未上机验证，VARIANT_NOTE 会出现在 status/apply 输出里。
+# 本版只分发 A17 资产：SDK 37 → assets/main-a17.dex；其它 SDK 不提供补丁。
+# SDK 35/36（A15/A16）与 SDK <35 都走 unsupported，VARIANT=none、ASSET 为空。
 select_variant() {
   case "$SDK" in
     37)
@@ -215,12 +212,6 @@ select_variant() {
       PATCH_SHA=$A17_SHA
       PATCH_SIZE=$A17_SIZE
       ASSET_NAME=main-a17.dex ;;
-    35|36)
-      VARIANT=a15
-      VARIANT_NOTE='A15 未上机验证'
-      PATCH_SHA=$A15_SHA
-      PATCH_SIZE=$A15_SIZE
-      ASSET_NAME=main-a15.dex ;;
     *)
       VARIANT=
       VARIANT_NOTE=
@@ -239,10 +230,22 @@ select_variant() {
 }
 select_variant
 
-# 恢复时只认“已知补丁版”，不依赖当前 SDK 选中的变体：A17/A15 都可以直接恢复原版。
+# 不支持时的统一说明：35/36 指向 A15/A16 待 1.6.1，其它 SDK 只说不支持。
+unsupported_note() {
+  case "$SDK" in
+    35|36)
+      printf '1.6.0 仅支持 Android 17，A15/A16 待 1.6.1；当前 SDK=%s' "$SDK" ;;
+    ''|unknown|*[!0-9]*)
+      printf '无法识别 Android SDK（%s），本补丁仅支持 Android 17（SDK 37）' "$SDK" ;;
+    *)
+      printf '本补丁仅支持 Android 17（SDK 37），当前 SDK=%s，不提供补丁' "$SDK" ;;
+  esac
+}
+
+# 恢复时只认“已知补丁版”，不依赖当前 SDK 选中的变体：A17 与社区旧版可直接恢复原版；
+# 旧自建补丁（88,336 B）不在已知列表里，按 unknown 处理。
 is_known_patch() {
   { [ "$SHA" = "$A17_SHA" ] && [ "$SIZE" = "$A17_SIZE" ]; } && return 0
-  { [ "$SHA" = "$A15_SHA" ] && [ "$SIZE" = "$A15_SIZE" ]; } && return 0
   { [ "$SHA" = "$LEGACY_PATCH_SHA" ] && [ "$SIZE" = "$LEGACY_PATCH_SIZE" ]; } && return 0
   return 1
 }
@@ -353,7 +356,7 @@ print_check() {
 status_line() {
   case "$STATE" in
     unsupported)
-      printf 'main.dex 补丁：不适用（Android SDK %s；仅支持 Android 17 与 Android 15/16，A15 未上机验证）\n' "$SDK" ;;
+      printf 'main.dex 补丁：不适用（%s）\n' "$(unsupported_note)" ;;
     no-target)
       printf 'main.dex 补丁：未检测到 zygisk-storage-isolation 的 %s（%s）\n' "$TARGET" "$DEX" ;;
     original)
@@ -570,7 +573,7 @@ do_apply() {
       printf 'main.dex 补丁已应用（%s），无需重复操作（恢复原版请用 restore）。\n' "$VARIANT_NOTE"
       return 0 ;;
     unsupported)
-      die "本补丁仅支持 Android 17（SDK 37）与 Android 15/16（SDK 35/36）；A15 资产未上机验证；当前 SDK=${SDK}" 2 ;;
+      die "$(unsupported_note)" 2 ;;
     no-target)
       die "找不到 $DEX，未检测到 zygisk-storage-isolation 模块" 2 ;;
     unknown)
@@ -731,7 +734,7 @@ do_restore() {
   TMP_CUR=
   if [ "$_is_legacy" = 1 ]; then
     log_action "RESTORE-LEGACY original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
-  elif [ "$FORCE" = 1 ] && ! { [ "$_cur_sha" = "$A17_SHA" ] || [ "$_cur_sha" = "$A15_SHA" ]; }; then
+  elif [ "$FORCE" = 1 ] && [ "$_cur_sha" != "$A17_SHA" ]; then
     log_action "RESTORE-FORCE original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
   else
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"

@@ -16,13 +16,10 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
-# 补丁 main.dex：按 SDK 分发 A17 / A15 两份资产，只替换 zygisk-storage-isolation 的 main.dex。
+# 补丁 main.dex：1.6.0 只分发 A17 资产，只替换 zygisk-storage-isolation 的 main.dex。
 A17_ASSET=assets/main-a17.dex
 A17_SHA=3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
 A17_SIZE=88808
-A15_ASSET=assets/main-a15.dex
-A15_SHA=2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a
-A15_SIZE=88972
 
 check_asset() {
   _asset=$1
@@ -165,12 +162,11 @@ print('update.json：版本/versionCode/zipUrl 与 module.prop 一致')
 PY
 say "updateJson：$PROP_UJ"
 
-# ---------- 3b) 自建补丁资产：两份 dex 内容不能变，sha256/大小必须与发布说明一致 ----------
+# ---------- 3b) 自建补丁资产：A17 dex 内容不能变，sha256/大小必须与发布说明一致 ----------
 PATCH_FOR_TARGET=$(prop_get siPatchTarget)
 [ "$PATCH_FOR_TARGET" = main.dex ] \
   || die "siPatchTarget 应为 main.dex，当前：$PATCH_FOR_TARGET"
 check_asset "$A17_ASSET" "$A17_SHA" "$A17_SIZE" A17
-check_asset "$A15_ASSET" "$A15_SHA" "$A15_SIZE" A15
 
 # ---------- 4) updater-script 首行必须是 #MAGISK ----------
 [ -f "$US" ] || die "$US 不存在"
@@ -205,15 +201,18 @@ done
 say "语法检查通过（$BUILD_SH -n）"
 
 # ---------- 7) 版本号只有一个来源：脚本/webroot 不能写死任何版本号 ----------
+# 例外：A15/A16 的“1.6.0 仅支持 A17、待 1.6.1”提示必须写死版本，避免用户误以为当前版本
+# 已支持 A15/A16；只放行这两段提示文案，其它版本号仍必须读 module.prop。
 SCAN="service.sh action.sh uninstall.sh webroot/index.html"
 for f in scripts/*.sh; do
   [ -f "$f" ] && SCAN="$SCAN $f"
 done
 [ -f scripts/si-config.awk ] && SCAN="$SCAN scripts/si-config.awk"
-bad=$(grep -nE 'v?[0-9]+\.[0-9]+\.[0-9]+' $SCAN 2>/dev/null || true)
+bad=$(grep -nE 'v?[0-9]+\.[0-9]+\.[0-9]+' $SCAN 2>/dev/null \
+  | grep -vE '1\.6\.0 仅支持|A15/A16 待 1\.6\.1' || true)
 [ -z "$bad" ] || die "脚本/webroot 里写死了版本号（应读 module.prop）：
 $bad"
-say "版本号来源检查通过（脚本/webroot 无版本字面量）"
+say "版本号来源检查通过（脚本/webroot 无版本字面量，A15/A16 提示除外）"
 
 # ---------- 8) 运行期残留与包内白名单 ----------
 for f in webroot/snapshot.js webroot/snapshot.js.* webroot/*.tmp; do
@@ -223,7 +222,7 @@ done
 FILES="module.prop README.md CHANGELOG.md LICENSE service.sh action.sh uninstall.sh"
 FILES="$FILES scripts/si-mount-eventd.sh scripts/fix-si-mounts.sh scripts/supervisor.sh"
 FILES="$FILES scripts/restart.sh scripts/list-apps.sh scripts/result.sh scripts/si-patch.sh"
-FILES="$FILES webroot/index.html $UB $US $A17_ASSET $A15_ASSET"
+FILES="$FILES webroot/index.html $UB $US $A17_ASSET"
 for f in $FILES; do
   [ -f "$f" ] || die "缺少必需的打包文件：$f"
 done
@@ -306,13 +305,13 @@ print('built %s %d bytes' % (out, os.path.getsize(out)))
 PY
 
 # ---------- 11) 自检：条目集合、权限、关键内容 ----------
-python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$A17_ASSET" "$A17_SHA" "$A15_ASSET" "$A15_SHA" <<'PY' || die 'zip 自检失败'
+python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$A17_ASSET" "$A17_SHA" <<'PY' || die 'zip 自检失败'
 import hashlib, sys, zipfile
 
 z = zipfile.ZipFile(sys.argv[1])
 v_prop, v_code = sys.argv[2], sys.argv[3]
 expected = sorted(sys.argv[4].split())
-a17_asset, a17_sha, a15_asset, a15_sha = sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8]
+a17_asset, a17_sha = sys.argv[5], sys.argv[6]
 names = z.namelist()
 files = sorted(n for n in names if not n.endswith('/'))
 dirs = sorted(n for n in names if n.endswith('/'))
@@ -352,11 +351,10 @@ if up.splitlines()[:1] != ['#MAGISK']:
 if 'webroot/index.html' not in files:
     raise SystemExit('缺少 webroot/index.html')
 
-for asset, want_sha in ((a17_asset, a17_sha), (a15_asset, a15_sha)):
-    if asset not in files:
-        raise SystemExit('补丁资产没有进包：' + asset)
-    if hashlib.sha256(z.read(asset)).hexdigest() != want_sha:
-        raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致：' + asset)
+if a17_asset not in files:
+    raise SystemExit('补丁资产没有进包：' + a17_asset)
+if hashlib.sha256(z.read(a17_asset)).hexdigest() != a17_sha:
+    raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致：' + a17_asset)
 
 print('zip 自检通过：%d 个文件 + %d 个目录，脚本 755 / 其它 644' % (len(files), len(dirs)))
 PY

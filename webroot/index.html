@@ -238,7 +238,7 @@ details.card[open] summary{margin-bottom:8px}
 </section>
 
 <section class="card" id="patchCard" hidden>
-  <div class="card-head"><h2>Android 15–17 应用列表与导出修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
+  <div class="card-head"><h2>Android 17 应用列表与导出修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
   <div class="btn-grid" id="patchActions" hidden>
@@ -998,9 +998,10 @@ details.card[open] summary{margin-bottom:8px}
           { action: 'patch-confirm-cancel', label: '取消' }
         ] });
     } else if (patchPromptable()) {
-      items.push({ tone: 'warn', title: 'Android 15–17 应用列表或导出可能异常',
-        body: '可应用补丁修复（A17 已真机验证；A15 未上机验证）。补丁只替换 zygisk-storage-isolation 的 main.dex，' +
-          '确认后才会执行；应用后重启手机生效。之后仍可在下方「Android 15–17 应用列表与导出修复（main.dex）」里手动应用。',
+      items.push({ tone: 'warn', title: 'Android 17 应用列表或导出可能异常',
+        body: '可应用补丁修复（A17 已真机验证）。1.6.0 仅支持 Android 17；A15/A16 待 1.6.1。' +
+          '补丁只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；应用后重启手机生效。' +
+          '之后仍可在下方「Android 17 应用列表与导出修复（main.dex）」里手动应用。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
           { action: 'patch-dismiss', label: '暂不' }
@@ -1150,10 +1151,10 @@ details.card[open] summary{margin-bottom:8px}
     return out;
   }
 
-  /* SDK 不是 35/36/37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
-     35/36 用 A15/A16 资产（未上机验证），37 用 A17 资产（已真机验证）。 */
+  /* SDK 不是 37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
+     1.6.0 仅支持 Android 17（A17 资产，已真机验证）；A15/A16 待 1.6.1。 */
   function patchSdkOk(sdk) {
-    return sdk === '35' || sdk === '36' || sdk === '37';
+    return sdk === '37';
   }
 
   function ensurePatchSdk() {
@@ -1473,10 +1474,8 @@ details.card[open] summary{margin-bottom:8px}
     } else {
       what = '用有效原版备份恢复 ' + mod + ' 的 ' + file;
     }
-    var variantNote = action === 'apply'
-      ? (p.variant === 'a15' ? '本次使用 A15 资产（未上机验证）'
-        : (p.variant === 'a17' ? '本次使用 A17 资产（已真机验证）' : ''))
-      : '';
+    var variantNote = action === 'apply' && p.variant === 'a17'
+      ? '本次使用 A17 资产（已真机验证）' : '';
     return '目标模块：' + mod + ' ' + (p.si || '版本未知') + '。将' + what +
       '。仅适用于 ' + ver + '（' + file + '）。' + (variantNote ? variantNote + '。' : '') +
       '重启手机后生效。';
@@ -1546,8 +1545,7 @@ details.card[open] summary{margin-bottom:8px}
     var badge = '';
     var mod = p ? (p.targetModule || 'zygisk-storage-isolation') : 'zygisk-storage-isolation';
     var file = p ? (p.targetFile || 'main.dex') : 'main.dex';
-    var variantNote = p && p.variant === 'a15' ? 'A15 未上机验证'
-      : (p && p.variant === 'a17' ? 'A17 已真机验证' : '');
+    var variantNote = p && p.variant === 'a17' ? 'A17 已真机验证' : '';
 
     if (err) {
       badge = '读取失败';
@@ -1566,8 +1564,9 @@ details.card[open] summary{margin-bottom:8px}
         hint.textContent = '已恢复原版，重启生效（Zygisk 模块在开机时加载）。';
       } else if (p.match) {
         badge = '可应用';
-        hint.textContent = 'Android 15–17 下 SI 应用列表可能为空，或 MediaStore 导出规则不生效，可应用补丁修复。' +
-          '补丁只替换 ' + mod + ' 的 ' + file + (variantNote ? '（' + variantNote + '）' : '') +
+        hint.textContent = 'Android 17 下 SI 应用列表可能为空，或 MediaStore 导出规则不生效，可应用补丁修复。' +
+          '1.6.0 仅支持 Android 17；A15/A16 待 1.6.1。补丁只替换 ' + mod + ' 的 ' + file +
+          (variantNote ? '（' + variantNote + '）' : '') +
           '，确认后才会执行；应用后重启手机生效。';
       } else {
         badge = '版本不匹配';

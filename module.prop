@@ -7,5 +7,5 @@ siPatchTarget=main.dex
 siPatchVersion=v29.0.1
 siPatchVersionCode=89
 author=宴生
-description=开机后这里会显示实时守护状态｜存储空间隔离在 Android 13~17 上会丢失应用共享目录挂载（微信读不到本地文件/视频"已被删除"）。本模块用 kprobe 事件驱动补回挂载（空闲不扫描、低占用），不支持时自动降级轮询；默认只补挂载，不修改隔离配置。Android 17 与 Android 15/16 可选用补丁修复 SI 应用列表为空和 MediaStore 导出规则失效：按 SDK 替换 zygisk-storage-isolation 的 main.dex，A17 已真机验证、A15 未上机验证，重启手机后保持。
+description=开机后这里会显示实时守护状态｜存储空间隔离在 Android 13~17 上会丢失应用共享目录挂载（微信读不到本地文件/视频"已被删除"）。本模块用 kprobe 事件驱动补回挂载（空闲不扫描、低占用），不支持时自动降级轮询；默认只补挂载，不修改隔离配置。Android 17 可选用补丁修复 SI 应用列表为空和 MediaStore 导出规则失效：替换 zygisk-storage-isolation 的 main.dex，重启手机后保持；1.6.0 仅支持 Android 17，A15/A16 待 1.6.1。
 updateJson=https://github.com/lukka-hub/si-mount-fix/raw/main/update.json
