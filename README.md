@@ -3,9 +3,9 @@
 给 **Storage Isolation / 存储空间隔离**（`moe.shizuku.redirectstorage`）补回丢失的共享目录挂载。
 
 支持 Android 13~17，**Magisk / KernelSU**。默认只补挂载：不修改 SI 的
-`configuration.json`，不联网，不收集数据。另有一个需用户确认的 Android 17 可选补丁，
+`configuration.json`，不联网，不收集数据。另有一个需用户确认的 Android 15/16/17 可选补丁，
 只替换 `zygisk-storage-isolation` 模块的 `main.dex`，重启手机后生效（见
-「Android 17 应用列表修复」）。
+「Android 15~17 应用列表与导出修复」）；A17 已真机验证，A15 未上机验证。
 
 ## 问题与根因
 
@@ -85,8 +85,9 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
-- Android 17 可选补丁：SDK 37 下 SI 应用列表为空时，用户确认后替换
-  `zygisk-storage-isolation` 的 `main.dex`；自动备份、校验并支持恢复，不动 SI 配置。
+- Android 15~17 可选补丁：SDK 35/36 用 A15/A16 资产、SDK 37 用 A17 资产，修复 SI 应用列表为空
+  和 MediaStore 导出规则失效；用户确认后替换 `zygisk-storage-isolation` 的 `main.dex`，
+  自动备份、校验并支持恢复，不动 SI 配置。A17 已真机验证，A15 未上机验证。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
 - 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录
   （只要 `patch-backup` 里存在 `main.dex.*` 备份，就只保留该目录）。
@@ -107,23 +108,26 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 旧守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是旧守护写下的状态，
 版本号却已经是新模块的——这属于正常现象。
 
-**从 1.5.x 补丁升级**：1.5.0~1.5.3 修补的是 SI 的 server dex，新版不再使用它；
-SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经自动还原。新版只处理
-`zygisk-storage-isolation/main.dex`：升级后重新 `check`，状态为 `original` 时再点「应用补丁」。
-旧的 server dex 备份不再被读取，可以留作记录，也可以手动删除；新版备份都在
-`patch-backup/main.dex.*`。
+**从 1.5.x 补丁升级**：
 
-**从 1.5.4 及更早升级**：旧版社区 main.dex（99,104 B / `6d4058bc…`）在 1.5.6 中识别为
-「旧版补丁」（`patched-legacy` / `LEGACY=1`），不需要先恢复：卡片直接提供「升级到自建版」，
-升级时把当前社区版备份为 `main.dex.legacy.<时间戳>`；已有原版备份仍可用于「恢复原版」。
-没有原版备份时不能直接恢复，可先升级到自建版。1.5.5 用户若已经是自建版则无需操作。
+- 1.5.0~1.5.3 修补的是 SI 的 server dex，新版不再使用它；SI daemon 每次启动都会把内嵌原版
+  写回，所以旧补丁通常已经自动还原。新版只处理 `zygisk-storage-isolation/main.dex`；
+  `check` 为 `original` 时再点「应用补丁」。旧的 server dex 备份不再被读取，可以留作记录或
+  手动删除；新版备份都在 `patch-backup/main.dex.*`。
+- 1.5.4~1.5.7 的社区旧版 main.dex（99,104 B / `6d4058bc…`）仍识别为「旧版补丁」
+  （`patched-legacy` / `LEGACY=1`），可直接「升级到自建版」，升级时把社区版备份为
+  `main.dex.legacy.<时间戳>`；已有原版备份仍可用于「恢复原版」。
+- 1.5.8.1 的自建 main.dex（88,336 B / `5413a01b…`）在 1.6.0 中不再匹配：先
+  `restore --force` 恢复原版（需要版本匹配且存在原版备份），再 `apply` 安装当前 SDK 对应
+  的新资产。详见「Android 15~17 应用列表与导出修复」里的升级说明。
 
 ### 版本与更新检查
 
 - 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 版本只有一个来源：`module.prop` 的 `version=v1.5.8.1` 与 `versionCode=1581`
-  （三段按 `major*100 + minor*10 + patch`；1.5.7.1 这类四段按 `major*1000 + minor*100 + patch*10 + micro`）。
+- 版本只有一个来源：`module.prop` 的 `version=v1.6.0` 与 `versionCode=1600`
+  （三段补零成四位：`major*1000 + minor*100 + patch*10`，避免版本号回退；1.5.7.1 这类四段按
+  `major*1000 + minor*100 + patch*10 + micro`）。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
@@ -133,31 +137,65 @@ SI daemon 每次启动都会把内嵌原版写回，所以旧补丁通常已经�
 需安装 **KsuWebUI Standalone** 后从其中打开本模块。没有 WebUI 时，点模块的「操作」按钮
 也能看到模式、守护 PID、运行时长、体检结果和最近日志。
 
-## Android 17 应用列表修复（可选补丁）
+## Android 15~17 应用列表与导出修复（可选补丁）
 
-**适用**：Android 17（SDK 37）+ Zygisk 模块 **zygisk-storage-isolation v29.0.1**
-（versionCode 89，`main.dex`）。其它模块版本不要使用。
+**适用**：Android 15/16（SDK 35/36）或 Android 17（SDK 37）+ Zygisk 模块
+**zygisk-storage-isolation v29.0.1**（versionCode 89，`main.dex`）。其它模块版本不要使用。
+补丁按 SDK 自动选资产：SDK 37 → `assets/main-a17.dex`（A17 已真机验证）；SDK 35/36 →
+`assets/main-a15.dex`（A15 未上机验证）；SDK 35 以下不提供补丁。
 
-**现象**：SI 的应用列表为空（其它地方能看到已安装应用，SI 里一个都没有）。根因是
-Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `main.dex` 解析不了新系统返回的数据。
-替换 `zygisk-storage-isolation` 的 `main.dex` 后列表恢复；社区版在真机实测从 17 个恢复到
-31 个，自建版与社区版指令级一致。
+**现象**：
+
+- SI 的应用列表为空（其它地方能看到已安装应用，SI 里一个都没有）。
+- 应用通过 MediaStore 写入（例如 `ContentResolver.insert(relative_path=DCIM/...)`）时，
+  SI 的导出规则不生效：文件仍落在原目录，`_data` / `relative_path` 没有被改写。
+
+**根因**：
+
+- Android 17 改了 AIDL 返回类型 `PackageInfoList`，旧 `main.dex` 解析不了新系统返回的数据。
+- Android 15 QPR1 起 `ServiceManager.getService()` 改走 `getService2`：A15 QPR1 返回
+  `IBinder`，A15 QPR2+/A16/A17 返回 `android.os.Service` union。旧 `main.dex` 的
+  `u0.invoke` 只认 `getService` / `addService`，`getService2` 落到默认分支，`ActivityThread`
+  缓存到裸 `IActivityManager`；provider 发布时 SI 的 ActivityManager wrapper 不执行，
+  MediaStore 的 `relative_path` 改写随之失效。
 
 **为什么补 main.dex**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回自己的
 server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持久的那一半：替换
 `/data/adb/modules/zygisk-storage-isolation/main.dex` 后重启手机，server dex 虽被还原成
-原版，SI 列表仍正常，且跨重启保持。
+原版，SI 应用列表和 MediaStore 导出仍正常，且跨重启保持。
 
 **鸣谢**：酷安用户「无所事事」提供了 Android 17 下 SI「无法读取应用列表」的解决思路。
 
-**来源**：模块内的 `assets/main.dex` 由本模块对官方 main.dex 自行反编译重打：
-只改 4 条 invoke（两个 `getInstalledPackages` 的返回类型改为 `PackageInfoList`，两处
-`getList` 的 owner 改为 `PackageInfoList`），其余 112 类、446 方法、231 字段不变；
-重打包时剥离调试信息，因此是 88,336 B。自建版与社区版反汇编后的 112 个 smali 文件逐字节
-相同（方法级指令零差异）；社区版已在真机重启验证，自建版仍建议先在目标机型抓 logcat 验证
-`getInstalledPackages` 路径。补丁只替换
-`/data/adb/modules/zygisk-storage-isolation/main.dex`，不改 SI 配置、不动 SI 的其它文件。
-补丁在用户确认后由模块写入。
+**来源**：
+
+- `assets/main-a17.dex`（88,808 B）：在官方 main.dex 反编译重打。保留 `a1` 的 4 条
+  `PackageInfoList` 调用（两个 `getInstalledPackages` 返回类型 + 两处 `getList` owner），
+  并在 `u0.invoke` 增加 `getService2` / `checkService2` 分支：`android.os.Service` union
+  的 tag 0 取 `service`，经 `c()` 包装后重建 `ServiceWithMetadata` 与 `Service` 返回。
+  112 类、446 方法、231 字段。A17 真机验证应用列表与 MediaStore 导出。
+- `assets/main-a15.dex`（88,972 B）：从**原版** 90,740 B 基线重建（不带 `a1`），
+  `u0.invoke` 使用同一套 `getService2` / `checkService2` 分支：
+  1. 调原方法拿结果；
+  2. 结果是 `IBinder`（A15 QPR1）→ `c(name,binder)` 包装后直接返回 `IBinder`；
+  3. 结果类名是 `android.os.Service`（A15 QPR2+/A16/A17）→ 用 `Class.forName`/反射取
+     `getServiceWithMetadata()` 的 `service` / `isLazyService`，构造 `ServiceWithMetadata`，
+     再用 `Service.serviceWithMetadata` 返回；
+  4. 其它/异常原样返回；
+  5. 旧 `getService` / `addService` 分支保留（A13–A15 正式版）。
+
+  A15 资产**不直接引用** `android.os.Service` / `ServiceWithMetadata` 类型，只用字符串和反射，
+  避免 A15 QPR1 没有这些类时类加载失败。112 类、447 方法（新增 1 个反射辅助方法）、231 字段。
+- 两份资产重打包时都剥离调试信息；只替换
+  `/data/adb/modules/zygisk-storage-isolation/main.dex`，不改 SI 配置、不动 SI 的其它文件。
+  补丁在用户确认后由模块写入。
+
+**验证状态**：
+
+- A17 资产：已真机验证应用列表恢复、MediaStore 导出规则生效；本次发布保持该
+  `3eafcb10…` 版本不变。
+- A15 资产：**未上机验证**，只做了 dex 头部 checksum/SHA-1、baksmali 反汇编结构和代码路径校验。
+  A15/A16 用户应用前建议先抓 `logcat`，确认 `getService2("activity")` 路径和 MediaStore
+  导出结果；失败时用 `restore` 回到原版。
 
 **版本校验**：
 
@@ -165,12 +203,15 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
   `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`
 - 社区旧版补丁 `main.dex`：99,104 B，sha256
   `6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7`
-- 自建补丁 `main.dex`：88,336 B，sha256
-  `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`
+- A17 补丁 `main-a17.dex`：88,808 B，sha256
+  `3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc`
+- A15/A16 补丁 `main-a15.dex`：88,972 B，sha256
+  `2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a`
 
-`check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已应用自建版）、
+`check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已应用当前 SDK 对应的自建版）、
 `patched-legacy`（已应用社区旧版，`LEGACY=1`）、`unknown`（未知版本，拒绝操作）、
-`no-target`（未装 zygisk 模块/没有 `main.dex`）、`unsupported`（SDK 不是 37）。
+`no-target`（未装 zygisk 模块/没有 `main.dex`）、`unsupported`（SDK 不是 35/36/37）。
+`check` 另外输出 `ASSET`（本次会用的资产文件名）与 `VARIANT`（`a17` / `a15` / `none`）。
 
 `apply` 和 `restore` 都会校验 zygisk 模块版本（`module.prop` 的 `siPatchVersion` /
 `siPatchVersionCode`，当前为 v29.0.1 / 89；`siPatchModule` / `siPatchTarget` 提供模块名和
@@ -178,11 +219,20 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 面板的「强制恢复」不显示；哈希门禁仍然保留。模块 `module.prop` 读不到版本时，以目标
 `main.dex` 存在本身作为适用范围依据。
 
+`apply` 按 SDK 选资产：SDK 37 使用 `main-a17.dex`，SDK 35/36 使用 `main-a15.dex`；
+应用前会校验所选资产的 sha256/大小。`restore` 不依赖当前 SDK 选中的变体：只要目标当前是
+A17/A15 已知补丁，就会从有效原版备份恢复。
+
 **社区旧版升级**：`apply` 允许从 `patched-legacy` 升级到自建版：先把当前社区 dex 备份为
-`patch-backup/main.dex.legacy.<时间戳>`（600），再安装自建版；原版备份（a407）保留不动。
-`restore` 允许从 `patched-legacy` 直接恢复原版，但只认有效原版备份；没有原版备份时拒绝并
-提示「缺少原版备份，可先升级到自建版」。升级/恢复成功都回到 `patched` / `original`，
+`patch-backup/main.dex.legacy.<时间戳>`（600），再安装当前 SDK 对应的自建版；原版备份（a407）
+保留不动。`restore` 允许从 `patched-legacy` 直接恢复原版，但只认有效原版备份；没有原版备份时
+拒绝并提示「缺少原版备份，可先升级到自建版」。升级/恢复成功都回到 `patched` / `original`，
 `LEGACY` 回到 0。
+
+**从 1.5.8.1 旧自建补丁升级**：1.5.8.1 的 `assets/main.dex` 是 88,336 B / `5413a01b…`，
+1.6.0 已换成 A17 88,808 / A15 88,972 两份资产。更新模块后旧补丁会显示 `unknown`（哈希不再
+匹配）：先 `restore --force` 恢复原版（需要版本匹配且存在原版备份），再 `apply` 安装新资产；
+没有原版备份时不要反复 `apply`，先确认备份或重装 SI 的 `main.dex`。
 
 **重启提示与标记**：apply/升级成功后写
 `/data/adb/si-mount-fix/patch-pending-reboot`（600，内容为本次启动标识：优先 boot_id，缺失时用
@@ -195,27 +245,29 @@ server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持�
 写入后必须重启手机；重启前 SI 仍在使用旧 dex。
 
 **备份与恢复**：apply 先把原版备份到
-`/data/adb/si-mount-fix/patch-backup/main.dex.<时间戳>`（权限 600），再把
-`assets/main.dex` 复制到目标，`chown root:root`、`chmod 644`，校验 sha256 与大小后原子替换；
-替换后会再校验一次，不符就用备份覆盖回去。恢复按时间从新到旧扫描备份，选第一份 sha256
-等于原版的；当前是 `unknown` 但存在有效原版备份、且模块版本匹配时，才可以用「强制恢复」
-（命令行 `restore --force`）。
+`/data/adb/si-mount-fix/patch-backup/main.dex.<时间戳>`（权限 600），再把当前 SDK 对应的
+`assets/main-a17.dex` 或 `assets/main-a15.dex` 复制到目标，`chown root:root`、`chmod 644`，
+校验 sha256 与大小后原子替换；替换后会再校验一次，不符就用备份覆盖回去。恢复按时间从新到旧
+扫描备份，选第一份 sha256 等于原版的；当前是 `unknown` 但存在有效原版备份、且模块版本匹配时，
+才可以用「强制恢复」（命令行 `restore --force`）。
 
-**面板显示**：Android SDK 不是 37、或没有安装 zygisk 模块（`no-target`）时，整张补丁卡片隐藏；
-SDK 37 但模块版本不匹配时显示卡片但按钮置灰；`unknown` 显示「未知版本」，只有版本匹配且
-存在有效原版备份时才显示「强制恢复」；`original` 启用「应用补丁」，`patched` 启用「恢复原版」，
-`patched-legacy` 显示「旧版补丁」并启用「升级到自建版 / 恢复原版」。首次提示只在 SDK 37
+**面板显示**：Android SDK 不是 35/36/37、或没有安装 zygisk 模块（`no-target`）时，整张补丁
+卡片隐藏；SDK 35/36/37 但模块版本不匹配时显示卡片但按钮置灰；`unknown` 显示「未知版本」，
+只有版本匹配且存在有效原版备份时才显示「强制恢复」；`original` 启用「应用补丁」，`patched`
+启用「恢复原版」，`patched-legacy` 显示「旧版补丁」并启用「升级到自建版 / 恢复原版」。
+面板会显示当前会使用的资产和 `A17 已真机验证` / `A15 未上机验证`。首次提示只在 SDK 35/36/37
 且状态为 `original` 时出现。动作按钮统一 44px 高、同圆角/字号/间距；应用/升级为主按钮，
 恢复为次按钮，强制恢复仅红色边框/文字、不放大；「检查补丁」与耗时文字同一行。
 
 **在 WebUI 里操作**：
 
-1. 首次打开面板、SDK 为 37 且状态为 `original`（版本匹配）时，顶部会提示
-   「Android 17 应用列表可能为空」。点「应用补丁」先进入确认（按钮需再点一次「确认应用」），
-   确认框会显示目标模块版本和「仅适用于 v29.0.1（main.dex）」；点「暂不」不会改动任何文件。
-   首次提示标记按目标文件+版本区分（`/data/adb/si-mount-fix/.patch_prompted.main.dex.v29.0.1`），
-   点「暂不」或应用成功后才写，同一目标只提示一次；失败/超时不会写标记，下次打开仍会重新 check。
-   手动入口在「Android 17 应用列表修复（main.dex）」卡片里。
+1. 首次打开面板、SDK 为 35/36/37 且状态为 `original`（版本匹配）时，顶部会提示
+   「Android 15–17 应用列表或导出可能异常」。点「应用补丁」先进入确认（按钮需再点一次
+   「确认应用」），确认框会显示目标模块版本、本次使用的资产（A17 已真机验证 / A15 未上机验证）
+   和「仅适用于 v29.0.1（main.dex）」；点「暂不」不会改动任何文件。首次提示标记按目标文件+
+   版本区分（`/data/adb/si-mount-fix/.patch_prompted.main.dex.v29.0.1`），点「暂不」或应用
+   成功后才写，同一目标只提示一次；失败/超时不会写标记，下次打开仍会重新 check。
+   手动入口在「Android 15–17 应用列表与导出修复（main.dex）」卡片里。
 2. 应用/升级、恢复、强制恢复都是两步确认；确认后 10 秒内不操作会自动取消。
    `patched-legacy` 的确认框会说明“把社区版 main.dex 升级为自建版并备份当前社区 dex”。
 3. 长动作在后台执行：体检/修复、重启守护、保存配置、apply/restore 都不会阻塞界面，
@@ -240,8 +292,9 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 
 `check` 输出 `STATE` / `SDK` / `SI_VERSION` / `SI_VERSION_CODE` / `SI_TARGET_MODULE` /
 `SI_TARGET_VERSION` / `SI_TARGET_VERSION_CODE` / `SI_TARGET_FILE` / `SI_MATCH` / `DEX` /
-`SIZE` / `MTIME` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` / `PATCH_SIZE` / `PATCH_SHA` /
-`BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` / `LEGACY` / `PENDING_REBOOT` 二十二个 `KEY=VALUE`。任何状态都返回 0；
+`ASSET` / `VARIANT` / `SIZE` / `MTIME` / `SHA` / `ORIGINAL_SIZE` / `ORIGINAL_SHA` /
+`PATCH_SIZE` / `PATCH_SHA` / `BACKUP_COUNT` / `BACKUP_OK` / `PROMPTED` / `LEGACY` /
+`PENDING_REBOOT` 二十四个 `KEY=VALUE`。任何状态都返回 0；
 `apply`/`restore` 失败时非 0 退出，并在 stderr 说明原因。
 
 **注意**：
@@ -257,7 +310,7 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
   存在，卸载时就只保留该目录并打印路径，其余运行期数据照旧删除；保留不依赖 `BACKUP_OK`
   或 `sha256sum` 是否可用（保守处理）。需要恢复请在卸载前运行 `restore --force`
   （模块版本匹配时）。
-- 只支持 SDK 37；其它 Android 版本 `check` 显示 `unsupported`，`apply` 直接拒绝。
+- 只支持 SDK 35/36/37；其它 Android 版本 `check` 显示 `unsupported`，`apply` 直接拒绝。
 
 ## 配置
 

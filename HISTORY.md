@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.5.8.1）
+# 演化过程（1.0 → 1.6.0）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -328,6 +328,28 @@
   去重，退避内不重复刷；每轮用“本轮仍存在的事件”重建签名表，事件消失（应用自愈或进程
   退出）后自动清签名，下一次真丢会重新记一条。
 - **版本**：`v1.5.8.1` / `versionCode 1581`；`CHANGELOG.md` 只展示 1.5.8.1。
+
+## 1.6.0 双资产：A17 + A15/A16
+
+- **应用列表 + MediaStore 导出**：1.5.x 的 A17 补丁只修应用列表（`a1` 的 4 条
+  `PackageInfoList`）。1.6.0 的 A17 资产在此基础上给 `u0.invoke` 增加 `getService2` /
+  `checkService2` 分支，恢复 ActivityManager wrapper，MediaStore 导出规则重新生效；
+  A17 已在真机验证。
+- **A15/A16 资产重建**：不能复用 A17 dex（A15 QPR1 的 `getService2` 返回 `IBinder`，不是
+  `android.os.Service`）。A15 资产从原版 90,740 B / `a407674b…` 基线重建（不带 `a1`），
+  `u0.invoke` 同时处理 `IBinder`（QPR1）与 `android.os.Service`（QPR2+/A16/A17）：
+  `IBinder` 直接 `c()` 包装返回；`Service` 用 `Class.forName`/反射取
+  `getServiceWithMetadata()` 的 `service`/`isLazyService`，构造 `ServiceWithMetadata` 后用
+  `Service.serviceWithMetadata` 返回；其它/异常原样返回。A15 dex 不直接引用
+  `android.os.Service` / `ServiceWithMetadata` 类型，保证 QPR1 类加载安全。A15 资产
+  **未上机验证**。
+- **按 SDK 选资产**：SDK 37 → `assets/main-a17.dex`（88,808 B / `3eafcb10…`）；
+  SDK 35/36 → `assets/main-a15.dex`（88,972 B / `2ecb548b…`）；SDK 35 以下不提供补丁。
+  `check` 新增 `ASSET` / `VARIANT`；`apply` 按 SDK 选资产；`restore` 识别两种补丁。
+- **版本门禁**：仍只认 zygisk-storage-isolation v29.0.1 / versionCode 89；备份/恢复流程
+  不变。1.5.8.1 的 88,336 / `5413a01b…` 旧自建补丁在 1.6.0 中显示 `unknown`，需要先
+  `restore --force` 再 `apply`。
+- **版本**：`v1.6.0` / `versionCode 1600`；`CHANGELOG.md` 只展示 1.6.0。
 
 ## 兼容与边界
 

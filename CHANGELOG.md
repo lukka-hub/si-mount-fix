@@ -1,10 +1,11 @@
 # 更新日志
 
-## 1.5.8.1
+## 1.6.0
 
-- 修正 versionCode 低于 1.5.7.1（1571）导致 Magisk 不显示更新；功能与 1.5.8 相同。
-
-- 修复微信 isolated 子进程导致的假沙箱丢失日志；真实丢失仍会重建。微信按需拉起的 `com.tencent.mm:xweb_sandboxed_process_0…` 等子进程 uid 在 90000–99999，本来就没有 `/storage`，不是 SI 的隔离对象：扫描直接跳过，不再对这类进程探测/写 180 秒退避/计 broken；漏到重建路径时按 na 跳过（也不写退避）。只有 isolated uid 或从未隔离过（无本 boot seen 证据）的进程才按 na；有 seen 证据的普通应用即使 namespace 里没有存储根，也仍按真实丢失处理，`owner`/`missing` 照旧写 180 秒退避并在下一轮重试。`-n` 体检与真跑使用同一套 na/重建判定。
-- `.sandbox_seen` 的重建证据加入进程 uid 与 `/proc/<pid>/stat` 第 22 字段 `starttime`：同一个 namespace inode 被内核回收复用给别的进程时不再假命中；旧格式行按“无证据”处理，回落到“源存在 + 属主匹配”，真实丢失仍会被发现。
-- 沙箱日志带 `pid`/`uid`/`ns`/`reason`：`gone` 都会写 180 秒退避，日志统一标“下一轮重试”；`na`（isolated/无 storage，不写退避）标“跳过”。同一事件在退避/重试期间只记一次，事件从本轮报告消失（应用自愈或进程退出）后清掉签名，下一次真丢会重新记。
-- main.dex 仍为 88,336 B / sha256 `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`（未改动）。
+- 内置两份 main.dex，按 Android SDK 自动选择：Android 17（SDK 37）用 `assets/main-a17.dex`，Android 15/16（SDK 35/36）用 `assets/main-a15.dex`；SDK 35 以下不提供补丁。仍只替换 `zygisk-storage-isolation` 的 `main.dex`，适用版本仍为 v29.0.1 / versionCode 89。
+- 应用列表修复（A17）：保留 `a1` 的 4 条 `PackageInfoList` 调用，修复 Android 17 上 SI 应用列表为空。
+- MediaStore 导出修复（A17）：`u0.invoke` 增加 `getService2` / `checkService2` 分支，恢复 ActivityManager wrapper，导出规则重新生效。
+- A15/A16 资产：从原版 90,740 B / `a407674b…` 基线重建，`u0.invoke` 同时兼容 A15 QPR1 的 `IBinder` 返回和 A15 QPR2+/A16/A17 的 `android.os.Service` 返回；不直接引用 `android.os.Service` / `ServiceWithMetadata`，类加载安全。**未上机验证**，只做了 dex 头部 checksum/SHA-1 与 baksmali 反汇编结构校验，建议先在目标机型抓 logcat。
+- 资产校验：A17 `main-a17.dex` 88,808 B / sha256 `3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc`（已真机验证）；A15 `main-a15.dex` 88,972 B / sha256 `2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a`（未上机验证）。
+- `si-patch.sh` 的 `check` 新增 `ASSET` / `VARIANT` 输出；`apply` 按 SDK 选资产；`restore` 可识别 A17/A15 两种补丁并恢复原版。版本/哈希门禁保持不变。
+- 版本：`v1.6.0` / `versionCode 1600`。

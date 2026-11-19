@@ -238,7 +238,7 @@ details.card[open] summary{margin-bottom:8px}
 </section>
 
 <section class="card" id="patchCard" hidden>
-  <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
+  <div class="card-head"><h2>Android 15–17 应用列表与导出修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
   <div class="btn-grid" id="patchActions" hidden>
@@ -998,9 +998,9 @@ details.card[open] summary{margin-bottom:8px}
           { action: 'patch-confirm-cancel', label: '取消' }
         ] });
     } else if (patchPromptable()) {
-      items.push({ tone: 'warn', title: 'Android 17 应用列表可能为空',
-        body: '可应用补丁修复。补丁只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；' +
-          '应用后重启手机生效。之后仍可在下方「Android 17 应用列表修复（main.dex）」里手动应用。',
+      items.push({ tone: 'warn', title: 'Android 15–17 应用列表或导出可能异常',
+        body: '可应用补丁修复（A17 已真机验证；A15 未上机验证）。补丁只替换 zygisk-storage-isolation 的 main.dex，' +
+          '确认后才会执行；应用后重启手机生效。之后仍可在下方「Android 15–17 应用列表与导出修复（main.dex）」里手动应用。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
           { action: 'patch-dismiss', label: '暂不' }
@@ -1039,7 +1039,7 @@ details.card[open] summary{margin-bottom:8px}
     state.alive = null;
     state.fetchedAt = Date.now();
     state.mode = 'live';
-    if (state.patchSdk && state.patchSdk !== '37') {
+    if (state.patchSdk && !patchSdkOk(state.patchSdk)) {
       state.patch = null;
       state.patchError = '';
     } else {
@@ -1150,8 +1150,12 @@ details.card[open] summary{margin-bottom:8px}
     return out;
   }
 
-  /* SDK != 37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
-     SDK=37 才继续检查 main.dex 状态。 */
+  /* SDK 不是 35/36/37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
+     35/36 用 A15/A16 资产（未上机验证），37 用 A17 资产（已真机验证）。 */
+  function patchSdkOk(sdk) {
+    return sdk === '35' || sdk === '36' || sdk === '37';
+  }
+
   function ensurePatchSdk() {
     if (state.patchSdk !== null && state.patchSdk !== undefined) {
       return Promise.resolve(state.patchSdk);
@@ -1206,6 +1210,8 @@ details.card[open] summary{margin-bottom:8px}
     p.targetVersion = String(p.SI_TARGET_VERSION || '');
     p.targetVersionCode = String(p.SI_TARGET_VERSION_CODE || '');
     p.targetFile = String(p.SI_TARGET_FILE || 'main.dex');
+    p.asset = String(p.ASSET || '');
+    p.variant = String(p.VARIANT || '');
     p.match = toInt(p.SI_MATCH, 0) === 1;
     p.dex = String(p.DEX || '');
     p.size = toInt(p.SIZE, 0);
@@ -1338,14 +1344,14 @@ details.card[open] summary{margin-bottom:8px}
     clearPatchConfirmState();
     clearPatchResult();
     if (!BR.ok) {
-      if (state.patchSdk && state.patchSdk !== '37') { hidePatchCard(); return Promise.resolve(false); }
+      if (state.patchSdk && !patchSdkOk(state.patchSdk)) { hidePatchCard(); return Promise.resolve(false); }
       state.patchError = '未连接 WebUI 桥接，暂时无法读取补丁状态。';
       renderPatch();
       renderStateBanner();
       return Promise.resolve(false);
     }
     return ensurePatchSdk().then(function (sdk) {
-      if (sdk !== '37') { hidePatchCard(); return false; }
+      if (!patchSdkOk(sdk)) { hidePatchCard(); return false; }
       if (state.noRoot) {
         state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
         renderPatch();
@@ -1388,7 +1394,7 @@ details.card[open] summary{margin-bottom:8px}
     var p = state.patch;
     return !!(BR.ok && !state.noRoot && !state.patchError && !state.patchConfirm && p &&
       !patchBusy() && !actionBusy('patchCheck') &&
-      state.patchSdk === '37' && p.sdk === '37' &&
+      patchSdkOk(state.patchSdk) && patchSdkOk(p.sdk) &&
       p.state === 'original' && p.match &&
       !p.prompted && !state.patchDismissed);
   }
@@ -1467,13 +1473,18 @@ details.card[open] summary{margin-bottom:8px}
     } else {
       what = '用有效原版备份恢复 ' + mod + ' 的 ' + file;
     }
+    var variantNote = action === 'apply'
+      ? (p.variant === 'a15' ? '本次使用 A15 资产（未上机验证）'
+        : (p.variant === 'a17' ? '本次使用 A17 资产（已真机验证）' : ''))
+      : '';
     return '目标模块：' + mod + ' ' + (p.si || '版本未知') + '。将' + what +
-      '。仅适用于 ' + ver + '（' + file + '）。重启手机后生效。';
+      '。仅适用于 ' + ver + '（' + file + '）。' + (variantNote ? variantNote + '。' : '') +
+      '重启手机后生效。';
   }
 
   function armPatchAction(action) {
     if (patchBusy() || actionBusy('patchCheck') || !BR.ok || state.noRoot || state.patchError ||
-        state.locked || state.patchSdk !== '37' || !state.patch) { return; }
+        state.locked || !patchSdkOk(state.patchSdk) || !state.patch) { return; }
     var p = state.patch;
     var ok = (action === 'apply' && p.match &&
         (p.state === 'original' || p.state === 'patched-legacy')) ||
@@ -1514,7 +1525,7 @@ details.card[open] summary{margin-bottom:8px}
 
   function renderPatch() {
     var card = $('patchCard');
-    if (state.patchSdk && state.patchSdk !== '37') { card.hidden = true; return; }
+    if (state.patchSdk && !patchSdkOk(state.patchSdk)) { card.hidden = true; return; }
     var p = state.patch;
     var err = state.patchError;
     if (!p && !err) { card.hidden = true; return; }
@@ -1535,6 +1546,8 @@ details.card[open] summary{margin-bottom:8px}
     var badge = '';
     var mod = p ? (p.targetModule || 'zygisk-storage-isolation') : 'zygisk-storage-isolation';
     var file = p ? (p.targetFile || 'main.dex') : 'main.dex';
+    var variantNote = p && p.variant === 'a15' ? 'A15 未上机验证'
+      : (p && p.variant === 'a17' ? 'A17 已真机验证' : '');
 
     if (err) {
       badge = '读取失败';
@@ -1553,8 +1566,9 @@ details.card[open] summary{margin-bottom:8px}
         hint.textContent = '已恢复原版，重启生效（Zygisk 模块在开机时加载）。';
       } else if (p.match) {
         badge = '可应用';
-        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用补丁修复。' +
-          '补丁只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
+        hint.textContent = 'Android 15–17 下 SI 应用列表可能为空，或 MediaStore 导出规则不生效，可应用补丁修复。' +
+          '补丁只替换 ' + mod + ' 的 ' + file + (variantNote ? '（' + variantNote + '）' : '') +
+          '，确认后才会执行；应用后重启手机生效。';
       } else {
         badge = '版本不匹配';
         hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。补丁仅适用于 ' +
@@ -1612,11 +1626,12 @@ details.card[open] summary{margin-bottom:8px}
       hint.textContent = '正在检查补丁状态，请稍候…';
       hint.hidden = false;
     }
+    if (variantNote) { bits.push(variantNote); }
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
 
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
-      state.patchSdk === '37' && !actionBusy('patchCheck') && !state.patchConfirm;
+      patchSdkOk(state.patchSdk) && !actionBusy('patchCheck') && !state.patchConfirm;
     applyBtn.textContent = st === 'patched-legacy' ? '升级到自建版' : '应用补丁';
     restoreBtn.textContent = '恢复原版';
     if (err) {
@@ -1640,7 +1655,7 @@ details.card[open] summary{margin-bottom:8px}
 
     var panel = $('patchConfirm');
     if (state.patchConfirm && !patchBusy() && !actionBusy('patchCheck') && !err &&
-        state.patchSdk === '37') {
+        patchSdkOk(state.patchSdk)) {
       panel.hidden = false;
       $('patchConfirmTitle').textContent = patchConfirmTitle(state.patchConfirm);
       $('patchConfirmBody').textContent = patchConfirmBody(state.patchConfirm);
@@ -1761,7 +1776,7 @@ details.card[open] summary{margin-bottom:8px}
       showPatchResult('请稍候', '正在检查补丁状态，完成后再执行动作。', 'warn');
       return;
     }
-    if (!BR.ok || !state.patch || state.patchSdk !== '37') {
+    if (!BR.ok || !state.patch || !patchSdkOk(state.patchSdk)) {
       showPatchResult('无法执行', '未连接 WebUI 桥接，补丁操作需要 root 权限。', 'bad');
       return;
     }

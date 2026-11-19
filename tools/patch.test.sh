@@ -5,13 +5,14 @@
 #   目标 644 / 备份 600 / chown、持锁重查、并发锁；U1 卸载保留 patch-backup、
 #   U2 restore/--force 版本门禁；legacy 识别/升级/恢复；静态断言 UI 后台/缓存/独立 busy/按钮归一化。
 #   另外断言：补丁 check 不扫 /proc、不重启 server；WebUI 无 SERVER_PIDS/二次 check。
-#   fake 模块目录 + SI_TEST 钩子；补丁资产用仓库里的真实 assets/main.dex。
+#   fake 模块目录 + SI_TEST 钩子；补丁资产用仓库里的真实 assets/main-a17.dex / main-a15.dex。
 #
 # 用法：sh tools/patch.test.sh
 case "$0" in */*) D=${0%/*};; *) D=.;; esac
 cd "$D/.." 2>/dev/null || exit 1
 PATCH=scripts/si-patch.sh
-ASSET_REAL=$PWD/assets/main.dex
+ASSET_A17=$PWD/assets/main-a17.dex
+ASSET_A15=$PWD/assets/main-a15.dex
 TEST_SH=${SI_TEST_SH:-/system/bin/sh}
 if ! { command -v "$TEST_SH" >/dev/null 2>&1 && "$TEST_SH" -c ':' >/dev/null 2>&1; }; then
   TEST_SH=$(command -v mksh 2>/dev/null)
@@ -41,38 +42,63 @@ has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 size_of() { wc -c < "$1" 2>/dev/null | tr -d '[:space:]'; }
 
-ASSET_SHA=$(sha_of "$ASSET_REAL")
-PATCH_SHA_EXPECT=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+ASSET_A17_SHA=$(sha_of "$ASSET_A17")
+ASSET_A15_SHA=$(sha_of "$ASSET_A15")
+A17_SHA_EXPECT=3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
+A15_SHA_EXPECT=2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a
 ORIGINAL_SHA_EXPECT=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-PATCH_SIZE_EXPECT=88336
+A17_SIZE_EXPECT=88808
+A15_SIZE_EXPECT=88972
 ORIGINAL_SIZE_EXPECT=90740
 
 # ---------- 0) 仓库资产 / module.prop / 版本 ----------
-[ -f "$ASSET_REAL" ] && ok "补丁资产存在" || bad "补丁资产不存在：$ASSET_REAL"
-[ "$ASSET_SHA" = "$PATCH_SHA_EXPECT" ] && ok "补丁资产 sha256 正确" \
-  || bad "补丁资产 sha256 不对：$ASSET_SHA"
-[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "补丁资产大小 88336 B" \
-  || bad "补丁资产大小不对：$(size_of "$ASSET_REAL")"
+[ -f "$ASSET_A17" ] && ok "A17 补丁资产存在" || bad "A17 补丁资产不存在：$ASSET_A17"
+[ -f "$ASSET_A15" ] && ok "A15 补丁资产存在" || bad "A15 补丁资产不存在：$ASSET_A15"
+[ "$ASSET_A17_SHA" = "$A17_SHA_EXPECT" ] && ok "A17 资产 sha256 正确" \
+  || bad "A17 资产 sha256 不对：$ASSET_A17_SHA"
+[ "$ASSET_A15_SHA" = "$A15_SHA_EXPECT" ] && ok "A15 资产 sha256 正确" \
+  || bad "A15 资产 sha256 不对：$ASSET_A15_SHA"
+[ "$(size_of "$ASSET_A17")" = "$A17_SIZE_EXPECT" ] && ok "A17 资产大小 88808 B" \
+  || bad "A17 资产大小不对：$(size_of "$ASSET_A17")"
+[ "$(size_of "$ASSET_A15")" = "$A15_SIZE_EXPECT" ] && ok "A15 资产大小 88972 B" \
+  || bad "A15 资产大小不对：$(size_of "$ASSET_A15")"
 extra_asset=0
 for _f in assets/*; do
-  [ "$_f" = "assets/main.dex" ] || extra_asset=1
+  case "$_f" in
+    assets/main-a17.dex|assets/main-a15.dex) ;;
+    *) extra_asset=1 ;;
+  esac
 done
-[ "$extra_asset" = 0 ] && ok "assets 只有 main.dex（没有 server-v355.dex）" \
+[ "$extra_asset" = 0 ] && ok "assets 只有 main-a17.dex / main-a15.dex" \
   || bad "assets 里混入了其它文件"
+[ ! -e assets/main.dex ] && ok "旧 assets/main.dex 已移除" \
+  || bad "旧 assets/main.dex 仍然存在"
 grep -q "ORIGINAL_SHA=$ORIGINAL_SHA_EXPECT" "$PATCH" \
   && ok "脚本原版 sha256 常量正确" || bad "脚本原版 sha256 常量不对"
 grep -q "ORIGINAL_SIZE=$ORIGINAL_SIZE_EXPECT" "$PATCH" \
   && ok "脚本原版大小常量正确" || bad "脚本原版大小常量不对"
-grep -q "PATCH_SHA=$PATCH_SHA_EXPECT" "$PATCH" \
-  && ok "脚本补丁 sha256 常量正确" || bad "脚本补丁 sha256 常量不对"
-grep -q "PATCH_SIZE=$PATCH_SIZE_EXPECT" "$PATCH" \
-  && ok "脚本补丁大小常量正确" || bad "脚本补丁大小常量不对"
+grep -q "A17_SHA=$A17_SHA_EXPECT" "$PATCH" \
+  && ok "脚本 A17 sha256 常量正确" || bad "脚本 A17 sha256 常量不对"
+grep -q "A17_SIZE=$A17_SIZE_EXPECT" "$PATCH" \
+  && ok "脚本 A17 大小常量正确" || bad "脚本 A17 大小常量不对"
+grep -q "A15_SHA=$A15_SHA_EXPECT" "$PATCH" \
+  && ok "脚本 A15 sha256 常量正确" || bad "脚本 A15 sha256 常量不对"
+grep -q "A15_SIZE=$A15_SIZE_EXPECT" "$PATCH" \
+  && ok "脚本 A15 大小常量正确" || bad "脚本 A15 大小常量不对"
+grep -q 'main-a17.dex' "$PATCH" && grep -q 'main-a15.dex' "$PATCH" \
+  && ok "脚本按 SDK 引用两份资产" || bad "脚本缺少资产名"
+grep -q 'VARIANT' "$PATCH" && grep -q 'ASSET' "$PATCH" \
+  && ok "脚本输出 ASSET/VARIANT" || bad "脚本缺少 ASSET/VARIANT"
+grep -q 'A15 未上机验证' "$PATCH" \
+  && ok "脚本标注 A15 未上机验证" || bad "脚本缺少 A15 未验证提示"
+! grep -q 'assets/main.dex' "$PATCH" \
+  && ok "脚本不再引用旧 assets/main.dex" || bad "脚本仍引用旧 assets/main.dex"
 grep -q '^LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7$' "$PATCH" \
   && ok "脚本识别社区旧补丁 sha" || bad "脚本缺少 LEGACY_PATCH_SHA"
 grep -q '^LEGACY_PATCH_SIZE=99104$' "$PATCH" \
   && ok "脚本识别社区旧补丁大小" || bad "脚本缺少 LEGACY_PATCH_SIZE"
-grep -q '^version=v1.5.8.1$' module.prop && grep -q '^versionCode=1581$' module.prop \
-  && ok "module.prop 版本 v1.5.8.1 / 1581" || bad "module.prop 版本不对"
+grep -q '^version=v1.6.0$' module.prop && grep -q '^versionCode=1600$' module.prop \
+  && ok "module.prop 版本 v1.6.0 / 1600" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -81,8 +107,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v1.5.8.1"' update.json && grep -q '"versionCode": 1581' update.json \
-  && ok "update.json 指向 v1.5.8.1/1581" || bad "update.json 版本不对"
+grep -q '"version": "v1.6.0"' update.json && grep -q '"versionCode": 1600' update.json \
+  && ok "update.json 指向 v1.6.0/1600" || bad "update.json 版本不对"
 
 # check 不能有进程扫描；只允许读 boot_id/uptime 两个定点文件。
 if grep -q '/proc/sys/kernel/random/boot_id' "$PATCH" && grep -q '/proc/uptime' "$PATCH"; then
@@ -121,7 +147,7 @@ LEGACY_SIZE=$(size_of "$T/legacy.bin")
 SDK=37
 BOOT_ID=boot-test
 CP_OVERRIDE=
-ASSET_OVERRIDE=$ASSET_REAL
+ASSET_OVERRIDE=$ASSET_A17
 CHOWN_OVERRIDE=
 PRELOCK_SLEEP=
 PRELOCK_MARK=
@@ -171,7 +197,7 @@ reset_original() {
   write_prop
 }
 reset_patched() {
-  cp "$ASSET_REAL" "$TARGET_DIR/main.dex" || exit 1
+  cp "$ASSET_A17" "$TARGET_DIR/main.dex" || exit 1
   chmod 644 "$TARGET_DIR/main.dex"
   write_prop
 }
@@ -205,7 +231,7 @@ clean_data() {
 }
 reset_hooks() {
   CP_OVERRIDE=
-  ASSET_OVERRIDE=$ASSET_REAL
+  ASSET_OVERRIDE=$ASSET_A17
   CHOWN_OVERRIDE=
   PRELOCK_SLEEP=
   PRELOCK_MARK=
@@ -215,24 +241,55 @@ reset_hooks() {
   write_prop
 }
 
-# ---------- 1) SDK≠37 ----------
+# ---------- 1) SDK < 35 不支持 ----------
 reset_hooks
 clean_data
 reset_original
-SDK=36
+SDK=34
 run_capture check
-[ "$RC" = 0 ] && ok "check 在 SDK=36 返回 0" || bad "check 在 SDK=36 退出码 $RC"
-[ "$(kv STATE)" = unsupported ] && ok "SDK=36 判为 unsupported" \
-  || bad "SDK=36 状态不对：$(kv STATE)"
-[ "$(kv SDK)" = 36 ] && ok "输出实际 SDK=36" || bad "输出 SDK 不对：$(kv SDK)"
+[ "$RC" = 0 ] && ok "check 在 SDK=34 返回 0" || bad "check 在 SDK=34 退出码 $RC"
+[ "$(kv STATE)" = unsupported ] && ok "SDK=34 判为 unsupported" \
+  || bad "SDK=34 状态不对：$(kv STATE)"
+[ "$(kv SDK)" = 34 ] && ok "输出实际 SDK=34" || bad "输出 SDK 不对：$(kv SDK)"
+[ "$(kv VARIANT)" = none ] && ok "SDK=34 的 VARIANT=none" \
+  || bad "SDK=34 的 VARIANT 不对：$(kv VARIANT)"
+[ -z "$(kv ASSET)" ] && ok "SDK=34 不选资产" || bad "SDK=34 仍输出 ASSET：$(kv ASSET)"
 [ "$(kv SHA)" = "$ORIG_SHA" ] && ok "unsupported 仍输出目标 sha" \
   || bad "unsupported 没输出目标 sha：$(kv SHA)"
 run_capture status
 has "$OUT" '不适用' && ok "status 说明不支持" || bad "status 没说明不支持：$OUT"
 run_capture apply
-[ "$RC" != 0 ] && ok "SDK=36 apply 拒绝" || bad "SDK=36 apply 没有拒绝"
-has "$ERR" '仅支持 Android 17' && ok "SDK=36 拒绝原因明确" || bad "SDK=36 拒绝原因不清：$ERR"
-[ "$(target_sha)" = "$ORIG_SHA" ] && ok "SDK=36 没动目标" || bad "SDK=36 改动了目标"
+[ "$RC" != 0 ] && ok "SDK=34 apply 拒绝" || bad "SDK=34 apply 没有拒绝"
+has "$ERR" '仅支持 Android 17' && ok "SDK=34 拒绝原因明确" || bad "SDK=34 拒绝原因不清：$ERR"
+[ "$(target_sha)" = "$ORIG_SHA" ] && ok "SDK=34 没动目标" || bad "SDK=34 改动了目标"
+
+# ---------- 1b) SDK 35/36/37 选择 A15/A17 资产 ----------
+for _case in '35 a15 main-a15.dex' '36 a15 main-a15.dex' '37 a17 main-a17.dex'; do
+  set -- $_case
+  _sdk=$1
+  _variant=$2
+  _asset=$3
+  reset_hooks
+  clean_data
+  reset_original
+  SDK=$_sdk
+  ASSET_OVERRIDE=
+  run_capture check
+  [ "$(kv STATE)" = original ] && ok "SDK=$_sdk 原版状态 correct" \
+    || bad "SDK=$_sdk 状态不对：$(kv STATE)"
+  [ "$(kv VARIANT)" = "$_variant" ] && ok "SDK=$_sdk 选择 $_variant" \
+    || bad "SDK=$_sdk 的 VARIANT 不对：$(kv VARIANT)"
+  [ "$(kv ASSET)" = "$_asset" ] && ok "SDK=$_sdk 使用 $_asset" \
+    || bad "SDK=$_sdk 的 ASSET 不对：$(kv ASSET)"
+  if [ "$_variant" = a15 ]; then
+    [ "$(kv PATCH_SIZE)" = "$A15_SIZE_EXPECT" ] && [ "$(kv PATCH_SHA)" = "$A15_SHA_EXPECT" ] \
+      && ok "SDK=$_sdk 输出 A15 哈希/大小" || bad "SDK=$_sdk 的 A15 哈希/大小不对"
+  else
+    [ "$(kv PATCH_SIZE)" = "$A17_SIZE_EXPECT" ] && [ "$(kv PATCH_SHA)" = "$A17_SHA_EXPECT" ] \
+      && ok "SDK=$_sdk 输出 A17 哈希/大小" || bad "SDK=$_sdk 的 A17 哈希/大小不对"
+  fi
+done
+reset_hooks
 
 # ---------- 2) no-target ----------
 reset_hooks
@@ -288,8 +345,12 @@ esac
   || bad "初始 BACKUP_OK 不对：$(kv BACKUP_OK)"
 [ "$(kv PROMPTED)" = 0 ] && ok "初始未提示" || bad "初始 PROMPTED 不对：$(kv PROMPTED)"
 [ "$(kv LEGACY)" = 0 ] && ok "原版 LEGACY=0" || bad "原版 LEGACY 不对：$(kv LEGACY)"
-[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 22 ] \
-  && ok "check 输出 22 个 KEY=VALUE" || bad "check 字段数不对"
+[ "$(printf '%s\n' "$OUT" | grep -c '^[A-Z_][A-Z_]*=')" = 24 ] \
+  && ok "check 输出 24 个 KEY=VALUE" || bad "check 字段数不对"
+[ "$(kv ASSET)" = main-a17.dex ] && ok "check 输出 ASSET" \
+  || bad "ASSET 不对：$(kv ASSET)"
+[ "$(kv VARIANT)" = a17 ] && ok "check 输出 VARIANT" \
+  || bad "VARIANT 不对：$(kv VARIANT)"
 has "$OUT" 'SERVER_PIDS=' && bad "check 仍输出 SERVER_PIDS" \
   || ok "check 不输出 SERVER_PIDS"
 [ ! -f "$DATA/patch.log" ] && ok "check 不写 patch.log" || bad "check 写了 patch.log"
@@ -349,7 +410,7 @@ run_capture apply
 [ "$RC" = 0 ] && ok "社区旧补丁允许升级到自建版" || bad "社区旧补丁升级失败（$RC）：$ERR"
 has "$OUT" '已从社区版升级到自建补丁' && ok "升级输出说明从社区版升级" \
   || bad "升级输出文案不对：$OUT"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "升级后目标是自建补丁" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "升级后目标是自建补丁" \
   || bad "升级后目标不是自建补丁：$(target_sha)"
 [ "$(backup_count)" = 1 ] && ok "升级时产生 1 份社区版备份" \
   || bad "升级后备份数不对：$(backup_count)"
@@ -401,7 +462,7 @@ reset_legacy
 run_capture apply
 [ "$RC" = 0 ] && ok "已有原版备份时仍允许升级到自建版" \
   || bad "已有原版备份时升级失败（$RC）：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "legacy→自建后目标是自建补丁" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "legacy→自建后目标是自建补丁" \
   || bad "legacy→自建后目标不对"
 run_capture check
 [ "$(kv STATE)" = patched ] && [ "$(kv BACKUP_OK)" = 1 ] && [ "$(kv BACKUP_COUNT)" = 2 ] \
@@ -542,9 +603,9 @@ rm -f "$T/fakebin/chown.log"
 CHOWN_OVERRIDE=$T/fakebin/chown
 run_capture_umask apply
 [ "$RC" = 0 ] && ok "umask 022 下 apply 成功" || bad "umask 022 下 apply 失败：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "目标已换成补丁 main.dex" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "目标已换成补丁 main.dex" \
   || bad "目标哈希不是补丁：$(target_sha)"
-[ "$(target_size)" = "$PATCH_SIZE_EXPECT" ] && ok "目标大小 88336 B" \
+[ "$(target_size)" = "$A17_SIZE_EXPECT" ] && ok "目标大小 88808 B" \
   || bad "目标大小不对：$(target_size)"
 [ -f "$DATA/patch-pending-reboot" ] && [ "$(cat "$DATA/patch-pending-reboot" 2>/dev/null)" = "$BOOT_ID" ] \
   && ok "apply 写入待重启标记（当前 boot id）" || bad "apply 没有写入待重启标记"
@@ -592,7 +653,7 @@ run_capture apply
 [ "$RC" = 0 ] && ok "已 patched apply 返回成功" || bad "已 patched apply 失败（$RC）"
 has "$OUT" '无需重复' && ok "已 patched 提示无需重复" || bad "已 patched 提示不对：$OUT"
 [ "$(backup_count)" = 1 ] && ok "no-op 没有新增备份" || bad "no-op 新增了备份：$(backup_count)"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "no-op 没有改目标" || bad "no-op 改动了目标"
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "no-op 没有改目标" || bad "no-op 改动了目标"
 CHOWN_OVERRIDE=
 
 # ---------- 10) restore：最新备份坏、旧备份有效 ----------
@@ -628,7 +689,7 @@ run_capture restore
 [ "$RC" != 0 ] && ok "备份全坏 restore 拒绝" || bad "备份全坏 restore 仍成功"
 has "$ERR" '没有可用的原版备份' && ok "备份全坏原因明确" \
   || bad "备份全坏原因不清：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "备份全坏失败时目标仍是补丁" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "备份全坏失败时目标仍是补丁" \
   || bad "备份全坏失败时目标被改"
 
 # ---------- 12) unknown + 有效备份 → 强制恢复 ----------
@@ -666,14 +727,14 @@ run_capture restore
 [ "$RC" != 0 ] && ok "版本不匹配时 restore 拒绝" || bad "版本不匹配 restore 仍成功"
 has "$ERR" '版本不匹配' && ok "restore 报错提示版本不匹配" \
   || bad "restore 没提示版本不匹配：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "版本不匹配 restore 没动目标" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "版本不匹配 restore 没动目标" \
   || bad "版本不匹配 restore 动了目标"
 run_capture restore --force
 [ "$RC" != 0 ] && ok "版本不匹配时 restore --force 拒绝" \
   || bad "版本不匹配 restore --force 仍成功"
 has "$ERR" '版本不匹配' && ok "强制恢复报错提示版本不匹配" \
   || bad "强制恢复没提示版本不匹配：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "版本不匹配强制恢复没动目标" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "版本不匹配强制恢复没动目标" \
   || bad "版本不匹配强制恢复动了目标"
 reset_hooks
 clean_data
@@ -689,7 +750,7 @@ run_capture restore
 [ "$RC" != 0 ] && ok "restore 替换后校验失败" || bad "restore 替换后校验没失败"
 has "$ERR" '已回到操作前状态' && ok "restore 失败回滚到补丁版" \
   || bad "restore 失败没回滚：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "restore 回滚后仍是补丁版" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "restore 回滚后仍是补丁版" \
   || bad "restore 回滚后目标不对"
 
 # ---------- 14) 已是原版 / 没有备份 ----------
@@ -707,7 +768,7 @@ run_capture restore
 [ "$RC" != 0 ] && ok "没有备份时 restore 报错" || bad "没有备份 restore 仍成功"
 has "$ERR" '没有可用的原版备份' && ok "无备份报错原因明确" \
   || bad "无备份报错原因不清：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "无备份失败时目标仍是补丁" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "无备份失败时目标仍是补丁" \
   || bad "无备份失败时目标被改"
 
 # ---------- 15) 持锁后重查 ----------
@@ -729,7 +790,7 @@ if [ -e "$T/prelock.mark" ]; then
 else
   bad "apply 没有进入拿锁前测试窗口"
 fi
-cp "$ASSET_REAL" "$TARGET_DIR/main.dex"
+cp "$ASSET_A17" "$TARGET_DIR/main.dex"
 chmod 644 "$TARGET_DIR/main.dex"
 wait "$_bg"
 _bg_rc=$(cat "$T/bg.rc" 2>/dev/null)
@@ -751,7 +812,7 @@ mkdir -p "$DATA/.si-patch.lock"
 run_capture apply
 [ "$RC" = 0 ] && ok "空 pid 的新鲜锁等待 1 秒后可回收" \
   || bad "空 pid 的锁没有回收（$RC）：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "空 pid 锁回收后 apply 成功" \
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "空 pid 锁回收后 apply 成功" \
   || bad "空 pid 锁回收后 apply 没生效"
 run_capture restore
 [ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] && ok "空 pid 锁用例收尾恢复原版" \
@@ -777,7 +838,7 @@ wait "$HOLDER" 2>/dev/null
 HOLDER=
 run_capture apply
 [ "$RC" = 0 ] && ok "死 PID 的旧锁可自动回收" || bad "旧锁没有回收（$RC）：$ERR"
-[ "$(target_sha)" = "$PATCH_SHA_EXPECT" ] && ok "回收旧锁后 apply 成功" || bad "回收旧锁后 apply 没生效"
+[ "$(target_sha)" = "$A17_SHA_EXPECT" ] && ok "回收旧锁后 apply 成功" || bad "回收旧锁后 apply 没生效"
 [ ! -d "$DATA/.si-patch.lock" ] && ok "apply 结束释放锁" || bad "apply 结束没释放锁"
 run_capture restore
 [ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] && ok "并发用例收尾恢复原版" \
@@ -792,7 +853,7 @@ chmod 755 "$M1/scripts/si-patch.sh"
 printf 'ENABLED=1\n' > "$D1/config.conf"
 printf 'unrelated\n' > "$D1/daemon.log"
 : > "$D1/.hidden"
-cp "$ASSET_REAL" "$B1/main.dex"
+cp "$ASSET_A17" "$B1/main.dex"
 chmod 644 "$B1/main.dex"
 write_prop
 cp "$TARGET_DIR/module.prop" "$B1/module.prop" || exit 1
@@ -803,7 +864,7 @@ SI_TEST=1 SI_MOD=$M1 SI_DATA=$D1 SI_PATCH_TARGET_DIR=$B1 SI_PATCH_SDK=37 \
   "$TEST_SH" uninstall.sh >"$T/un1.out" 2>"$T/un1.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "U1 卸载脚本成功退出" || bad "U1 卸载脚本退出码 $_rc"
-[ "$(sha_of "$B1/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "U1 不自动恢复 main.dex" \
+[ "$(sha_of "$B1/main.dex")" = "$A17_SHA_EXPECT" ] && ok "U1 不自动恢复 main.dex" \
   || bad "U1 仍自动恢复了 main.dex"
 [ -d "$D1/patch-backup" ] && [ -f "$D1/patch-backup/main.dex.20260101-000000" ] \
   && ok "U1 保留 patch-backup" || bad "U1 patch-backup 被删"
@@ -848,19 +909,19 @@ mkdir -p "$M3/scripts" "$D3/patch-backup" "$B3" || exit 1
 cp module.prop "$M3/module.prop" || exit 1
 cp "$PATCH" "$M3/scripts/si-patch.sh" || exit 1
 chmod 755 "$M3/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B3/main.dex"
+cp "$ASSET_A17" "$B3/main.dex"
 chmod 644 "$B3/main.dex"
 write_prop
 cp "$TARGET_DIR/module.prop" "$B3/module.prop" || exit 1
 cp "$T/original.bin" "$D3/patch-backup/main.dex.20260101-000000"
 chmod 600 "$D3/patch-backup/main.dex.20260101-000000"
 printf 'x\n' > "$D3/status.json"
-SI_TEST=1 SI_MOD=$M3 SI_DATA=$D3 SI_PATCH_TARGET_DIR=$B3 SI_PATCH_SDK=36 \
+SI_TEST=1 SI_MOD=$M3 SI_DATA=$D3 SI_PATCH_TARGET_DIR=$B3 SI_PATCH_SDK=34 \
   SI_PATCH_ORIGINAL_SHA=$ORIG_SHA SI_PATCH_ORIGINAL_SIZE=$ORIG_SIZE \
   "$TEST_SH" uninstall.sh >"$T/un3.out" 2>"$T/un3.err"
 _rc=$?
 [ "$_rc" = 0 ] && ok "U1 unsupported 卸载成功退出" || bad "U1 unsupported 卸载退出码 $_rc"
-[ "$(sha_of "$B3/main.dex")" = "$PATCH_SHA_EXPECT" ] && ok "U1 unsupported 目标未被改动" \
+[ "$(sha_of "$B3/main.dex")" = "$A17_SHA_EXPECT" ] && ok "U1 unsupported 目标未被改动" \
   || bad "U1 unsupported 目标被改"
 [ -d "$D3/patch-backup" ] && [ ! -e "$D3/status.json" ] \
   && ok "U1 unsupported 只保留备份" || bad "U1 unsupported 数据保留不对"
@@ -871,7 +932,7 @@ mkdir -p "$M4/scripts" "$D4" "$B4" || exit 1
 cp module.prop "$M4/module.prop" || exit 1
 cp "$PATCH" "$M4/scripts/si-patch.sh" || exit 1
 chmod 755 "$M4/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B4/main.dex"
+cp "$ASSET_A17" "$B4/main.dex"
 chmod 644 "$B4/main.dex"
 write_prop
 cp "$TARGET_DIR/module.prop" "$B4/module.prop" || exit 1
@@ -929,7 +990,7 @@ mkdir -p "$M7/scripts" "$D7/patch-backup" "$B7" || exit 1
 cp module.prop "$M7/module.prop" || exit 1
 cp "$PATCH" "$M7/scripts/si-patch.sh" || exit 1
 chmod 755 "$M7/scripts/si-patch.sh"
-cp "$ASSET_REAL" "$B7/main.dex"
+cp "$ASSET_A17" "$B7/main.dex"
 chmod 644 "$B7/main.dex"
 write_prop
 cp "$TARGET_DIR/module.prop" "$B7/module.prop" || exit 1
@@ -955,6 +1016,56 @@ has "$(cat "$T/un7.out" 2>/dev/null)" '补丁备份保留在' \
   && ok "U1 sha256sum 失效时仍打印备份路径" || bad "U1 sha256sum 失效时没有路径提示"
 rm -f "$T/fakebin/sha256sum"
 
+# ---------- 23b) A15/A16 资产：SDK 36 apply/check/restore + 错误资产 ----------
+_OLD_DATA=$DATA
+_OLD_TARGET=$TARGET_DIR
+DATA=$T/a15data
+TARGET_DIR=$T/a15module
+mkdir -p "$DATA" "$TARGET_DIR" || exit 1
+reset_hooks
+clean_data
+reset_original
+SDK=36
+ASSET_OVERRIDE=$ASSET_A15
+run_capture apply
+[ "$RC" = 0 ] && ok "SDK=36 用 A15 资产 apply 成功" || bad "SDK=36 apply 失败：$ERR"
+[ "$(target_sha)" = "$A15_SHA_EXPECT" ] && ok "SDK=36 目标是 A15 资产" \
+  || bad "SDK=36 目标哈希不对：$(target_sha)"
+[ "$(target_size)" = "$A15_SIZE_EXPECT" ] && ok "SDK=36 目标大小 88972 B" \
+  || bad "SDK=36 目标大小不对：$(target_size)"
+has "$OUT" 'A15 未上机验证' && ok "A15 apply 标注未上机验证" \
+  || bad "A15 apply 缺少未验证提示：$OUT"
+has "$OUT" 'main-a15.dex' && ok "A15 apply 输出资产名" \
+  || bad "A15 apply 没输出资产名：$OUT"
+run_capture check
+[ "$(kv STATE)" = patched ] && [ "$(kv VARIANT)" = a15 ] \
+  && ok "SDK=36 check 为 patched/a15" || bad "SDK=36 check 状态不对：$(kv STATE)/$(kv VARIANT)"
+[ "$(kv ASSET)" = main-a15.dex ] && ok "SDK=36 check 资产为 main-a15.dex" \
+  || bad "SDK=36 的 ASSET 不对：$(kv ASSET)"
+[ "$(kv PATCH_SHA)" = "$A15_SHA_EXPECT" ] && [ "$(kv PATCH_SIZE)" = "$A15_SIZE_EXPECT" ] \
+  && ok "SDK=36 check 输出 A15 哈希/大小" || bad "SDK=36 check 的 A15 哈希/大小不对"
+run_capture restore
+[ "$RC" = 0 ] && [ "$(target_sha)" = "$ORIG_SHA" ] \
+  && ok "SDK=36 restore 回到原版" || bad "SDK=36 restore 失败：$ERR"
+[ ! -f "$DATA/patch-pending-reboot" ] && ok "SDK=36 restore 清除待重启标记" \
+  || bad "SDK=36 restore 未清除待重启标记"
+
+# SDK=36 但误用 A17 资产：必须在写目标前拒绝
+reset_original
+clean_data
+ASSET_OVERRIDE=$ASSET_A17
+run_capture apply
+[ "$RC" != 0 ] && ok "SDK=36 误用 A17 资产被拒绝" || bad "SDK=36 误用 A17 资产没有拒绝"
+has "$ERR" '补丁资产校验失败' && ok "错误资产提示明确" || bad "错误资产提示不清：$ERR"
+[ "$(target_sha)" = "$ORIG_SHA" ] && ok "错误资产没有改动目标" \
+  || bad "错误资产改动了目标：$(target_sha)"
+run_capture status
+has "$OUT" 'A15 未上机验证' && ok "A15 status 标注未上机验证" \
+  || bad "A15 status 缺少未验证提示：$OUT"
+DATA=$_OLD_DATA
+TARGET_DIR=$_OLD_TARGET
+reset_hooks
+
 # ---------- 24) WebUI / action / build / 文档（静态） ----------
 grep -q 'P.patch = P.mod' webroot/index.html && ok "WebUI 指向 si-patch.sh" \
   || bad "WebUI 没接线 si-patch.sh"
@@ -962,8 +1073,13 @@ grep -q 'patchPromptPath' webroot/index.html && grep -q '\.patch_prompted\.' web
   && ok "WebUI 使用按目标/版本区分的提示标记" || bad "WebUI 提示标记没有按目标/版本区分"
 grep -q 'PROMPT_TAG' scripts/si-patch.sh && grep -q '\.patch_prompted\.\$PROMPT_TAG' scripts/si-patch.sh \
   && ok "si-patch.sh 提示标记按目标/版本区分" || bad "si-patch.sh 提示标记没有按目标/版本区分"
-grep -q 'Android 17 应用列表修复（main.dex）' webroot/index.html \
-  && ok "补丁卡片标题含 main.dex" || bad "补丁卡片标题没含 main.dex"
+grep -q 'Android 15–17 应用列表与导出修复（main.dex）' webroot/index.html \
+  && ok "补丁卡片标题含双修复/main.dex" || bad "补丁卡片标题不对"
+grep -q 'A17 已真机验证' webroot/index.html && grep -q 'A15 未上机验证' webroot/index.html \
+  && ok "WebUI 标注 A17 已验证 / A15 未验证" || bad "WebUI 缺少验证状态"
+grep -q 'p.variant = String(p.VARIANT' webroot/index.html \
+  && grep -q 'p.asset = String(p.ASSET' webroot/index.html \
+  && ok "WebUI 解析 ASSET/VARIANT" || bad "WebUI 没解析 ASSET/VARIANT"
 for _id in patchCard patchHint patchActions patchTiming btnPatchCheck \
            btnPatchApply btnPatchRestore btnPatchForce \
            patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult; do
@@ -1025,11 +1141,14 @@ grep -q "p.lastAction === 'applied'" webroot/index.html \
   && ok "apply 成功后卡片显示已应用" || bad "apply 成功卡片没有提示"
 grep -q '重启生效（Zygisk 模块在开机时加载）' webroot/index.html \
   && ok "WebUI 提示重启生效" || bad "WebUI 没提示重启生效"
-grep -q "if (sdk !== '37') { hidePatchCard(); return false; }" webroot/index.html \
-  && ok "SDK!=37 在 check 前隐藏卡片（SDK 14/15）" \
+grep -q "if (!patchSdkOk(sdk)) { hidePatchCard(); return false; }" webroot/index.html \
+  && ok "SDK 不是 35/36/37 时 check 前隐藏卡片" \
   || bad "WebUI 没有在 check 前按 SDK 隐藏"
-grep -q "state.patchSdk !== '37'" webroot/index.html \
+grep -q "!patchSdkOk(state.patchSdk)" webroot/index.html \
   && ok "render/arm 也按 SDK 门禁" || bad "WebUI 缺少 patchSdk 门禁"
+grep -q "function patchSdkOk(sdk)" webroot/index.html \
+  && grep -q "sdk === '35' || sdk === '36' || sdk === '37'" webroot/index.html \
+  && ok "WebUI 支持 SDK 35/36/37" || bad "WebUI SDK 白名单不对"
 grep -q "applyBtn.disabled = !canAct || !p || !p.match || actionBusy('patchApply')" webroot/index.html \
   && ok "版本/哈希不匹配时 apply 置灰且独立 busy" || bad "apply 置灰/独立 busy 不对"
 grep -q "restoreBtn.disabled = !canAct || !p || !p.match || !p.backupOk || actionBusy('patchRestore')" webroot/index.html \
@@ -1046,8 +1165,8 @@ grep -q "applyBtn.hidden = !(st === 'original' || st === 'patched-legacy')" webr
   && grep -q "\$('patchActions').hidden = false" webroot/index.html \
   && ok "original/legacy 可升级 / patched+legacy 可恢复 / unknown 强制恢复" \
   || bad "补丁按钮显示条件不对"
-grep -q "state.patchSdk === '37' && p.sdk === '37'" webroot/index.html \
-  && ok "首次提示只给 SDK37+匹配" || bad "首次提示缺 SDK/匹配门禁"
+grep -q "patchSdkOk(state.patchSdk) && patchSdkOk(p.sdk)" webroot/index.html \
+  && ok "首次提示只给 SDK35/36/37+匹配" || bad "首次提示缺 SDK/匹配门禁"
 grep -q 'SI_MATCH' webroot/index.html && grep -q 'BACKUP_OK' webroot/index.html \
   && ok "WebUI 读取版本门禁与有效备份字段" || bad "WebUI 没读新字段"
 grep -q 'p.originalSha' webroot/index.html && grep -q 'p.originalSize' webroot/index.html \
@@ -1092,7 +1211,7 @@ grep -q 'CHECK_TIMEOUT = 8000' webroot/index.html \
   && ok "check/fix/restart 超时 8/30/10s" || bad "长命令超时不对"
 grep -q 'setPatchTiming' webroot/index.html && grep -q "检查 ' + state.patchCheckMs + 'ms'" webroot/index.html \
   && ok "页面显示检查耗时/超时反馈" || bad "缺少检查耗时反馈"
-grep -q 'state.patchSdk === .37. && !actionBusy(.patchCheck.)' webroot/index.html \
+grep -q 'patchSdkOk(state.patchSdk) && !actionBusy(.patchCheck.)' webroot/index.html \
   && grep -q '正在检查补丁状态，请稍候' webroot/index.html \
   && ok "check 进行中置灰动作按钮并提示检查中" || bad "check 进行中没有置灰动作按钮"
 grep -q 'clearPatchResult' webroot/index.html && grep -q 'clearPatchResult();' webroot/index.html \
@@ -1210,42 +1329,43 @@ else
 fi
 grep -q '版本不匹配时不能用原版备份覆盖' scripts/si-patch.sh \
   && ok "U2：CLI restore 版本门禁" || bad "U2 CLI 没有版本门禁"
-grep -q 'assets/main.dex' tools/build.sh && ok "构建脚本包含 main.dex 资产" \
-  || bad "构建脚本没有 main.dex 资产"
-grep -q 'PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' tools/build.sh && ok "构建脚本校验完整补丁 sha" \
-  || bad "构建脚本没有校验补丁 sha"
-grep -q '88336' tools/build.sh && ok "构建脚本校验补丁大小" \
-  || bad "构建脚本没有校验补丁大小"
+grep -q 'A17_ASSET=assets/main-a17.dex' tools/build.sh \
+  && grep -q 'A15_ASSET=assets/main-a15.dex' tools/build.sh \
+  && ok "构建脚本包含 A17/A15 两份资产" || bad "构建脚本缺少双资产"
+grep -q "A17_SHA=$A17_SHA_EXPECT" tools/build.sh \
+  && grep -q "A15_SHA=$A15_SHA_EXPECT" tools/build.sh \
+  && ok "构建脚本校验两份补丁 sha" || bad "构建脚本没有校验双 sha"
+grep -q "A17_SIZE=$A17_SIZE_EXPECT" tools/build.sh \
+  && grep -q "A15_SIZE=$A15_SIZE_EXPECT" tools/build.sh \
+  && ok "构建脚本校验两份补丁大小" || bad "构建脚本没有校验双大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-[ -f CHANGELOG.md ] && grep -q '^## 1.5.8.1$' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## 1.6.0$' CHANGELOG.md \
+  && ! grep -q '^## 1.5.8.1$' CHANGELOG.md \
   && ! grep -q '^## 1.5.7.1$' CHANGELOG.md \
   && ! grep -q '^## 1.5.7$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.6$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.5$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.4$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.3$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.2$' CHANGELOG.md \
-  && ! grep -q '^## 1.5.1$' CHANGELOG.md \
   && ! grep -q '^## 1.5.0$' CHANGELOG.md \
   && [ "$(grep -c '^## ' CHANGELOG.md)" = 1 ] \
-  && ok "CHANGELOG 只列出 1.5.8.1" || bad "CHANGELOG 不是只含 1.5.8"
+  && ok "CHANGELOG 只列出 1.6.0" || bad "CHANGELOG 不是只含 1.6.0"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
-grep -q '88,336' README.md && grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md \
-  && grep -q 'version=v1.5.8.1' README.md && grep -q 'versionCode=1581' README.md \
-  && ok "README 写自建 main.dex 大小/完整哈希及 1.5.8.1 版本" || bad "README 哈希/大小/版本不对"
-grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' CHANGELOG.md \
-  && ok "CHANGELOG 写完整 main.dex 哈希" || bad "CHANGELOG 哈希不对"
+grep -q '88,808' README.md && grep -q '88,972' README.md \
+  && grep -q "$A17_SHA_EXPECT" README.md && grep -q "$A15_SHA_EXPECT" README.md \
+  && grep -q 'version=v1.6.0' README.md && grep -q 'versionCode=1600' README.md \
+  && grep -q 'A15 未上机验证' README.md \
+  && ok "README 写双资产大小/完整哈希/1.6.0 版本/A15 未验证" \
+  || bad "README 哈希/大小/版本不对"
+grep -q "$A17_SHA_EXPECT" CHANGELOG.md && grep -q "$A15_SHA_EXPECT" CHANGELOG.md \
+  && ok "CHANGELOG 写两份 main.dex 完整哈希" || bad "CHANGELOG 哈希不对"
 grep -q '6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7' CHANGELOG.md README.md \
   && ok "README/CHANGELOG 写完整社区旧版哈希" || bad "README/CHANGELOG 缺少社区旧版哈希"
 grep -q 'patched-legacy' README.md && grep -q 'main.dex.legacy' README.md \
   && grep -q 'LEGACY' README.md \
   && ok "README 说明 patched-legacy/legacy 备份/LEGACY" \
   || bad "README 缺少 legacy 说明"
-grep -q '二十二个' README.md && ok "README 说明 check 22 个字段" \
+grep -q '二十四个' README.md && ok "README 说明 check 24 个字段" \
   || bad "README 字段数说明不对"
 _bad_hash=60be88''02
 if grep -q "$_bad_hash" README.md CHANGELOG.md scripts/si-patch.sh tools/build.sh; then
@@ -1253,7 +1373,7 @@ if grep -q "$_bad_hash" README.md CHANGELOG.md scripts/si-patch.sh tools/build.s
 else
   ok "没有 main.dex 哈希笔误"
 fi
-grep -q '446 方法' README.md && grep -q '剥离调试信息' README.md \
+grep -q '446 方法' README.md && grep -q '447 方法' README.md && grep -q '剥离调试信息' README.md \
   && ok "README 说明反编译改动与剥离调试信息" || bad "README 缺少反编译说明"
 grep -q 'main.dex' README.md && grep -q 'zygisk-storage-isolation' README.md \
   && ok "README 说明 main.dex / zygisk 模块" || bad "README 缺少 main.dex 说明"

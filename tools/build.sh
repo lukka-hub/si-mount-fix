@@ -16,9 +16,30 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
-# 补丁 main.dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
-PATCH_ASSET=assets/main.dex
-PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+# 补丁 main.dex：按 SDK 分发 A17 / A15 两份资产，只替换 zygisk-storage-isolation 的 main.dex。
+A17_ASSET=assets/main-a17.dex
+A17_SHA=3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
+A17_SIZE=88808
+A15_ASSET=assets/main-a15.dex
+A15_SHA=2ecb548bdc3684532ec1ec6358cf8e6006968baf72517ecab22e360359a9833a
+A15_SIZE=88972
+
+check_asset() {
+  _asset=$1
+  _want_sha=$2
+  _want_size=$3
+  _label=$4
+  [ -f "$_asset" ] || die "缺少补丁资产：$_asset（$_label）"
+  _size=$(wc -c < "$_asset" | tr -d '[:space:]')
+  [ "$_size" = "$_want_size" ] || die "$_label 资产大小不对：$_size B（应为 $_want_size B）"
+  if command -v sha256sum >/dev/null 2>&1; then
+    _sha=$(sha256sum "$_asset" | awk '{print $1}')
+  else
+    _sha=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$_asset")
+  fi
+  [ "$_sha" = "$_want_sha" ] || die "$_label 资产 sha256 不匹配：实际 $_sha，应为 $_want_sha（不要修改 dex 内容）"
+  say "$_label 资产：$_asset（$_size B，sha256 $_sha）"
+}
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -66,7 +87,7 @@ V_CODE=$(prop_get versionCode)
 [ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用模块版本）'
 [ -n "$(prop_get siPatchVersionCode)" ] || die 'module.prop 缺少 siPatchVersionCode（补丁适用模块 versionCode）'
 
-# ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140；v1.5.7.1 ↔ 1571）----------
+# ---------- 2) version ↔ versionCode 一致性（三段补零成四位：v1.6.0 ↔ 1600；四段：v1.5.7.1 ↔ 1571）----------
 VERSION=${V_PROP#v}
 case "$VERSION" in
   *.*.*) ;;
@@ -97,7 +118,7 @@ if [ -n "$V_MICRO" ]; then
   [ "$V_MICRO" -le 9 ] || die "versionCode 规则要求 micro <= 9：$V_PROP"
   V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10 + V_MICRO))
 else
-  V_CODE_EXPECT=$((V_MAJOR * 100 + V_MINOR * 10 + V_PATCH))
+  V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10))
 fi
 case "$V_CODE" in
   ''|*[!0-9]*) die "versionCode 必须是数字：[$V_CODE]" ;;
@@ -144,21 +165,12 @@ print('update.json：版本/versionCode/zipUrl 与 module.prop 一致')
 PY
 say "updateJson：$PROP_UJ"
 
-# ---------- 3b) 自建补丁资产：内容不能变，sha256/大小必须与发布说明一致 ----------
-[ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（自建 dex，构建时校验后打进 zip）"
-PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
-[ "$PATCH_SIZE" = 88336 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 88336 B）"
-if command -v sha256sum >/dev/null 2>&1; then
-  PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
-else
-  PATCH_GOT=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$PATCH_ASSET")
-fi
-[ "$PATCH_GOT" = "$PATCH_SHA" ] \
-  || die "补丁资产 sha256 不匹配：实际 $PATCH_GOT，应为 $PATCH_SHA（不要修改 dex 内容）"
+# ---------- 3b) 自建补丁资产：两份 dex 内容不能变，sha256/大小必须与发布说明一致 ----------
 PATCH_FOR_TARGET=$(prop_get siPatchTarget)
-[ "$PATCH_ASSET" = "assets/$PATCH_FOR_TARGET" ] \
-  || die "补丁资产路径与 siPatchTarget 不一致：$PATCH_ASSET / $PATCH_FOR_TARGET"
-say "补丁资产：$PATCH_ASSET（$PATCH_SIZE B，sha256 $PATCH_GOT）"
+[ "$PATCH_FOR_TARGET" = main.dex ] \
+  || die "siPatchTarget 应为 main.dex，当前：$PATCH_FOR_TARGET"
+check_asset "$A17_ASSET" "$A17_SHA" "$A17_SIZE" A17
+check_asset "$A15_ASSET" "$A15_SHA" "$A15_SIZE" A15
 
 # ---------- 4) updater-script 首行必须是 #MAGISK ----------
 [ -f "$US" ] || die "$US 不存在"
@@ -211,7 +223,7 @@ done
 FILES="module.prop README.md CHANGELOG.md LICENSE service.sh action.sh uninstall.sh"
 FILES="$FILES scripts/si-mount-eventd.sh scripts/fix-si-mounts.sh scripts/supervisor.sh"
 FILES="$FILES scripts/restart.sh scripts/list-apps.sh scripts/result.sh scripts/si-patch.sh"
-FILES="$FILES webroot/index.html $UB $US $PATCH_ASSET"
+FILES="$FILES webroot/index.html $UB $US $A17_ASSET $A15_ASSET"
 for f in $FILES; do
   [ -f "$f" ] || die "缺少必需的打包文件：$f"
 done
@@ -294,13 +306,13 @@ print('built %s %d bytes' % (out, os.path.getsize(out)))
 PY
 
 # ---------- 11) 自检：条目集合、权限、关键内容 ----------
-python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$PATCH_ASSET" "$PATCH_SHA" <<'PY' || die 'zip 自检失败'
+python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$A17_ASSET" "$A17_SHA" "$A15_ASSET" "$A15_SHA" <<'PY' || die 'zip 自检失败'
 import hashlib, sys, zipfile
 
 z = zipfile.ZipFile(sys.argv[1])
 v_prop, v_code = sys.argv[2], sys.argv[3]
 expected = sorted(sys.argv[4].split())
-patch_asset, patch_sha = sys.argv[5], sys.argv[6]
+a17_asset, a17_sha, a15_asset, a15_sha = sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8]
 names = z.namelist()
 files = sorted(n for n in names if not n.endswith('/'))
 dirs = sorted(n for n in names if n.endswith('/'))
@@ -340,10 +352,11 @@ if up.splitlines()[:1] != ['#MAGISK']:
 if 'webroot/index.html' not in files:
     raise SystemExit('缺少 webroot/index.html')
 
-if patch_asset not in files:
-    raise SystemExit('补丁资产没有进包：' + patch_asset)
-if hashlib.sha256(z.read(patch_asset)).hexdigest() != patch_sha:
-    raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致')
+for asset, want_sha in ((a17_asset, a17_sha), (a15_asset, a15_sha)):
+    if asset not in files:
+        raise SystemExit('补丁资产没有进包：' + asset)
+    if hashlib.sha256(z.read(asset)).hexdigest() != want_sha:
+        raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致：' + asset)
 
 print('zip 自检通过：%d 个文件 + %d 个目录，脚本 755 / 其它 644' % (len(files), len(dirs)))
 PY
