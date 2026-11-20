@@ -1,4 +1,4 @@
-# 演化过程（1.0 → 1.6.0）
+# 演化过程（1.0 → 1.5.8.1）
 
 > 说明：1.0~1.3.1 的提交是根据早期文档与发布产物回溯的说明，原始源码没有保留；
 > 1.3.2 起是真实代码提交。1.3.3 未形成单独的发布 tag，1.3.4 接续。
@@ -328,19 +328,6 @@
   去重，退避内不重复刷；每轮用“本轮仍存在的事件”重建签名表，事件消失（应用自愈或进程
   退出）后自动清签名，下一次真丢会重新记一条。
 - **版本**：`v1.5.8.1` / `versionCode 1581`；`CHANGELOG.md` 只展示 1.5.8.1。
-
-## 1.6.0 A17 应用列表 + 导出修复
-
-- **应用列表 + MediaStore 导出**：1.5.x 的 A17 补丁只修应用列表（`a1` 的 4 条
-  `PackageInfoList`）。1.6.0 的 A17 资产在此基础上给 `u0.invoke` 增加 `getService2` /
-  `checkService2` 分支，恢复 ActivityManager wrapper，MediaStore 导出规则重新生效；
-  A17 已在真机验证。
-- **只发 A17**：1.6.0 只内置 `assets/main-a17.dex`（88,808 B / `3eafcb10…`），SDK 37 应用；
-  SDK 35/36（A15/A16）与 SDK <35 不支持。A15/A16 待 1.6.1，本版不打包。
-- **check/apply/restore**：`check` 只报 A17 的 `ASSET` / `VARIANT`；`apply` 只认 SDK 37；
-  `restore` 识别 A17 补丁和原版。1.5.8.1 的 88,336 / `5413a01b…` 旧自建补丁显示
-  `unknown`，需要先 `restore --force` 再 `apply`。
-- **版本**：`v1.6.0` / `versionCode 1600`；`CHANGELOG.md` 只展示 1.6.0。
 
 ## 兼容与边界
 

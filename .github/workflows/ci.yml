@@ -91,8 +91,12 @@ jobs:
       - name: tag must match module.prop version and be on main
         run: |
           v=$(sed -n 's/^version=//p' module.prop | head -1)
-          if [ "$GITHUB_REF" != "refs/tags/$v" ]; then
-            echo "tag $GITHUB_REF 与 module.prop $v 不一致" >&2
+          tag=${GITHUB_REF#refs/tags/}
+          # 2.0 起 Release tag 允许省略末尾 .0（module v2.0.0 ↔ tag v2.0），
+          # 与 tools/build.sh/update.json 的发布 tag 规则保持一致。
+          v_short=$(printf '%s' "$v" | sed 's/\.0$//')
+          if [ "$tag" != "$v" ] && [ "$tag" != "$v_short" ]; then
+            echo "tag $GITHUB_REF 与 module.prop $v 不一致（也接受 $v_short）" >&2
             exit 1
           fi
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main

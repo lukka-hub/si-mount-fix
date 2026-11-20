@@ -1,26 +1,23 @@
 #!/system/bin/sh
-# si-patch.sh — Android 17（SDK 37）下 SI 应用列表为空、MediaStore 导出规则失效的修复（main.dex）。
+# si-patch.sh — SI 兼容性检测：Android 15/16/17 通用 main.dex 注入。
 #
 # 只替换 zygisk-storage-isolation 模块的 main.dex：
 #   /data/adb/modules/zygisk-storage-isolation/main.dex
 #   原版 90,740 B / sha256 a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-#   A17 补丁 88,808 B / sha256 3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
-# 本版仅分发 A17 资产：SDK 37 → assets/main-a17.dex；SDK 35/36（Android 15/16）与
-# SDK <35 都不提供补丁，A15/A16 待 1.6.1。
-# A17 资产已在 Android 17 真机验证（应用列表 + MediaStore 导出）。
-# 社区版 main.dex 已在真机重启验证：server dex 会被 SI daemon 写回原版，但 main.dex 由
-# Zygisk 模块在开机时加载，替换后跨重启保持。因此不再修补 server dex，也不重启 SI server。
-# 补丁 dex 随模块 assets/ 分发，不要修改内容。
+#   通用 92,856 B / sha256 2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+#   旧版 88,336 B / sha256 5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+# 通用 main.dex 自包含、不联网，按系统能力探测；A15/A16/A17 使用同一 dex。
+# main.dex 由 Zygisk 模块在开机时加载，替换后跨重启保持；只写文件，不重启 SI server。
+# 兼容性检测资产随模块 assets/main.dex 分发，不要修改内容。
 # 适用模块与文件名取自 module.prop 的 siPatchModule / siPatchTarget，版本取自
-# siPatchVersion / siPatchVersionCode；脚本里不写目标模块版本字面量（A15/A16 提示除外）。
+# siPatchVersion / siPatchVersionCode；脚本里不写版本字面量。
 #
 # 用法：sh si-patch.sh check|status|apply|restore [--force]
 #   check          输出 KEY=VALUE，只读文件哈希/大小，不扫 /proc
-#   status         给人看的一行状态
-#   apply          仅 Android 17（SDK 37，A17 资产）、zygisk 模块适用、目标为原版时执行；
-#                  先备份、再校验、失败回滚
-#   restore        当前为补丁版时，从新到旧找第一份 sha==原版的备份恢复
-#   restore --force 当前不是补丁版（如 unknown）但存在有效原版备份时，显式覆盖恢复
+#   status         给人看的一行状态（含 Android 版本与已恢复能力摘要）
+#   apply          仅 SDK=35/36/37、zygisk 模块适用、目标为原版/旧版时执行；先备份、再校验、失败回滚
+#   restore        当前为通用版/旧版时，从新到旧找第一份 sha==原版的备份恢复
+#   restore --force 当前不是已知版本（如 unknown）但存在有效原版备份时，显式覆盖恢复
 #
 # 只碰 zygisk-storage-isolation/main.dex：不改 SI 配置、不动 SI 的其它文件；
 # apply/restore 成功只提示重启生效，不杀进程、不等待 server。
@@ -29,12 +26,11 @@ export LC_ALL
 
 ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 ORIGINAL_SIZE=90740
-A17_SHA=3eafcb101fe7ae9eaa7e5614a55275391c37d3b012c4d4c814276b0215700fcc
-A17_SIZE=88808
-# 早期社区旧版补丁（99,104 B）：可识别、可升级到自建版、可在有原版备份时恢复。
-# 旧自建补丁（88,336 B）不在此列，按 unknown 处理（restore 需 --force）。
-LEGACY_PATCH_SHA=6d4058bc1c66fc14dec2331a603404a59c271d8a4b8f63c5270ff7029a8b80a7
-LEGACY_PATCH_SIZE=99104
+PATCH_SHA=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+PATCH_SIZE=92856
+# 旧版自建补丁：可识别、可升级到通用版、可在有原版备份时恢复。
+LEGACY_PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+LEGACY_PATCH_SIZE=88336
 
 case "$0" in */*) D=${0%/*} ;; *) D=. ;; esac
 MODDIR=${SI_MOD:-$D/..}
@@ -59,19 +55,14 @@ fi
 TARGET=$PATCH_FOR_TARGET
 TARGET_DIR=/data/adb/modules/$PATCH_FOR_MODULE
 MODULE_PROP=$TARGET_DIR/module.prop
-# 补丁资产按 SDK 选择（见 select_variant）；测试可用 SI_PATCH_ASSET 覆盖。
-ASSET=
-ASSET_NAME=
-VARIANT=
-VARIANT_NOTE=
-PATCH_SHA=
-PATCH_SIZE=
+ASSET=$MODDIR/assets/$TARGET
 
 # 测试钩子只在 SI_TEST=1 时生效，生产环境忽略残留变量。
 # ORIGINAL_SHA/SIZE 可换成小样本扮演“原版”；补丁哈希/大小始终用真实值。
 if [ "$SI_TEST" = 1 ]; then
   [ -n "${SI_PATCH_DATA:-}" ] && DATA=$SI_PATCH_DATA
   [ -n "${SI_PATCH_TARGET_DIR:-}" ] && TARGET_DIR=$SI_PATCH_TARGET_DIR
+  [ -n "${SI_PATCH_ASSET:-}" ] && ASSET=$SI_PATCH_ASSET
   [ -n "${SI_PATCH_ORIGINAL_SHA:-}" ] && ORIGINAL_SHA=$SI_PATCH_ORIGINAL_SHA
   [ -n "${SI_PATCH_ORIGINAL_SIZE:-}" ] && ORIGINAL_SIZE=$SI_PATCH_ORIGINAL_SIZE
   [ -n "${SI_PATCH_LEGACY_SHA:-}" ] && LEGACY_PATCH_SHA=$SI_PATCH_LEGACY_SHA
@@ -94,6 +85,36 @@ detect_sdk() {
     return 0
   fi
   getprop ro.build.version.sdk 2>/dev/null | tr -d '[:space:]'
+}
+
+# Android 版本名只用于展示；能力文本按系统版本给出，不声称真机验证。
+sdk_name() {
+  case "$1" in
+    35) printf 'Android 15' ;;
+    36) printf 'Android 16' ;;
+    37) printf 'Android 17' ;;
+    *)  printf '未知' ;;
+  esac
+}
+
+# check 的 CAPS：该版本由通用 dex 按系统能力探测到的恢复能力。
+caps_text() {
+  case "$1" in
+    35) printf '%s' '应用列表兼容（旧 ParceledListSlice 路径）；MediaProvider 导出；applyBatch；DownloadProvider；ServiceManager 旧接口，可用时走 QPR Service union；A15 release 不会启用不存在的 getService2' ;;
+    36) printf '%s' '应用列表兼容；MediaProvider 导出；applyBatch；DownloadProvider；getService2/checkService/checkService2（A16 形态）' ;;
+    37) printf '%s' '应用列表恢复（PackageInfoList → List）；MediaProvider 导出；applyBatch；DownloadProvider；getService2/checkService2（checkService 为 IBinder）' ;;
+    *)  printf '%s' '未知版本，不做能力探测' ;;
+  esac
+}
+
+# 给人看的一行能力摘要（完整文本见 CAPS）。
+caps_brief() {
+  case "$1" in
+    35) printf '%s' '应用列表兼容 · MediaProvider 导出 · applyBatch · DownloadProvider · ServiceManager 旧接口/QPR union' ;;
+    36) printf '%s' '应用列表兼容 · MediaProvider 导出 · applyBatch · DownloadProvider · getService2/checkService2' ;;
+    37) printf '%s' '应用列表恢复 · MediaProvider 导出 · applyBatch · DownloadProvider · getService2/checkService2' ;;
+    *)  printf '%s' '未知' ;;
+  esac
 }
 
 # 启动标识：优先 boot_id；没有时用当前时间减 /proc/uptime 秒数得到本次开机时刻。
@@ -201,55 +222,6 @@ version_ok() {
 
 SDK=$(detect_sdk)
 [ -n "$SDK" ] || SDK=unknown
-
-# 本版只分发 A17 资产：SDK 37 → assets/main-a17.dex；其它 SDK 不提供补丁。
-# SDK 35/36（A15/A16）与 SDK <35 都走 unsupported，VARIANT=none、ASSET 为空。
-select_variant() {
-  case "$SDK" in
-    37)
-      VARIANT=a17
-      VARIANT_NOTE='A17 已真机验证'
-      PATCH_SHA=$A17_SHA
-      PATCH_SIZE=$A17_SIZE
-      ASSET_NAME=main-a17.dex ;;
-    *)
-      VARIANT=
-      VARIANT_NOTE=
-      PATCH_SHA=
-      PATCH_SIZE=
-      ASSET_NAME= ;;
-  esac
-  if [ -n "$ASSET_NAME" ]; then
-    ASSET=$MODDIR/assets/$ASSET_NAME
-  else
-    ASSET=
-  fi
-  if [ "$SI_TEST" = 1 ] && [ -n "${SI_PATCH_ASSET:-}" ]; then
-    ASSET=$SI_PATCH_ASSET
-  fi
-}
-select_variant
-
-# 不支持时的统一说明：35/36 指向 A15/A16 待 1.6.1，其它 SDK 只说不支持。
-unsupported_note() {
-  case "$SDK" in
-    35|36)
-      printf '1.6.0 仅支持 Android 17，A15/A16 待 1.6.1；当前 SDK=%s' "$SDK" ;;
-    ''|unknown|*[!0-9]*)
-      printf '无法识别 Android SDK（%s），本补丁仅支持 Android 17（SDK 37）' "$SDK" ;;
-    *)
-      printf '本补丁仅支持 Android 17（SDK 37），当前 SDK=%s，不提供补丁' "$SDK" ;;
-  esac
-}
-
-# 恢复时只认“已知补丁版”，不依赖当前 SDK 选中的变体：A17 与社区旧版可直接恢复原版；
-# 旧自建补丁（88,336 B）不在已知列表里，按 unknown 处理。
-is_known_patch() {
-  { [ "$SHA" = "$A17_SHA" ] && [ "$SIZE" = "$A17_SIZE" ]; } && return 0
-  { [ "$SHA" = "$LEGACY_PATCH_SHA" ] && [ "$SIZE" = "$LEGACY_PATCH_SIZE" ]; } && return 0
-  return 1
-}
-
 SI_VERSION=
 SI_VERSION_CODE=
 SIZE=0
@@ -310,7 +282,7 @@ collect_state() {
   fi
 
   LEGACY=0
-  if [ -z "$VARIANT" ]; then
+  if [ "$SDK" != 35 ] && [ "$SDK" != 36 ] && [ "$SDK" != 37 ]; then
     STATE=unsupported
   elif [ "$DEX_EXISTS" != 1 ]; then
     STATE=no-target
@@ -329,6 +301,8 @@ collect_state() {
 print_check() {
   printf 'STATE=%s\n' "$STATE"
   printf 'SDK=%s\n' "$SDK"
+  printf 'SDK_NAME=%s\n' "$(sdk_name "$SDK")"
+  printf 'CAPS=%s\n' "$(caps_text "$SDK")"
   printf 'SI_VERSION=%s\n' "${SI_VERSION:-}"
   printf 'SI_VERSION_CODE=%s\n' "${SI_VERSION_CODE:-}"
   printf 'SI_TARGET_MODULE=%s\n' "$PATCH_FOR_MODULE"
@@ -337,8 +311,6 @@ print_check() {
   printf 'SI_TARGET_FILE=%s\n' "$TARGET"
   printf 'SI_MATCH=%s\n' "$SI_MATCH"
   printf 'DEX=%s\n' "$DEX"
-  printf 'ASSET=%s\n' "$ASSET_NAME"
-  printf 'VARIANT=%s\n' "${VARIANT:-none}"
   printf 'SIZE=%s\n' "$SIZE"
   printf 'MTIME=%s\n' "$MTIME"
   printf 'SHA=%s\n' "${SHA:-}"
@@ -354,36 +326,54 @@ print_check() {
 }
 
 status_line() {
+  _sdk_name=$(sdk_name "$SDK")
+  _caps=$(caps_brief "$SDK")
+  case "$STATE" in
+    original|patched|patched-legacy|unknown)
+      if [ "$SI_MATCH" != 1 ]; then
+        printf '兼容性检测：不适用（%s（SDK %s）· 当前 zygisk-storage-isolation %s，仅适用于 %s / %s）\n' \
+          "$_sdk_name" "$SDK" "${SI_VERSION:-版本未知}" "${PATCH_FOR_VERSION:-未知版本}" "$TARGET"
+        return 0
+      fi ;;
+  esac
   case "$STATE" in
     unsupported)
-      printf 'main.dex 补丁：不适用（%s）\n' "$(unsupported_note)" ;;
+      printf '兼容性检测：不适用（%s（SDK %s），仅支持 Android 15/16/17（SDK 35/36/37））\n' \
+        "$_sdk_name" "$SDK" ;;
     no-target)
-      printf 'main.dex 补丁：未检测到 zygisk-storage-isolation 的 %s（%s）\n' "$TARGET" "$DEX" ;;
+      printf '兼容性检测：未检测到 zygisk-storage-isolation 的 %s（%s（SDK %s）· %s）\n' \
+        "$TARGET" "$_sdk_name" "$SDK" "$DEX" ;;
     original)
       if [ "$SI_MATCH" = 1 ]; then
-        printf 'main.dex 补丁：可应用（zygisk-storage-isolation %s，原版 %s；%s）\n' \
-          "${SI_VERSION:-版本未知}" "$TARGET" "$VARIANT_NOTE"
+        printf '兼容性检测：可应用（%s（SDK %s）· zygisk-storage-isolation %s · 原版 %s · 能力：%s）\n' \
+          "$_sdk_name" "$SDK" "${SI_VERSION:-版本未知}" "$TARGET" "$_caps"
       else
-        printf 'main.dex 补丁：不适用（当前 zygisk-storage-isolation %s，仅适用于 %s / %s）\n' \
-          "${SI_VERSION:-版本未知}" "${PATCH_FOR_VERSION:-未知版本}" "$TARGET"
+        printf '兼容性检测：不适用（%s（SDK %s）· 当前 zygisk-storage-isolation %s，仅适用于 %s / %s）\n' \
+          "$_sdk_name" "$SDK" "${SI_VERSION:-版本未知}" "${PATCH_FOR_VERSION:-未知版本}" "$TARGET"
       fi ;;
     patched)
       if [ "$BACKUP_OK" = 1 ]; then
-        printf 'main.dex 补丁：已应用（%s；重启手机生效；可恢复原版）\n' "$VARIANT_NOTE"
+        printf '兼容性检测：已注入（%s（SDK %s）· zygisk-storage-isolation %s · 能力：%s；重启手机生效，可恢复原版）\n' \
+          "$_sdk_name" "$SDK" "${SI_VERSION:-版本未知}" "$_caps"
       else
-        printf 'main.dex 补丁：已应用（%s；重启手机生效；没有可用的原版备份）\n' "$VARIANT_NOTE"
+        printf '兼容性检测：已注入（%s（SDK %s）· zygisk-storage-isolation %s · 能力：%s；重启手机生效，没有可用的原版备份）\n' \
+          "$_sdk_name" "$SDK" "${SI_VERSION:-版本未知}" "$_caps"
       fi ;;
     patched-legacy)
       if [ "$BACKUP_OK" = 1 ]; then
-        printf 'main.dex 补丁：旧版社区补丁（可升级到自建版，或恢复原版）\n'
+        printf '兼容性检测：旧版注入（%s（SDK %s）· 能力：%s；可升级到通用版，或恢复原版）\n' \
+          "$_sdk_name" "$SDK" "$_caps"
       else
-        printf 'main.dex 补丁：旧版社区补丁（缺少原版备份，可先升级到自建版）\n'
+        printf '兼容性检测：旧版注入（%s（SDK %s）· 能力：%s；缺少原版备份，可先升级到通用版）\n' \
+          "$_sdk_name" "$SDK" "$_caps"
       fi ;;
     *)
       if [ "$BACKUP_OK" = 1 ]; then
-        printf 'main.dex 补丁：版本/哈希不匹配，未动（有可用的原版备份，可强制恢复）\n'
+        printf '兼容性检测：版本/哈希不匹配，未动（%s（SDK %s）· 能力：%s；有可用的原版备份，可强制恢复）\n' \
+          "$_sdk_name" "$SDK" "$_caps"
       else
-        printf 'main.dex 补丁：版本/哈希不匹配，未动（sha256 %s）\n' "${SHA:-读取失败}"
+        printf '兼容性检测：版本/哈希不匹配，未动（%s（SDK %s）· 能力：%s；sha256 %s）\n' \
+          "$_sdk_name" "$SDK" "$_caps" "${SHA:-读取失败}"
       fi ;;
   esac
 }
@@ -548,21 +538,21 @@ create_legacy_backup() {
   done
   if ! "$CP" "$DEX" "$_tmp"; then
     rm -f "$_tmp" 2>/dev/null
-    die "备份社区版 main.dex 失败" 5
+    die "备份 旧版 main.dex 失败" 5
   fi
   if ! chmod 600 "$_tmp" 2>/dev/null; then
     rm -f "$_tmp" 2>/dev/null
-    die "设置社区版备份权限失败" 5
+    die "设置 旧版备份权限失败" 5
   fi
   _got=$(sha256_of "$_tmp")
   _gsize=$(file_size "$_tmp")
   if [ "$_got" != "$LEGACY_PATCH_SHA" ] || [ "$_gsize" != "$LEGACY_PATCH_SIZE" ]; then
     rm -f "$_tmp" 2>/dev/null
-    die "社区版备份校验失败（sha256=${_got:-读取失败}），未改动目标" 5
+    die "旧版备份校验失败（sha256=${_got:-读取失败}），未改动目标" 5
   fi
   if ! mv -f "$_tmp" "$LEGACY_BACKUP" 2>/dev/null; then
     rm -f "$_tmp" 2>/dev/null
-    die "社区版备份落盘失败" 5
+    die "旧版备份落盘失败" 5
   fi
 }
 
@@ -570,10 +560,10 @@ do_apply() {
   collect_state
   case "$STATE" in
     patched)
-      printf 'main.dex 补丁已应用（%s），无需重复操作（恢复原版请用 restore）。\n' "$VARIANT_NOTE"
+      printf '兼容性检测：main.dex 已应用，无需重复操作（恢复原版请用 restore）。\n'
       return 0 ;;
     unsupported)
-      die "$(unsupported_note)" 2 ;;
+      die "仅支持 Android 15/16/17（SDK 35/36/37），当前 SDK=${SDK}" 2 ;;
     no-target)
       die "找不到 $DEX，未检测到 zygisk-storage-isolation 模块" 2 ;;
     unknown)
@@ -594,7 +584,7 @@ do_apply() {
   collect_state
   case "$STATE" in
     patched)
-      printf 'main.dex 补丁已应用（%s），无需重复操作（恢复原版请用 restore）。\n' "$VARIANT_NOTE"
+      printf '兼容性检测：main.dex 已应用，无需重复操作（恢复原版请用 restore）。\n'
       return 0 ;;
     original) ;;
     patched-legacy) ;;
@@ -608,12 +598,11 @@ do_apply() {
   _from_legacy=0
   [ "$STATE" = patched-legacy ] && _from_legacy=1
 
-  [ -n "$ASSET" ] || die "当前 SDK=${SDK} 没有对应的补丁资产，已取消" 2
-  [ -f "$ASSET" ] || die "模块缺少补丁资产 $ASSET" 5
+  [ -f "$ASSET" ] || die "模块缺少兼容性检测资产 $ASSET" 5
   _asha=$(sha256_of "$ASSET")
   _asize=$(file_size "$ASSET")
   [ "$_asha" = "$PATCH_SHA" ] && [ "$_asize" = "$PATCH_SIZE" ] \
-    || die "补丁资产校验失败（sha256=${_asha:-读取失败}，大小=${_asize:-读取失败}），未改动目标" 5
+    || die "兼容性检测资产校验失败（sha256=${_asha:-读取失败}，大小=${_asize:-读取失败}），未改动目标" 5
 
   if [ "$_from_legacy" = 1 ]; then
     create_legacy_backup
@@ -624,7 +613,7 @@ do_apply() {
     if [ "$_from_legacy" = 1 ] && [ -f "$LEGACY_BACKUP" ] \
        && install_file "$LEGACY_BACKUP" "$LEGACY_PATCH_SHA" "$LEGACY_PATCH_SIZE"; then
       log_action "APPLY-FAILED target=$TARGET from=legacy rollback=ok backup=$LEGACY_BACKUP"
-      die "写入自建补丁失败，已回滚到社区版（备份：$LEGACY_BACKUP）" 5
+      die "写入通用补丁失败，已回滚到 旧版（备份：$LEGACY_BACKUP）" 5
     fi
     if [ "$_from_legacy" != 1 ] && [ -f "$BACKUP" ] \
        && install_file "$BACKUP" "$ORIGINAL_SHA" "$ORIGINAL_SIZE"; then
@@ -637,14 +626,14 @@ do_apply() {
     die "写入补丁失败，且自动回滚失败；请用 restore 或手动从 $_bk 恢复" 6
   fi
   if [ "$_from_legacy" = 1 ]; then
-    log_action "APPLY-LEGACY target=$TARGET variant=$VARIANT from=$LEGACY_PATCH_SHA to=$PATCH_SHA backup=$LEGACY_BACKUP"
-    printf '已从社区版升级到自建补丁（%s）：%s\n' "$VARIANT_NOTE" "$DEX"
+    log_action "APPLY-LEGACY target=$TARGET from=$LEGACY_PATCH_SHA to=$PATCH_SHA backup=$LEGACY_BACKUP"
+    printf '已从旧版升级到通用版：%s\n' "$DEX"
   else
-    log_action "APPLY target=$TARGET variant=$VARIANT original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
-    printf '已应用补丁（%s）：%s\n' "$VARIANT_NOTE" "$DEX"
+    log_action "APPLY target=$TARGET original=$ORIGINAL_SHA patched=$PATCH_SHA backup=$BACKUP"
+    printf '已应用补丁：%s\n' "$DEX"
   fi
   mark_pending_reboot || log_action "PENDING-FAILED target=$TARGET"
-  printf '适用资产：%s；重启生效（Zygisk 模块在开机时加载）。\n' "$ASSET_NAME"
+  printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
 do_restore() {
@@ -663,11 +652,11 @@ do_restore() {
   _backup=$(find_original_backup)
   if [ -z "$_backup" ]; then
     if [ "$_is_legacy" = 1 ]; then
-      die "缺少原版备份，可先升级到自建版" 5
+      die "缺少原版备份，可先升级到通用版" 5
     fi
     die "没有可用的原版备份（$BACKUP_DIR），无法恢复" 5
   fi
-  if ! is_known_patch && [ "$FORCE" != 1 ]; then
+  if [ "$SHA" != "$PATCH_SHA" ] && [ "$_is_legacy" != 1 ] && [ "$FORCE" != 1 ]; then
     die "当前 $TARGET 不是已知补丁版（${SHA:-读取失败}）；如确认要用原版备份覆盖，请加 --force" 3
   fi
 
@@ -678,13 +667,13 @@ do_restore() {
   fi
   _is_legacy=0
   [ "$STATE" = patched-legacy ] && _is_legacy=1
-  if ! is_known_patch && [ "$FORCE" != 1 ]; then
+  if [ "$SHA" != "$PATCH_SHA" ] && [ "$_is_legacy" != 1 ] && [ "$FORCE" != 1 ]; then
     die "补丁状态已变化（${SHA:-读取失败}），已取消恢复" 4
   fi
   _backup=$(find_original_backup)
   if [ -z "$_backup" ]; then
     if [ "$_is_legacy" = 1 ]; then
-      die "缺少原版备份，可先升级到自建版" 5
+      die "缺少原版备份，可先升级到通用版" 5
     fi
     die "没有可用的原版备份（$BACKUP_DIR），已取消恢复" 5
   fi
@@ -734,7 +723,7 @@ do_restore() {
   TMP_CUR=
   if [ "$_is_legacy" = 1 ]; then
     log_action "RESTORE-LEGACY original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
-  elif [ "$FORCE" = 1 ] && [ "$_cur_sha" != "$A17_SHA" ]; then
+  elif [ "$FORCE" = 1 ] && [ "$_cur_sha" != "$PATCH_SHA" ]; then
     log_action "RESTORE-FORCE original=$ORIGINAL_SHA backup=$_backup from=$_cur_sha"
   else
     log_action "RESTORE original=$ORIGINAL_SHA backup=$_backup"

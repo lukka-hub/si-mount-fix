@@ -127,6 +127,23 @@ grep -q "sandbox_skip: '沙箱未重建" webroot/index.html 2>/dev/null \
 grep -q "rollback: '回滚未卸干净" webroot/index.html 2>/dev/null \
   && ok "WebUI SKIP_LABEL 含 rollback" || bad "WebUI 缺少 rollback 标签"
 
+# ---------- 7) 兼容性检测前缀 / 能力摘要 ----------
+out=$(run_action "RESULT checked=1 broken=0 fixed=0 young=0")
+has "$out" '兼容性检测' && ok "action 输出兼容性检测前缀" || bad "action 缺少兼容性检测前缀：$out"
+has "$out" '状态未知（si-patch.sh 缺失或执行失败）' \
+  && ok "si-patch.sh 缺失时明确状态未知" || bad "si-patch.sh 缺失时提示不对：$out"
+grep -q 'printf . 兼容性检测  %s' "$ACTION" \
+  && ok "action.sh 前缀改为兼容性检测" || bad "action.sh 前缀不对"
+if grep -q 'patch_txt=${patch_txt#兼容性检测：}' "$ACTION"; then
+  ok "action.sh 去掉了 status 的重复前缀"
+else
+  bad "action.sh 未去掉重复前缀"
+fi
+grep -q 'si-patch\.sh" status' "$ACTION" && ok "action.sh 调用 si-patch.sh status" \
+  || bad "action.sh 没有调用 si-patch.sh status"
+grep -q 'si-patch\.sh" apply' "$ACTION" && bad "action.sh 会自动 apply" \
+  || ok "action.sh 不自动 apply"
+
 echo
 [ "$fail" = 0 ] && { echo "action.test: PASS"; exit 0; }
 echo "action.test: FAIL"; exit 1
