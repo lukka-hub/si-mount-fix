@@ -1,7 +1,7 @@
 id=si-mount-fix
 name=Storage Isolation 兼容与挂载
-version=v2.0.2
-versionCode=2020
+version=v2.1.0
+versionCode=2100
 siPatchModule=zygisk-storage-isolation
 siPatchTarget=main.dex
 siPatchVersion=v29.0.1

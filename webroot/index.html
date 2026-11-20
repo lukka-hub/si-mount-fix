@@ -295,8 +295,9 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       针对 Zygisk 增强模块的 <code>zn-zygisk-companion</code> 偶发把单核吃满：
       模块 native 层在「握手读」失败时没有退出路径，会无限重试。本功能把该分支改成失败即返回，
       每个 ABI 只改 1 个字节，不碰 <code>main.dex</code>、不碰 SI 配置。
-      <br><strong>仅支持增强模块 v29.0.1（versionCode 89）</strong>：模块版本或文件哈希对不上时，
-      不会修改任何文件——该缺陷只存在于这一版；更早的 28.x 不读这个 fd，不需要修复。
+      <br><strong>只对当前适配的增强模块版本生效</strong>：先核对模块 <code>module.prop</code>
+      的版本号，再核对目标 ABI 的文件哈希；任一不符都不会修改任何文件。
+      该缺陷只存在于适配的那一版；更早的 28.x 不读这个 fd，不需要修复。
       <br>现状：Zygisk Next 1.4 及以上已不再触发该路径，当前环境通常<strong>无法复现</strong>；
       只有停在较旧 Zygisk Next（约 1.3.x）且确实遇到 companion 高 CPU 时，才建议尝试。
     </div>

@@ -1,6 +1,6 @@
 # 更新日志
 
-## v2.0.2（versionCode 2020）
+## v2.1.0（versionCode 2100）
 
 - 新增「实验性功能」入口（右上角，默认关闭）：尝试解决 `zn-zygisk-companion` 偶发高 CPU。
   仅对增强模块 v29.0.1 / versionCode 89 生效，其它版本不改动。
