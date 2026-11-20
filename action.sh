@@ -244,12 +244,12 @@ if [ -n "$sand_txt" ]; then
   printf ' 沙箱   %s\n' "$sand_txt"
 fi
 
-# 补丁状态只报告，不自动应用：apply 必须由用户在 WebUI 里确认。
+# 兼容性检测状态只报告，不自动应用：apply 必须由用户在 WebUI 里确认。
+# si-patch.sh status 已含 Android 版本与已恢复能力摘要，这里原样展示。
 patch_txt=$(SI_DATA="$DATA" timeout 10 "$SH_BIN" "$MOD/scripts/si-patch.sh" status 2>/dev/null)
-patch_txt=${patch_txt#main.dex 补丁：}
-patch_txt=${patch_txt#SI 补丁：}
+patch_txt=${patch_txt#兼容性检测：}
 [ -n "$patch_txt" ] || patch_txt="状态未知（si-patch.sh 缺失或执行失败）"
-printf ' 补丁   %s\n' "$patch_txt"
+printf ' 兼容性检测  %s\n' "$patch_txt"
 
 raw=$(timeout 40 "$SH_BIN" "$MOD/scripts/fix-si-mounts.sh" -n 2>/dev/null | tail -1)
 # 取不到 RESULT 行（fix 被 OOM/timeout/缺失，或锁目录建不出来）必须报失败，

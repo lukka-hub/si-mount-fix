@@ -16,9 +16,10 @@ US=META-INF/com/google/android/updater-script
 UB=META-INF/com/google/android/update-binary
 REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
-# 补丁 main.dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
+# 兼容性检测 dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
 PATCH_ASSET=assets/main.dex
-PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
+PATCH_SHA=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+PATCH_SIZE_EXPECT=92856
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
@@ -66,7 +67,9 @@ V_CODE=$(prop_get versionCode)
 [ -n "$(prop_get siPatchVersion)" ] || die 'module.prop 缺少 siPatchVersion（补丁适用模块版本）'
 [ -n "$(prop_get siPatchVersionCode)" ] || die 'module.prop 缺少 siPatchVersionCode（补丁适用模块 versionCode）'
 
-# ---------- 2) version ↔ versionCode 一致性（v1.4.0 ↔ 140；v1.5.7.1 ↔ 1571）----------
+# ---------- 2) version ↔ versionCode 一致性 ----------
+# 2.0 起统一四段式编码：v2.0.0 ↔ 2000、v2.0.1 ↔ 2001、v2.1.0 ↔ 2100；
+# 1.x 保留历史三位编码：v1.4.0 ↔ 140、v1.5.8 ↔ 158、v1.5.8.1 ↔ 1581。
 VERSION=${V_PROP#v}
 case "$VERSION" in
   *.*.*) ;;
@@ -96,6 +99,8 @@ esac
 if [ -n "$V_MICRO" ]; then
   [ "$V_MICRO" -le 9 ] || die "versionCode 规则要求 micro <= 9：$V_PROP"
   V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10 + V_MICRO))
+elif [ "$V_MAJOR" -ge 2 ]; then
+  V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10))
 else
   V_CODE_EXPECT=$((V_MAJOR * 100 + V_MINOR * 10 + V_PATCH))
 fi
@@ -104,7 +109,14 @@ case "$V_CODE" in
 esac
 [ "$V_CODE" = "$V_CODE_EXPECT" ] \
   || die "versionCode 与 version 不一致：$V_PROP 应为 $V_CODE_EXPECT，module.prop 写的是 $V_CODE"
-say "版本：$V_PROP / versionCode=$V_CODE（一致）"
+# 发布 tag 与 update.json 的 zipUrl 对齐：三段版本且 patch=0 时省略末尾 .0
+# （v2.0.0 → v2.0），其余版本仍使用完整 version（如 v1.5.8.1）。
+if [ "$V_PATCH" = 0 ] && { [ -z "$V_MICRO" ] || [ "$V_MICRO" = 0 ]; }; then
+  V_TAG=v$V_MAJOR.$V_MINOR
+else
+  V_TAG=$V_PROP
+fi
+say "版本：$V_PROP / versionCode=$V_CODE（一致；发布 tag $V_TAG）"
 
 # ---------- 3) updateJson / update.json ----------
 PROP_UJ=$(prop_get updateJson)
@@ -116,10 +128,10 @@ esac
 [ "$PROP_UJ" = "$UPDATE_JSON_URL" ] \
   || die "updateJson 应指向 $UPDATE_JSON_URL，当前：[$PROP_UJ]"
 [ -f update.json ] || die 'update.json 不存在（updateJson 指向的文件要随仓库发布）'
-python3 - "$V_PROP" "$V_CODE" "$REPO_URL" <<'PY' || die 'update.json 校验失败'
+python3 - "$V_PROP" "$V_CODE" "$REPO_URL" "$V_TAG" <<'PY' || die 'update.json 校验失败'
 import json, sys
 
-v_prop, v_code, repo = sys.argv[1], sys.argv[2], sys.argv[3].rstrip('/')
+v_prop, v_code, repo, v_tag = sys.argv[1], sys.argv[2], sys.argv[3].rstrip('/'), sys.argv[4]
 try:
     with open('update.json', encoding='utf-8') as f:
         d = json.load(f)
@@ -132,33 +144,35 @@ if d.get('version') != v_prop:
 vc = d.get('versionCode')
 if str(vc) != v_code:
     errs.append('versionCode 应为 %r，实际 %r' % (v_code, vc))
-want = '%s/releases/download/%s/si-mount-fix.zip' % (repo, v_prop)
+want = '%s/releases/download/%s/si-mount-fix.zip' % (repo, v_tag)
 if d.get('zipUrl') != want:
     errs.append('zipUrl 应为 %r，实际 %r' % (want, d.get('zipUrl')))
 changelog = d.get('changelog')
-if not isinstance(changelog, str) or not changelog.startswith('https://'):
-    errs.append('changelog 必须是 https URL')
+want_changelog = '%s/raw/main/CHANGELOG.md' % repo
+if changelog != want_changelog:
+    errs.append('changelog 应指向 main：%r，实际 %r' % (want_changelog, changelog))
 if errs:
     raise SystemExit('update.json：' + '；'.join(errs))
-print('update.json：版本/versionCode/zipUrl 与 module.prop 一致')
+print('update.json：版本/versionCode/zipUrl/changelog 与 module.prop 一致')
 PY
-say "updateJson：$PROP_UJ"
+say "updateJson：$PROP_UJ（release tag $V_TAG）"
 
-# ---------- 3b) 自建补丁资产：内容不能变，sha256/大小必须与发布说明一致 ----------
-[ -f "$PATCH_ASSET" ] || die "缺少补丁资产：$PATCH_ASSET（自建 dex，构建时校验后打进 zip）"
+# ---------- 3b) 自包含资产：内容不能变，sha256/大小必须与发布说明一致 ----------
+[ -f "$PATCH_ASSET" ] || die "缺少兼容性检测资产：$PATCH_ASSET（自包含 dex，构建时校验后打进 zip）"
 PATCH_SIZE=$(wc -c < "$PATCH_ASSET" | tr -d '[:space:]')
-[ "$PATCH_SIZE" = 88336 ] || die "补丁资产大小不对：$PATCH_SIZE B（应为 88336 B）"
+[ "$PATCH_SIZE" = "$PATCH_SIZE_EXPECT" ] \
+  || die "兼容性检测资产大小不对：$PATCH_SIZE B（应为 $PATCH_SIZE_EXPECT B）"
 if command -v sha256sum >/dev/null 2>&1; then
   PATCH_GOT=$(sha256sum "$PATCH_ASSET" | awk '{print $1}')
 else
   PATCH_GOT=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$PATCH_ASSET")
 fi
 [ "$PATCH_GOT" = "$PATCH_SHA" ] \
-  || die "补丁资产 sha256 不匹配：实际 $PATCH_GOT，应为 $PATCH_SHA（不要修改 dex 内容）"
+  || die "兼容性检测资产 sha256 不匹配：实际 $PATCH_GOT，应为 $PATCH_SHA（不要修改 dex 内容）"
 PATCH_FOR_TARGET=$(prop_get siPatchTarget)
 [ "$PATCH_ASSET" = "assets/$PATCH_FOR_TARGET" ] \
-  || die "补丁资产路径与 siPatchTarget 不一致：$PATCH_ASSET / $PATCH_FOR_TARGET"
-say "补丁资产：$PATCH_ASSET（$PATCH_SIZE B，sha256 $PATCH_GOT）"
+  || die "兼容性检测资产路径与 siPatchTarget 不一致：$PATCH_ASSET / $PATCH_FOR_TARGET"
+say "兼容性检测资产：$PATCH_ASSET（$PATCH_SIZE B，sha256 $PATCH_GOT）"
 
 # ---------- 4) updater-script 首行必须是 #MAGISK ----------
 [ -f "$US" ] || die "$US 不存在"
@@ -294,13 +308,13 @@ print('built %s %d bytes' % (out, os.path.getsize(out)))
 PY
 
 # ---------- 11) 自检：条目集合、权限、关键内容 ----------
-python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$PATCH_ASSET" "$PATCH_SHA" <<'PY' || die 'zip 自检失败'
+python3 - "$OUT" "$V_PROP" "$V_CODE" "$FILES" "$PATCH_ASSET" "$PATCH_SHA" "$PATCH_SIZE_EXPECT" <<'PY' || die 'zip 自检失败'
 import hashlib, sys, zipfile
 
 z = zipfile.ZipFile(sys.argv[1])
 v_prop, v_code = sys.argv[2], sys.argv[3]
 expected = sorted(sys.argv[4].split())
-patch_asset, patch_sha = sys.argv[5], sys.argv[6]
+patch_asset, patch_sha, patch_size = sys.argv[5], sys.argv[6], int(sys.argv[7])
 names = z.namelist()
 files = sorted(n for n in names if not n.endswith('/'))
 dirs = sorted(n for n in names if n.endswith('/'))
@@ -341,9 +355,12 @@ if 'webroot/index.html' not in files:
     raise SystemExit('缺少 webroot/index.html')
 
 if patch_asset not in files:
-    raise SystemExit('补丁资产没有进包：' + patch_asset)
-if hashlib.sha256(z.read(patch_asset)).hexdigest() != patch_sha:
-    raise SystemExit('包内补丁资产 sha256 与构建前校验值不一致')
+    raise SystemExit('兼容性检测资产没有进包：' + patch_asset)
+patch_data = z.read(patch_asset)
+if len(patch_data) != patch_size:
+    raise SystemExit('包内兼容性检测资产大小不对：%d B（应为 %d B）' % (len(patch_data), patch_size))
+if hashlib.sha256(patch_data).hexdigest() != patch_sha:
+    raise SystemExit('包内兼容性检测资产 sha256 与构建前校验值不一致')
 
 print('zip 自检通过：%d 个文件 + %d 个目录，脚本 755 / 其它 644' % (len(files), len(dirs)))
 PY

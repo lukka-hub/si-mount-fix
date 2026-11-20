@@ -54,6 +54,14 @@ header{display:flex;align-items:flex-start;justify-content:space-between;gap:10p
 .pill.bad{background:var(--bad-bg);color:var(--bad)}
 .pill.info{background:var(--info-bg);color:var(--info)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+.card.tone-warn{border-color:var(--warn)}
+.card.tone-good{border-color:var(--good)}
+.card.tone-bad{border-color:var(--bad)}
+.card.tone-warn .card-head h2,.card.tone-warn #patchBadge{color:var(--warn)}
+.card.tone-good .card-head h2,.card.tone-good #patchBadge{color:var(--good)}
+.card.tone-bad .card-head h2,.card.tone-bad #patchBadge{color:var(--bad)}
+.card.tone-good .hint{background:var(--good-bg);color:var(--good)}
+.card.tone-bad .hint{background:var(--bad-bg);color:var(--bad)}
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
 .card-head h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.6px}
 .card-head .muted,.muted{color:var(--muted)}
@@ -238,7 +246,7 @@ details.card[open] summary{margin-bottom:8px}
 </section>
 
 <section class="card" id="patchCard" hidden>
-  <div class="card-head"><h2>Android 17 应用列表修复（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
+  <div class="card-head"><h2>兼容性检测（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
   <div class="btn-grid" id="patchActions" hidden>
@@ -998,9 +1006,10 @@ details.card[open] summary{margin-bottom:8px}
           { action: 'patch-confirm-cancel', label: '取消' }
         ] });
     } else if (patchPromptable()) {
-      items.push({ tone: 'warn', title: 'Android 17 应用列表可能为空',
-        body: '可应用补丁修复。补丁只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；' +
-          '应用后重启手机生效。之后仍可在下方「Android 17 应用列表修复（main.dex）」里手动应用。',
+      items.push({ tone: 'warn', title: '兼容性检测：main.dex 未注入',
+        body: '当前 dex 未注入，可应用 A15/A16/A17 通用 main.dex（按系统能力探测）。' +
+          '只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；应用后重启手机生效。' +
+          '之后仍可在下方「兼容性检测（main.dex）」里手动应用。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
           { action: 'patch-dismiss', label: '暂不' }
@@ -1039,11 +1048,11 @@ details.card[open] summary{margin-bottom:8px}
     state.alive = null;
     state.fetchedAt = Date.now();
     state.mode = 'live';
-    if (state.patchSdk && state.patchSdk !== '37') {
+    if (state.patchSdk && !isSupportedSdk(state.patchSdk)) {
       state.patch = null;
       state.patchError = '';
     } else {
-      state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
+      state.patchError = '没有 root 权限，无法读取或执行兼容性检测操作。';
     }
     renderPatch();
     renderStatus();
@@ -1128,14 +1137,15 @@ details.card[open] summary{margin-bottom:8px}
     }).then(function () {
       return state.noRoot ? false : loadLog();
     }).then(function () {
-      /* 即使没有 root 也先读 SDK：非 Android 17 直接隐藏卡片；37 再显示权限错误。 */
+      /* 即使没有 root 也先读 SDK：不支持的 Android 版本直接隐藏卡片；支持的版本再显示权限错误。 */
       return loadPatch();
     });
   }
 
   /* ============================================================
-     Android 17 可选补丁（只替换 zygisk-storage-isolation/main.dex）
-     si-patch.sh check 输出 KEY=VALUE；这里只负责展示与转发，是否执行由用户点按钮决定。
+     兼容性检测（main.dex）：A15/A16/A17 通用 dex，只替换
+     zygisk-storage-isolation/main.dex。si-patch.sh check 输出 KEY=VALUE；
+     这里只负责展示与转发，是否执行由用户点按钮决定。
      文件操作很快：动作结果直接展示，不再补跑第二次 check，也没有 server 重启/等待。
      ============================================================ */
   function parseKv(text) {
@@ -1150,8 +1160,8 @@ details.card[open] summary{margin-bottom:8px}
     return out;
   }
 
-  /* SDK != 37 直接隐藏整张卡片：先只读 getprop，不请求 si-patch.sh check。
-     SDK=37 才继续检查 main.dex 状态。 */
+  /* SDK 35/36/37（Android 15/16/17）都显示卡片；其它版本也运行 check，
+     由 check 返回 unsupported 后显示“不适用”并解释原因（动作按钮禁用）。 */
   function ensurePatchSdk() {
     if (state.patchSdk !== null && state.patchSdk !== undefined) {
       return Promise.resolve(state.patchSdk);
@@ -1162,6 +1172,47 @@ details.card[open] summary{margin-bottom:8px}
       state.patchSdk = sdk;
       return sdk;
     });
+  }
+
+  /* A15/A16/A17 同一 dex：35/36/37 都显示卡片，其它版本隐藏。 */
+  function isSupportedSdk(sdk) {
+    return sdk === '35' || sdk === '36' || sdk === '37';
+  }
+
+  function sdkName(sdk) {
+    if (sdk === '35') { return 'Android 15'; }
+    if (sdk === '36') { return 'Android 16'; }
+    if (sdk === '37') { return 'Android 17'; }
+    return '未知';
+  }
+
+  /* 与 scripts/si-patch.sh 的 CAPS 保持同义：按系统能力探测，不声称真机验证。 */
+  function capabilityText(sdk) {
+    if (sdk === '35') {
+      return '应用列表兼容（旧 ParceledListSlice 路径）；MediaProvider 导出；applyBatch；' +
+        'DownloadProvider；ServiceManager 旧接口，可用时走 QPR Service union；' +
+        'A15 release 不会启用不存在的 getService2';
+    }
+    if (sdk === '36') {
+      return '应用列表兼容；MediaProvider 导出；applyBatch；DownloadProvider；' +
+        'getService2/checkService/checkService2（A16 形态）';
+    }
+    if (sdk === '37') {
+      return '应用列表恢复（PackageInfoList → List）；MediaProvider 导出；applyBatch；' +
+        'DownloadProvider；getService2/checkService2（checkService 为 IBinder）';
+    }
+    return '未知版本，不做能力探测';
+  }
+
+  function patchSdkText(p) {
+    var sdk = p ? String(p.sdk || '') : '';
+    var name = p && p.sdkName ? p.sdkName : sdkName(sdk);
+    return name + '（SDK ' + (sdk || '?') + '）';
+  }
+
+  function patchCapsText(p) {
+    if (p && p.caps) { return p.caps; }
+    return capabilityText(p ? p.sdk : '');
   }
 
   function hidePatchCard() {
@@ -1200,6 +1251,8 @@ details.card[open] summary{margin-bottom:8px}
     var p = kv;
     p.state = String(p.STATE);
     p.sdk = String(p.SDK || '');
+    p.sdkName = String(p.SDK_NAME || sdkName(p.sdk));
+    p.caps = String(p.CAPS || capabilityText(p.sdk));
     p.si = String(p.SI_VERSION || '');
     p.siCode = String(p.SI_VERSION_CODE || '');
     p.targetModule = String(p.SI_TARGET_MODULE || 'zygisk-storage-isolation');
@@ -1338,14 +1391,14 @@ details.card[open] summary{margin-bottom:8px}
     clearPatchConfirmState();
     clearPatchResult();
     if (!BR.ok) {
-      if (state.patchSdk && state.patchSdk !== '37') { hidePatchCard(); return Promise.resolve(false); }
-      state.patchError = '未连接 WebUI 桥接，暂时无法读取补丁状态。';
+      if (state.patchSdk && !isSupportedSdk(state.patchSdk)) { hidePatchCard(); return Promise.resolve(false); }
+      state.patchError = '未连接 WebUI 桥接，暂时无法读取兼容性检测状态。';
       renderPatch();
       renderStateBanner();
       return Promise.resolve(false);
     }
     return ensurePatchSdk().then(function (sdk) {
-      if (sdk !== '37') { hidePatchCard(); return false; }
+      /* 不在 35/36/37 也继续 check：卡片显示 unsupported 原因，apply/restore 被禁用。 */
       if (state.noRoot) {
         state.patchError = '没有 root 权限，无法读取或执行补丁操作。';
         renderPatch();
@@ -1388,7 +1441,7 @@ details.card[open] summary{margin-bottom:8px}
     var p = state.patch;
     return !!(BR.ok && !state.noRoot && !state.patchError && !state.patchConfirm && p &&
       !patchBusy() && !actionBusy('patchCheck') &&
-      state.patchSdk === '37' && p.sdk === '37' &&
+      isSupportedSdk(state.patchSdk) && isSupportedSdk(p.sdk) &&
       p.state === 'original' && p.match &&
       !p.prompted && !state.patchDismissed);
   }
@@ -1437,7 +1490,7 @@ details.card[open] summary{margin-bottom:8px}
   function patchConfirmTitle(action) {
     var p = state.patch || {};
     if (action === 'apply') {
-      return p.state === 'patched-legacy' ? '确认升级到自建版？' : '确认应用 main.dex 补丁？';
+      return p.state === 'patched-legacy' ? '确认升级到通用版？' : '确认注入 main.dex？';
     }
     if (action === 'force') { return '确认强制恢复原版？'; }
     return '确认恢复原版？';
@@ -1446,7 +1499,7 @@ details.card[open] summary{margin-bottom:8px}
   function patchConfirmGoLabel(action) {
     var p = state.patch || {};
     if (action === 'apply') {
-      return p.state === 'patched-legacy' ? '确认升级' : '确认应用';
+      return p.state === 'patched-legacy' ? '确认升级' : '确认注入';
     }
     if (action === 'force') { return '确认强制恢复'; }
     return '确认恢复原版';
@@ -1460,21 +1513,22 @@ details.card[open] summary{margin-bottom:8px}
     var what;
     if (action === 'apply') {
       what = p.state === 'patched-legacy'
-        ? '把 ' + mod + ' 的社区版 ' + file + ' 升级为自建版（先备份当前社区 dex）'
-        : '把 ' + mod + ' 的 ' + file + ' 替换为补丁版';
+        ? '把 ' + mod + ' 的旧版 ' + file + ' 升级为通用版（先备份当前 dex）'
+        : '把 ' + mod + ' 的 ' + file + ' 替换为通用 dex（按系统能力探测）';
     } else if (action === 'force') {
       what = '用有效原版备份强制覆盖 ' + mod + ' 的 ' + file;
     } else {
       what = '用有效原版备份恢复 ' + mod + ' 的 ' + file;
     }
     return '目标模块：' + mod + ' ' + (p.si || '版本未知') + '。将' + what +
-      '。仅适用于 ' + ver + '（' + file + '）。重启手机后生效。';
+      '。仅适用于 ' + ver + '（' + file + '）。A15/A16/A17 同一 dex，重启手机后生效。';
   }
 
   function armPatchAction(action) {
     if (patchBusy() || actionBusy('patchCheck') || !BR.ok || state.noRoot || state.patchError ||
-        state.locked || state.patchSdk !== '37' || !state.patch) { return; }
+        state.locked || !isSupportedSdk(state.patchSdk) || !state.patch) { return; }
     var p = state.patch;
+    if (!isSupportedSdk(p.sdk)) { return; }
     var ok = (action === 'apply' && p.match &&
         (p.state === 'original' || p.state === 'patched-legacy')) ||
       (action === 'restore' && p.match && p.backupOk &&
@@ -1514,17 +1568,25 @@ details.card[open] summary{margin-bottom:8px}
 
   function renderPatch() {
     var card = $('patchCard');
-    if (state.patchSdk && state.patchSdk !== '37') { card.hidden = true; return; }
     var p = state.patch;
     var err = state.patchError;
+    /* 不在 35/36/37 且还没有 check 数据时隐藏；check 返回 unsupported 时仍显示并解释原因。 */
+    if (state.patchSdk && !isSupportedSdk(state.patchSdk) && !p && !err) {
+      card.hidden = true;
+      return;
+    }
     if (!p && !err) { card.hidden = true; return; }
     var st = p ? p.state : '';
-    if (!err && st !== 'original' && st !== 'patched' && st !== 'patched-legacy' &&
-        st !== 'unknown') {
+    var known = st === 'original' || st === 'patched' || st === 'patched-legacy' ||
+      st === 'unknown' || st === 'no-target' || st === 'unsupported';
+    if (!err && !known) {
       card.hidden = true;
       return;
     }
     card.hidden = false;
+    /* 未注入/未知/旧版/不可用：黄色；已注入：绿色；读取失败：红色。 */
+    var tone = err ? 'bad' : (st === 'patched' ? 'good' : 'warn');
+    card.className = 'card tone-' + tone;
 
     var applyBtn = $('btnPatchApply');
     var restoreBtn = $('btnPatchRestore');
@@ -1552,72 +1614,77 @@ details.card[open] summary{margin-bottom:8px}
         badge = '已恢复';
         hint.textContent = '已恢复原版，重启生效（Zygisk 模块在开机时加载）。';
       } else if (p.match) {
-        badge = '可应用';
-        hint.textContent = 'Android 17 下 SI 应用列表可能为空，可应用补丁修复。' +
-          '补丁只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
+        badge = '未注入';
+        hint.textContent = '兼容性检测：当前 dex 未注入。可应用 A15/A16/A17 通用 main.dex，' +
+          '按系统能力探测；只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
       } else {
         badge = '版本不匹配';
-        hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。补丁仅适用于 ' +
-          (p.targetVersion || '未知版本') + '（' + file + '）。';
+        hint.textContent = '兼容性检测：当前 dex 未注入，但 ' + mod + ' 版本不在支持范围，未做任何修改。' +
+          '仅适用于 ' + (p.targetVersion || '未知版本') + '（' + file + '）。';
       }
       hint.hidden = false;
     } else if (st === 'patched') {
       bits.push(mod + ' ' + (p.si || '版本未知'));
-      bits.push(p.match ? '已应用，可恢复原版' : '版本/哈希不在支持范围');
+      bits.push(p.match ? '已注入，可恢复原版' : '版本/哈希不在支持范围');
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
       if (p.match) {
-        badge = '已应用';
+        badge = '已注入';
         var rebootHint = patchPendingHint(p);
-        if (rebootHint) {
-          hint.textContent = rebootHint;
-          hint.hidden = false;
-        } else {
-          hint.textContent = '';
-          hint.hidden = true;
-        }
+        hint.textContent = '兼容性检测：当前 dex 已注入。' + (rebootHint ? rebootHint : '');
+        hint.hidden = false;
       } else {
         badge = '版本不匹配';
-        hint.textContent = '当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
+        hint.textContent = '兼容性检测：dex 已注入，但当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
           '版本不匹配时不允许恢复或强制恢复。';
         hint.hidden = false;
       }
     } else if (st === 'patched-legacy') {
       bits.push(mod + ' ' + (p.si || '版本未知'));
-      bits.push('社区版旧补丁' + (p.size ? ' · ' + p.size + ' B' : ''));
+      bits.push('旧版注入' + (p.size ? ' · ' + p.size + ' B' : ''));
       bits.push(p.backupOk ? '有可用的原版备份' : '缺少原版备份');
-      badge = '旧版补丁';
-      hint.textContent = '检测到社区版补丁，可升级到本模块自建版，或恢复原版。' +
+      badge = '旧版注入';
+      hint.textContent = '兼容性检测：检测到旧版注入，可升级到 A15/A16/A17 通用 main.dex，' +
+        '或恢复原版。' +
         (p.backupOk ? '' : ' 缺少原版备份，无法直接恢复。') +
         (p.match ? '' : ' 当前模块版本不匹配，暂不能升级或恢复。');
+      hint.hidden = false;
+    } else if (st === 'no-target') {
+      badge = '未检测到';
+      bits.push(mod);
+      hint.textContent = '兼容性检测：未检测到 ' + mod + ' 的 ' + file + '。' +
+        '请先安装/启用该 Zygisk 模块；当前不会修改任何文件。';
+      hint.hidden = false;
+    } else if (st === 'unsupported') {
+      badge = '不适用';
+      hint.textContent = '兼容性检测：当前 Android SDK ' + (p.sdk || '?') + ' 不在支持范围，' +
+        '仅支持 Android 15/16/17（SDK 35/36/37）；未做任何修改。';
       hint.hidden = false;
     } else {
       badge = '未知版本';
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-      if (!p.match) {
-        hint.textContent = '当前 ' + file + ' 是未知版本，且模块版本不匹配；未做任何修改。' +
-          '版本不匹配时不允许强制恢复。';
-      } else if (p.backupOk) {
-        hint.textContent = '当前 ' + file + ' 是未知版本，未做任何修改。' +
-          '检测到有效原版备份，可强制恢复。';
-      } else {
-        hint.textContent = '当前 ' + file + ' 是未知版本，未做任何修改。' +
-          '也没有可用的原版备份。';
-      }
+      hint.textContent = '兼容性检测：当前 dex 是未知版本，未做任何修改。' +
+        (!p.match ? '模块版本不匹配时不允许强制恢复。' :
+          (p.backupOk ? '检测到有效原版备份，可强制恢复。' : '也没有可用的原版备份。'));
       hint.hidden = false;
+    }
+    if (!err) {
+      bits.unshift(patchSdkText(p));
+      bits.push('能力：' + patchCapsText(p));
     }
     if (actionBusy('patchCheck')) {
       badge = '检查中';
-      hint.textContent = '正在检查补丁状态，请稍候…';
+      hint.textContent = '正在检测兼容性，请稍候…';
       hint.hidden = false;
     }
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
 
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
-      state.patchSdk === '37' && !actionBusy('patchCheck') && !state.patchConfirm;
-    applyBtn.textContent = st === 'patched-legacy' ? '升级到自建版' : '应用补丁';
+      isSupportedSdk(state.patchSdk) && p && isSupportedSdk(p.sdk) &&
+      !actionBusy('patchCheck') && !state.patchConfirm;
+    applyBtn.textContent = st === 'patched-legacy' ? '升级到通用版' : '应用补丁';
     restoreBtn.textContent = '恢复原版';
     if (err) {
       applyBtn.hidden = true;
@@ -1640,7 +1707,7 @@ details.card[open] summary{margin-bottom:8px}
 
     var panel = $('patchConfirm');
     if (state.patchConfirm && !patchBusy() && !actionBusy('patchCheck') && !err &&
-        state.patchSdk === '37') {
+        isSupportedSdk(state.patchSdk) && p && isSupportedSdk(p.sdk)) {
       panel.hidden = false;
       $('patchConfirmTitle').textContent = patchConfirmTitle(state.patchConfirm);
       $('patchConfirmBody').textContent = patchConfirmBody(state.patchConfirm);
@@ -1682,7 +1749,7 @@ details.card[open] summary{margin-bottom:8px}
     }
     if (errnoKnown !== true) {
       var marker = isApply ? '已应用补丁' : '已恢复原版';
-      var legacyMarker = '已从社区版升级到自建补丁';
+      var legacyMarker = '已从旧版升级到通用版';
       if (t.indexOf(marker) < 0 && !(isApply && t.indexOf(legacyMarker) >= 0)) {
         return { tone: 'warn', title: '结果未知，请刷新检查', body: unknownBody };
       }
@@ -1740,7 +1807,7 @@ details.card[open] summary{margin-bottom:8px}
     p.lastAction = action === 'apply' ? 'applied' : 'restored';
     p.pendingReboot = action === 'apply';
     if (action === 'apply') {
-      /* 原版升级会新建原版备份；社区旧版升级只新建 legacy 备份，原版备份状态不变。 */
+      /* 原版升级会新建原版备份；旧版升级只新建 legacy 备份，原版备份状态不变。 */
       p.legacy = false;
       p.LEGACY = 0;
       if (!fromLegacy) { p.backupOk = 1; }
@@ -1761,8 +1828,9 @@ details.card[open] summary{margin-bottom:8px}
       showPatchResult('请稍候', '正在检查补丁状态，完成后再执行动作。', 'warn');
       return;
     }
-    if (!BR.ok || !state.patch || state.patchSdk !== '37') {
-      showPatchResult('无法执行', '未连接 WebUI 桥接，补丁操作需要 root 权限。', 'bad');
+    if (!BR.ok || !state.patch || !isSupportedSdk(state.patchSdk) ||
+        !isSupportedSdk(state.patch.sdk)) {
+      showPatchResult('无法执行', '未连接 WebUI 桥接或系统版本不在支持范围，兼容性检测需要 root 权限。', 'bad');
       return;
     }
     var isApply = action === 'apply';
@@ -1777,7 +1845,7 @@ details.card[open] summary{margin-bottom:8px}
     beginAction(key);
     renderPatch();
     var progressTitle = isApply
-      ? (fromLegacy ? '正在升级到自建版…' : '正在应用补丁…')
+      ? (fromLegacy ? '正在升级到通用版…' : '正在应用补丁…')
       : '正在恢复原版…';
     showPatchResult(progressTitle, '后台执行中，页面可以继续操作', '');
     runBg('sh ' + P.patch + ' ' + cmd, {
@@ -1829,7 +1897,7 @@ details.card[open] summary{margin-bottom:8px}
         body = (body ? body + '\n' : '') + '复核：main.dex=' + state.patch.state +
           '，' + state.patch.size + ' B · ' + elapsed + 'ms';
         var okTitle = (isApply && fromLegacy)
-          ? '已升级到自建版，重启手机生效' : v.title;
+          ? '已升级到通用版，重启手机生效' : v.title;
         showPatchResult(okTitle, body, v.tone);
       });
     }).catch(function (err) {

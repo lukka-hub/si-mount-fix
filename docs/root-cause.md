@@ -1,4 +1,4 @@
-# 根因分析：Storage Isolation 为什么会丢共享目录挂载
+# 根因分析：挂载丢失与 2.0 通用 dex 兼容层
 
 ## 现象
 
@@ -130,72 +130,25 @@ grep ' /storage/emulated/0 ' /proc/<pid>/mountinfo
 peer group 的 slave，只接收上游传播。本例宿主侧的 FUSE 挂载和应用里的沙箱、
 共享目录都带这一项；上游一重挂，这些 slave 副本就没了。
 
-### 1.4.1 / 1.4.2 的处理
+### 修复边界（当前实现）
 
-沙箱没了也要能识别，所以模块在状态目录记一份 `.sandbox_seen`：哪些包曾经有过
-沙箱。扫描时如果授权包在运行、却找不到沙箱挂载：
+沙箱丢了也要能识别，所以模块在状态目录记一份 `.sandbox_seen`：哪些包曾经有过沙箱。扫描时
+如果授权包在运行、却找不到沙箱挂载：先把沙箱 bind 回 `/storage/emulated/0`，再复用共享目录
+修复逻辑从 FUSE 层补 DCIM、Download 等目录；重建失败（bind 失败或校验不通过）只报
+`skipped=sandbox_gone`，不杀进程，不动其它挂载。
 
-1. 先把沙箱挂回去：bind `/mnt/user/0/emulated/0/Android/data/<pkg>/sdcard`
-   到 `/storage/emulated/0`；
-2. 再复用原来的共享目录修复逻辑，从 FUSE 层补 DCIM、Download 等目录；
-3. 重建失败（bind 失败或校验不通过）只报 `skipped=sandbox_gone`，不杀进程，
-   不动其它挂载。
+主扫描只在 `/storage/emulated/0` 栈顶是本包沙箱、且只有一层时才认为健康：叠层报 `rollback`，
+栈顶被别的层盖住报 `sandbox_stale`，都不登记 `.sandbox_seen`，提示重启应用。没有本 boot、
+同 namespace 的 `.sandbox_seen` 证据时，普通 FUSE 根（root=`/` 或 `/0`）不卸不 bind，报
+`sandbox_skip`；目标被别的挂载层占用（例如残留的 f2fs bind）同样 `sandbox_skip`，不写失败行，
+也不进入 180 秒重试。沙箱 umount 没卸干净、回滚失败或原 FUSE 根恢复失败时按 `rollback`/
+`sandbox_stale` 上报并保留现状，不把父根叠在残留沙箱上，也不谎报可重试的 `sandbox_gone`。
 
-沙箱恢复后隔离重新生效，识别锚点也回来了，后续修复才有对象。
-
-1.4.2 起收紧了这条路径。主扫描要求 `/storage/emulated/0` 的栈顶就是本包沙箱、
-且只有一层：叠层（`n>1`）报 `rollback`，栈顶被别的层盖住（`n=1` 但不是本包）
-报 `sandbox_stale`，都不登记 `.sandbox_seen`，提示重启应用。没有本 boot、同
-namespace 的 `.sandbox_seen` 证据时，普通 FUSE 根（root=`/` 或 `/0`）不卸不
-bind，报 `sandbox_skip`；目标被别的挂载层占用（例如残留的 f2fs bind）同样
-`sandbox_skip`，不写失败行，也不进入 180 秒重试。沙箱 `umount` 没卸干净、回滚
-失败或原 FUSE 根恢复失败时按 `rollback`/`sandbox_stale` 上报并保留现状，不再
-把父根叠在残留沙箱上，也不谎报可重试的 `sandbox_gone`。
-
-重建沙箱和 `repair_one` 共用 `.repairs` 的失败退避：同包同目标 180 秒内不重试，
-key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT` 带 `retry=`。
-进程匹配按 `ps args` 的基础包名，`pkg:push` 这类子进程同样按基础包名查配置和
-身份，并按所在 namespace 与主进程分别处理。应用视图回退（ALT）已删除：1.4.2 起
-不再拿应用内 `/storage/emulated/0/...` 当源，应用 ns 看不到 `/mnt` 时直接失败，
-避免在源不可见时静默禁用预检。
-
-几种故障态要分开看：
-
-- **可重建（`sandbox_gone`）**：应用 namespace 里已经没有沙箱挂载，但还能看到宿主
-  重挂后的新 FUSE（`/mnt/user/0/emulated` 或 `/storage/emulated` 的设备号等于宿主）。
-  模块按上面的步骤重新 bind 沙箱，再补共享目录。源只从宿主
-  `/mnt/user/0/emulated/0/...` 取；应用 ns 看不到该源时直接失败。升级/首次扫描
-  没有历史 `.sandbox_seen` 时，只要沙箱目录存在且属主等于进程 uid，也会按
-  “曾经隔离过”重建，但只限目标本来没有挂载（n=0）；普通 FUSE 根（n>0）不拆，
-  报 `sandbox_skip`。
-  `.sandbox_seen` 记录 `pkg|boot|ns|uid|starttime|SB`：同 boot 同 ns 且 uid、
-  `/proc/<pid>/stat` 第 22 字段 starttime 都一致才直接通过（内核会把同一个 ns inode
-  回收复用给别的进程，只按 ns 匹配会把本来没有 `/storage` 的 isolated 子进程误判成
-  主进程）；只有该包只剩别的 boot 的旧行、本 boot 一行都没有时才拒绝兜底；本 boot 有
-  任意 ns 行（应用重启换了 ns）时允许 n=0 的“源+属主”回落。1.5.7 及更早的四段旧行
-  没有 uid/starttime，按“无证据”处理，回落到“源存在 + 属主匹配”。
-  注意：如果共享目录源在应用 ns 里不可见，模块会把刚 bind 的沙箱回滚，不会留下空沙箱。
-- **不是隔离对象（`na`）**：uid 90000–99999 的 isolated 子进程，或本 boot 没有任何该包的
-  `.sandbox_seen` 证据、且应用 ns 里连 `/storage` 都没有的进程，只报 `na` 并写
-  “isolated/无 storage，跳过”，不写失败退避、不计 broken。有 seen 证据的普通应用即使
-  has-storage=0 也仍按真实丢失处理（尝试重建/写 180 秒退避），不会被误判成 na。所有
-  `gone` 失败行都会重试，日志统一标“下一轮重试”；同一事件在退避/重试期间只记一次，
-  事件消失后清签名，下次真丢再记。
-- **安全跳过（`sandbox_skip`）**：没有本 boot、同 namespace 的 `.sandbox_seen` 证据，
-  而目标 `/storage/emulated/0` 仍是普通 FUSE 根（root=`/` 或 `/0`）；或目标已经被别的
-  挂载层/残留沙箱占用。此时拆根或重建可能挂错目录，模块不卸不 bind，不写失败行，也不会
-  在 180 秒后重试；重启该应用让 SI 重建 namespace，下一次健康扫描登记证据后再丢沙箱
-  才会自动重建。
-- **回滚/叠层残留（`skipped=rollback` / `status.json` 的 `sandbox_rollback`）**：沙箱 `umount`
-  没卸干净、原 FUSE 根恢复失败，或主扫描发现 target 叠了多层；模块保留残留挂载，不把父根
-  叠回去，也不谎报可重试的 `sandbox_gone`。重启该应用收敛。
-- **僵死（`sandbox_stale`）**：应用 namespace 里的沙箱还是旧设备号（实测 `0:286`），
-  宿主已经是新设备号（`0:318`）；应用内读 `/storage/emulated/0/...` 报
-  `Transport endpoint is not connected`。旧 FUSE 会话已经不存在，跨 namespace bind
-  会 `EINVAL`，卸掉旧挂载也拿不到新 FUSE；模块只能报 `skipped=sandbox_stale`，
-  不碰挂载，需要重启该应用让 SI 重建 namespace。扫描时沙箱本身是 FUSE 且设备号在宿主
-  `/proc/1/mountinfo` 里查不到，或者主扫描发现 target 栈顶不是本包沙箱、回滚/原根恢复
-  失败，都会归到这里；真正挂在别的层的健康沙箱仍报 `skipped=layer`。
+重建沙箱和 `repair_one` 共用 `.repairs` 的失败退避：同包同目标 180 秒内不重试，key 含 FUSE
+设备号、boot 和 namespace，任一变化立即失效，`RESULT` 带 `retry=`。进程匹配按 `ps args` 的
+基础包名，`pkg:push` 这类子进程同样按基础包名查配置和身份，并按所在 namespace 与主进程分别
+处理。应用视图回退（ALT）已删除：应用 ns 看不到 `/mnt` 时直接失败，避免在源不可见时静默
+禁用预检。
 
 ### 不是 ColorOS 专有
 
@@ -225,3 +178,107 @@ kprobe 挂 `path_mount`/`path_umount`，读 tracefs 的 `trace_pipe`：
 - **churn 熔断**：同一目标反复被拆时暂停并重试，避免和 SI 抢挂载；
 - **假活只提示**：kprobe 在响但 `trace_pipe` 读不到时标记 `blind`，不自动重建；
 - 只处理主用户（user 0）和 FUSE 存储；不恢复已删除文件，不修改 SI 配置。
+
+## A17 应用列表：PackageInfoList 与 server fallback
+
+Android 17 的 `IPackageManager.getInstalledPackages(long, int)` 返回类型从
+`ParceledListSlice` 改为 `PackageInfoList`；DEX 方法引用把返回类型算进签名，按旧签名编译的
+调用点在 A17 上会抛 `NoSuchMethodError`/`NoClassDefFoundError`。SI 在列表链路上有 catchall，
+异常被吞掉后返回空列表，界面就是 SI 应用列表为空。
+
+SI 的 `server-v355.dex` 是独立 root server 进程加载的。原版 `k` 类里的列表方法有两个
+`getInstalledPackages` invoke（文件偏移 `0x01c38c`、`0x01c3a8`）仍按旧签名；A17 上第一次调用
+失败后，catchall 返回空列表，再走内置 fallback：
+
+```text
+ServiceManager.getService("activity")
+  → transact(0x5f5f5352, action=7)
+  → main.dex 的 a1 action 7 读取 SI 自己的 ParcelableListSlice
+```
+
+所以 main.dex 的 a1 修好（能解析 A17 返回、把结果写回 SI 自协议）后，列表即可恢复。2.0 的 a1
+action 7 调用 a2：`a2.e` 用反射取 `IPackageManager.getInstalledPackages(long, int)`，`a2.f` 判断
+返回对象，`instanceof List` 直接用，否则反射 `getClass().getMethod("getList")`，空/异常/非 List
+回 `Collections.emptyList()`。a1 的 action 8 保留原语义，不在 SI 的列表 fallback 链上。
+
+`server-v355` 不进入 2.0 单 dex 交付：SI daemon 每次启动（含开机）会把内嵌原版写回 server dex，
+替换不持久；A17-only 的 03（325,984 B / `7a941f35…`）直接引用 `PackageInfoList`，不是 A15–A17
+通用资产；没有归档真机证据。03 仅作为 A17 可选兜底/诊断件，不在 `assets/`，没有安装/恢复脚本，
+不写“已集成”。
+
+## MediaProvider 导出规则、applyBatch、DownloadProvider
+
+**导出规则**：SI 通过 hook `ServiceManager` 返回值把 `IActivityManager` 换成自己的代理，应用
+启动时 `ActivityThread` 取到代理，`publishContentProviders` 才会把 MediaProvider 包成带 q0 规则
+的 wrapper。A17 的服务查找路径变为 `sCache → rawGetService → getService2`，返回
+`android.os.Service` / `ServiceWithMetadata`；原版 SI 的 `u0.invoke` 只处理 `getService`/
+`addService`，`getService2` 落入默认分支，ActivityThread 缓存到裸 `IActivityManager`，wrapper
+不执行，`relative_path` 从不改写。A15 release 走旧 `getService`；A15 QPR1/QPR2、A16/A17 的
+union 形态不同。2.0 的 `u0` 覆盖 `getService`/`checkService`/`getService2`/`checkService2`，只对
+`activity`/`vold` 且返回非 `IBinder` 时进入 `u2` 反射适配，同一 binder 返回原对象，其它服务
+原样返回。
+
+**applyBatch**：q0 的改写挂在单条 insert/update/bulkInsert 上；provider wrapper 的事务白名单按
+“已实现的方法”生成，applyBatch 不在其中。`ContentProviderNative` 的
+`APPLY_BATCH_TRANSACTION = FIRST_CALL_TRANSACTION + 19`（A15–A17 均为 20），整个批次原样透传：
+批量 insert 不迁移，批量 update 能把已导出文件移回源目录。2.0 的 `r.applyBatch` 按 provider 分派，
+`x3` 逐 op 反射取 URI 和 `mValues` 复用单条规则，结果数组/下标/back-reference 对齐；无法安全
+改写时整批 `SecurityException`，非隔离 uid 早退 forward。
+
+**DownloadProvider**：独立 provider，有自己的 `hint` 和路径解析，不经过 MediaProvider 的 q0。
+原版 `v` 的 insert/bulkInsert 已按规则改写 hint，但 applyBatch 不拦、`v.f` 没有 target 幂等判断、
+`v.d` 只处理 `/my_downloads` 集合。2.0 的 `v.f` 做 canonical 化、拒绝 `..`、已在 target 内幂等；
+`v.d` 对 `/my_downloads` 和 `/my_downloads/<id>` 前缀匹配；`r.applyBatch` 对 downloads 的 insert
+逐 op 调 `v.f`，update/delete 原样。A17 `local_uri` placeholder、delete 只删数据库行、MTP 行为
+属平台语义，不改。
+
+## 通用 dex 的设计取舍
+
+- **一份 dex**：A17 的返回类型与 A15/A16 不同，直接引用新类型会让旧系统在类加载/调用时失败；
+  按版本拆又要求用户选文件。2.0 只接受官方 90,740 B / `a407674b…` 作为 base，整份替换；a1/a2
+  运行时判断返回对象，u0/u2 用反射探测 `Service`/`ServiceWithMetadata`，缺类/缺方法回原路径或
+  空跑。
+- **窄 hook**：全局包装方案（每个 getService2/checkService2 都重建 union）会让非目标服务换
+  对象、在启动期放大反射/分配，并直接引用新系统类；2.0 只处理 activity/vold、同 binder 返回
+  原对象，非目标 getService2 只做少量 `equals`。
+- **失败回滚**：所有新分支的空值、异常、结构不符回原路径或 fail-closed；a1 不做逐包
+  `getPackageInfo` 的 N+1；`r.applyBatch` 的 uid 优先取 `Binder.getCallingUid()`，attr 只在
+  拿不到时兜底。
+
+## 证据与边界
+
+- **已验证（模拟器/构建）**：115 个类；baksmali→assemble 往返 byte-identical；禁止直接引用
+  `PackageInfoList`/`android.os.Service`/`ServiceWithMetadata` 的扫描为 0；A15/A17 模拟器
+  `dex2oat` 0 个 verification error、115/115 类加载，harness 58/58；构建可复现 92,856 B /
+  `2f3ca326…`。
+- **未验证**：A16、A15 QPR1/QPR2 无真镜像，相关 Service union 只有 AOSP 静态核对 + harness
+  桩；2.0 dex 没有真机 E2E，真实 `IPackageManager`/PMS、真实 MediaProvider/DownloadProvider、
+  `applyBatch` 的真实 `onTransact`、`q0.b` 跨 uid update、Download E2E 都未跑；真机冷启动未做
+  A/B；“≤ 原版 +10%”是目标不是结果；hidden API/OEM ROM 差异未逐一验证。
+- **不要写成“全量验收通过”**：可以说“A15/A17 模拟器 ART + 58/58 harness 通过，A15–A17 共用
+  一份 dex”；A16/QPR/真机/冷启动仍是升级后需要用户自行确认的边界。
+- **挂载侧**：A17 真机（OnePlus PJZ110 / ColorOS V17.0.0）有 MediaProvider 被杀、vold 重挂
+  FUSE 的现场证据；Android 13–16 只做了 AOSP/toybox 源码核对。2.0 本次未重新做挂载真机回归。
+
+## 调用链与文件位置（main.dex）
+
+| 类/方法 | 作用 |
+|---|---|
+| `Lrikka/storageisolation/a1;` action 7/8 | SI 应用列表动作；action 7 是 server fallback 实际走的链路 |
+| `Lrikka/storageisolation/a2;` `e` / `f` | 反射 `getInstalledPackages`，把 `List`/`getList()` 两种返回适配成列表 |
+| `Lrikka/storageisolation/u0;` `invoke` | 处理 `getService` / `checkService` / `getService2` / `checkService2` / `addService` |
+| `Lrikka/storageisolation/u2;` `a` | 反射重建 `Service` / `ServiceWithMetadata` union；同 binder 返回原对象 |
+| `Lrikka/storageisolation/q0;` `g` / `b` / `c` | observer 规则匹配、单条 update 门、insert 规则 |
+| `Lrikka/storageisolation/r;` `applyBatch` / `c` | 批量入口分派、事务码注册 |
+| `Lrikka/storageisolation/x3;` `a` / `media` | 逐 op 反射改写（Media/Download），结果数组对齐 |
+| `Lrikka/storageisolation/v;` `f` / `d` | Download `hint` 改写、`/my_downloads` 前缀匹配 |
+| `Lrikka/storageisolation/h1;` | 通过真实 `ContentProviderProxy` 计算并注册 applyBatch 事务码（20） |
+
+核对命令（需要 baksmali/dexdump）：
+
+```sh
+sha256sum assets/main.dex
+# 2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+java -cp "<smali 依赖>" org.jf.baksmali.Main disassemble -o /tmp/si-main assets/main.dex
+dexdump -d assets/main.dex | grep -n -E 'a1;|u0;|q0;|r;|v;|x3;'
+```
