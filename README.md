@@ -117,8 +117,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库：[lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 当前版本：v2.0 / versionCode 2000；版本只有一个来源：`module.prop` 的 `version=v2.0`
-  与 `versionCode=2000`。
+- 当前版本：v2.0.1 / versionCode 2010；版本只有一个来源：`module.prop` 的 `version=v2.0.1`
+  与 `versionCode=2010`。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向

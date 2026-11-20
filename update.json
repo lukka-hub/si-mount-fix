@@ -1,6 +1,6 @@
 {
-  "version": "v2.0",
-  "versionCode": 2000,
-  "zipUrl": "https://github.com/lukka-hub/si-mount-fix/releases/download/v2.0/si-mount-fix.zip",
+  "version": "v2.0.1",
+  "versionCode": 2010,
+  "zipUrl": "https://github.com/lukka-hub/si-mount-fix/releases/download/v2.0.1/si-mount-fix.zip",
   "changelog": "https://github.com/lukka-hub/si-mount-fix/raw/main/CHANGELOG.md"
 }

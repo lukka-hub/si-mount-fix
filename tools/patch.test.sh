@@ -73,8 +73,8 @@ grep -q "^LEGACY_PATCH_SHA=$LEGACY_SHA_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁 sha" || bad "脚本 LEGACY_PATCH_SHA 不对"
 grep -q "^LEGACY_PATCH_SIZE=$LEGACY_SIZE_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁大小" || bad "脚本 LEGACY_PATCH_SIZE 不对"
-grep -q '^version=v2.0$' module.prop && grep -q '^versionCode=2000$' module.prop \
-  && ok "module.prop 版本 v2.0 / 2000" || bad "module.prop 版本不对"
+grep -q '^version=v2.0.1$' module.prop && grep -q '^versionCode=2010$' module.prop \
+  && ok "module.prop 版本 v2.0.1 / 2010" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -83,10 +83,10 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v2.0"' update.json && grep -q '"versionCode": 2000' update.json \
-  && ok "update.json 指向 v2.0/2000" || bad "update.json 版本不对"
-grep -q 'releases/download/v2.0/si-mount-fix.zip' update.json \
-  && ok "update.json 指向 v2.0 release tag" || bad "update.json zipUrl 不对"
+grep -q '"version": "v2.0.1"' update.json && grep -q '"versionCode": 2010' update.json \
+  && ok "update.json 指向 v2.0.1/2010" || bad "update.json 版本不对"
+grep -q 'releases/download/v2.0.1/si-mount-fix.zip' update.json \
+  && ok "update.json 指向 v2.0.1 release tag" || bad "update.json zipUrl 不对"
 grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json changelog 指向 main" || bad "update.json changelog 不对"
 
@@ -1029,8 +1029,9 @@ grep -q 'patchPromptPath' webroot/index.html && grep -q '\.patch_prompted\.' web
   && ok "WebUI 使用按目标/版本区分的提示标记" || bad "WebUI 提示标记没有按目标/版本区分"
 grep -q 'PROMPT_TAG' scripts/si-patch.sh && grep -q '\.patch_prompted\.\$PROMPT_TAG' scripts/si-patch.sh \
   && ok "si-patch.sh 提示标记按目标/版本区分" || bad "si-patch.sh 提示标记没有按目标/版本区分"
-grep -q '兼容性检测（main.dex）' webroot/index.html \
-  && ok "补丁卡片标题改为兼容性检测" || bad "补丁卡片标题不对"
+grep -q '<details class="card fold-card" id="patchCard"' webroot/index.html \
+  && grep -q '<span class="fold-title">兼容性检测</span>' webroot/index.html \
+  && ok "补丁卡片改为折叠的兼容性检测卡片" || bad "补丁卡片折叠结构/标题不对"
 grep -q 'function isSupportedSdk' webroot/index.html \
   && grep -q 'function sdkName' webroot/index.html \
   && grep -q 'function capabilityText' webroot/index.html \
@@ -1111,7 +1112,7 @@ grep -q '已应用，重启手机生效' webroot/index.html && ok "WebUI 应用�
 grep -q '已恢复原版，重启手机生效' webroot/index.html && ok "WebUI 恢复成功文案" \
   || bad "WebUI 缺少恢复成功文案"
 grep -q "p.lastAction === 'restored'" webroot/index.html \
-  && grep -q '已恢复原版，重启生效（Zygisk 模块在开机时加载）。' webroot/index.html \
+  && grep -q '已恢复原版，重启手机生效（Zygisk 模块在开机时加载）。' webroot/index.html \
   && ok "restore 成功后卡片显示已恢复原版/重启生效" \
   || bad "restore 成功卡片没有重启提示"
 grep -q "p.lastAction === 'applied'" webroot/index.html \
@@ -1156,7 +1157,7 @@ grep -q 'PENDING_REBOOT' scripts/si-patch.sh \
   && grep -q 'patchPendingHint(p)' webroot/index.html \
   && grep -q "p.pendingReboot = action === 'apply'" webroot/index.html \
   && ok "check/UI 接线 PENDING_REBOOT 与动作后待重启" || bad "PENDING_REBOOT 接线缺失"
-grep -q "hint.textContent = '兼容性检测：当前 dex 已注入。' + (rebootHint ? rebootHint : '')" webroot/index.html \
+grep -q "hint.textContent = '当前 dex 已注入。' + (rebootHint ? rebootHint : '')" webroot/index.html \
   && ok "patched 始终显示已注入，pending 时追加重启提示" || bad "patched 已注入/待重启提示不对"
 grep -q 'PATCH_CACHE_TTL = 30000' webroot/index.html \
   && grep -q 'patchCacheUsable' webroot/index.html \
@@ -1207,10 +1208,11 @@ else
 fi
 grep -Fq "var styles = ['cb3', 'cb2', 'sync']" webroot/index.html \
   && ok "桥接探测仍 cb3 → cb2 → sync" || bad "桥接探测顺序被改"
-grep -q '已注入，可恢复原版' webroot/index.html && ok "WebUI 已注入文案" \
-  || bad "WebUI 缺少已注入文案"
+grep -q "badge = '当前 dex 已注入'" webroot/index.html \
+  && grep -q "badgeTone = 'good'" webroot/index.html \
+  && ok "WebUI 已注入摘要与绿色状态" || bad "WebUI 缺少已注入摘要/绿色状态"
 grep -q "st === 'patched-legacy'" webroot/index.html \
-  && grep -q 'badge = .旧版注入.' webroot/index.html \
+  && grep -q "badge = '旧版已注入'" webroot/index.html \
   && grep -q '检测到旧版注入' webroot/index.html \
   && ok "WebUI 1.5.8 旧版注入 badge/升级提示" || bad "WebUI legacy 提示缺失"
 grep -q "applyBtn.textContent = st === 'patched-legacy' ? '升级到通用版' : '应用补丁'" webroot/index.html \
@@ -1230,7 +1232,7 @@ for _id in btnPatchApply btnPatchRestore btnPatchForce btnPatchCheck; do
   grep -q "class=\"[^\"]*act-btn[^\"]*\" id=\"$_id\"" webroot/index.html \
     || bad "补丁按钮缺少 act-btn：$_id"
 done
-_pa_block=$(sed -n '/<div class="btn-grid" id="patchActions"/,/^  <\/div>/p' webroot/index.html)
+_pa_block=$(sed -n '/<div class="btn-grid" id="patchActions"/,/^    <\/div>/p' webroot/index.html)
 for _id in btnPatchApply btnPatchRestore btnPatchForce btnPatchCheck; do
   case "$_pa_block" in
     *"id=\"$_id\""*) ;;
@@ -1241,18 +1243,18 @@ case "$_pa_block" in
   *patchTiming*) bad "检查耗时仍在按钮网格内" ;;
   *) ok "检查耗时已移出按钮网格" ;;
 esac
-_patch_html=$(sed -n '/<section class="card" id="patchCard"/,/^<\/section>/p' webroot/index.html)
+_patch_html=$(sed -n '/<details class="card fold-card" id="patchCard"/,/^<\/details>/p' webroot/index.html)
 if printf '%s\n' "$_patch_html" | grep -Eq 'style="[^"]*(width|flex|height|padding|margin|font-size)'; then
   bad "补丁卡片仍有内联尺寸样式"
 else
   ok "补丁按钮无内联尺寸样式"
 fi
 grep -q '.btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}' webroot/index.html \
-  && grep -q '#patchActions{margin-top:14px}' webroot/index.html \
+  && grep -q '#patchActions{margin-top:12px}' webroot/index.html \
   && grep -q '#patchTiming{display:block;margin-top:8px' webroot/index.html \
-  && grep -q '#patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap' webroot/index.html \
-  && grep -q '#patchCard .card-head{.*flex-wrap:wrap' webroot/index.html \
-  && ok "按钮同尺寸/检查耗时独立行/badge 右对齐 CSS" || bad "按钮/badge CSS 未归一化"
+  && grep -q '#patchCard .fold-summary .pill{font-size:11.5px;padding:3px 9px}' webroot/index.html \
+  && grep -q '.fold-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}' webroot/index.html \
+  && ok "按钮同尺寸/检查耗时独立行/折叠摘要右对齐 CSS" || bad "按钮/折叠摘要 CSS 未归一化"
 if grep -q '\.patch-actions{\|\.patch-check-row{' webroot/index.html; then
   bad "仍存在单独的 patch-actions/patch-check-row 网格规则"
 else
@@ -1267,15 +1269,17 @@ grep -q "st === 'unknown' || st === 'no-target' || st === 'unsupported'" webroot
   && ok "no-target/unsupported/unknown 都显示卡片，legacy 可见" \
   || bad "no-target/unsupported 可见性不对"
 grep -q "var tone = err ? 'bad' : (st === 'patched' ? 'good' : 'warn');" webroot/index.html \
-  && grep -q "card.className = 'card tone-' + tone;" webroot/index.html \
+  && grep -q "card.className = 'card fold-card tone-' + tone;" webroot/index.html \
   && ok "卡片按状态加 tone-good/tone-warn/tone-bad" || bad "卡片 tone 接线缺失"
 grep -q '.card.tone-warn{border-color:var(--warn)}' webroot/index.html \
   && grep -q '.card.tone-good{border-color:var(--good)}' webroot/index.html \
   && grep -q '.card.tone-bad{border-color:var(--bad)}' webroot/index.html \
   && ok "tone 边框 CSS 兼容浅色/深色变量" || bad "tone 边框 CSS 缺失"
-grep -q '.card.tone-warn .card-head h2,.card.tone-warn #patchBadge{color:var(--warn)}' webroot/index.html \
-  && ok "未注入时标题/徽标黄色" || bad "tone-warn 标题/徽标颜色缺失"
-grep -q "badge = '未检测到'" webroot/index.html \
+grep -q '#patchCard.tone-warn .fold-title{color:var(--warn)}' webroot/index.html \
+  && grep -q '#patchCard.tone-good .fold-title{color:var(--good)}' webroot/index.html \
+  && grep -q '#patchCard.tone-bad .fold-title{color:var(--bad)}' webroot/index.html \
+  && ok "未注入/已注入/失败时折叠标题按状态着色" || bad "折叠标题状态颜色缺失"
+grep -q "badge = '未装兼容插件'" webroot/index.html \
   && grep -q "badge = '不适用'" webroot/index.html \
   && grep -q '仅支持 Android 15/16/17（SDK 35/36/37）' webroot/index.html \
   && ok "no-target/unsupported 显示原因且按钮禁用" || bad "no-target/unsupported 解释缺失"
@@ -1283,8 +1287,10 @@ grep -q 'p.sdkName = String(p.SDK_NAME' webroot/index.html \
   && grep -q 'p.caps = String(p.CAPS' webroot/index.html \
   && ok "fillPatchData 解析 SDK_NAME/CAPS" || bad "SDK_NAME/CAPS 未解析"
 grep -q 'bits.unshift(patchSdkText(p))' webroot/index.html \
-  && grep -q "bits.push('能力：' + patchCapsText(p))" webroot/index.html \
-  && ok "卡片 detail 显示 Android 版本与能力" || bad "卡片未显示版本/能力"
+  && grep -q "('检测详情：' + bits.join(' · '))" webroot/index.html \
+  && ! grep -q 'patchCapsText' webroot/index.html \
+  && ok "检测详情只留 SDK/模块信息，能力清单独立渲染不重复" \
+  || bad "检测详情仍重复能力清单"
 if grep -q "sdk !== '37'\|state.patchSdk === '37'\|state.patchSdk !== '37'\|p.sdk === '37'" webroot/index.html; then
   bad "WebUI 仍有 37 硬编码门禁"
 else
@@ -1345,22 +1351,25 @@ grep -q 'PATCH_SIZE_EXPECT=92856' tools/build.sh && grep -q 'PATCH_SIZE" = "$PAT
   || bad "构建脚本没有校验通用 dex 大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-grep -q 'releases/download/v2.0' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
-  && ok "update.json zipUrl/changelog 指向 v2.0 + main" || bad "update.json 发布链不对"
+grep -q 'releases/download/v2.0.1' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
+  && ok "update.json zipUrl/changelog 指向 v2.0.1 + main" || bad "update.json 发布链不对"
 grep -q 'V_TAG=v$V_MAJOR.$V_MINOR' tools/build.sh \
-  && ok "构建脚本为 v2.0 推导 v2.0 发布 tag" || bad "构建脚本发布 tag 规则缺失"
+  && grep -q 'V_TAG=$V_PROP' tools/build.sh \
+  && ok "构建脚本按两段/三段推导发布 tag（v2.0.1 → v2.0.1）" || bad "构建脚本发布 tag 规则缺失"
 grep -Fq 'V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100))' tools/build.sh \
-  && ok "构建脚本允许两段 v2.0 → 2000" || bad "构建脚本不支持两段版本"
-[ -f CHANGELOG.md ] && grep -q '^## v2.0' CHANGELOG.md \
+  && grep -Fq 'V_CODE_EXPECT=$((V_CODE_EXPECT + V_PATCH * 10))' tools/build.sh \
+  && ok "构建脚本支持两段/三段编码（v2.0.1 → 2010）" || bad "构建脚本不支持两段/三段版本"
+[ -f CHANGELOG.md ] && grep -q '^## v2.0.1（versionCode 2010）' CHANGELOG.md \
+  && grep -q '^## v2.0' CHANGELOG.md \
   && ! grep -q '^## 1.5.8.1' CHANGELOG.md \
-  && ok "CHANGELOG 只保留 v2.0.x 条目" || bad "CHANGELOG 版本段落不对"
+  && ok "CHANGELOG 含 v2.0.1 条目且保留 v2.0.x" || bad "CHANGELOG 版本段落不对"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '92,856' README.md && grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' README.md \
-  && grep -q 'v2.0' README.md && grep -q 'versionCode 2000' README.md \
-  && ok "README 写通用 dex 大小/完整哈希及 v2.0/2000" || bad "README 哈希/大小/版本不对"
+  && grep -q 'v2.0.1' README.md && grep -q 'versionCode 2010' README.md \
+  && ok "README 写通用 dex 大小/完整哈希及 v2.0.1/2010" || bad "README 哈希/大小/版本不对"
 grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' CHANGELOG.md \
   && ok "CHANGELOG 写完整通用 dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md CHANGELOG.md \
@@ -1398,6 +1407,77 @@ if grep -q '^[[:space:]]*\.result\.info' webroot/index.html; then
   ok "info 结果有独立样式"
 else
   bad "缺少 .result.info 样式"
+fi
+
+# ---------- 24b) 2.0.1 WebUI 结构：首屏乐观/折叠/懒加载/无预览残留 ----------
+grep -Fq '<details class="card fold-card" id="patchCard" hidden>' webroot/index.html \
+  && grep -Fq '<details class="card fold-card" id="logCard">' webroot/index.html \
+  && grep -Fq '<details class="card fold-card" id="diagCard">' webroot/index.html \
+  && ok "兼容性/日志/诊断均为默认关闭的 details 卡片" || bad "折叠卡片结构不对"
+if grep -Eq '<details class="card fold-card" id="(patchCard|logCard|diagCard)"[^>]*[[:space:]]open' webroot/index.html; then
+  bad "折叠卡片默认带 open 属性"
+else
+  ok "折叠卡片默认不带 open"
+fi
+_order_ok=1; _prev=0
+for _pat in 'id="statePill"' 'id="patchCard"' 'id="btnRefresh"' 'id="cfgCard"' 'id="btnApps"' 'id="logCard"' 'id="diagCard"'; do
+  _ln=$(grep -n "$_pat" webroot/index.html | head -1 | cut -d: -f1)
+  if [ -n "$_ln" ] && [ "$_ln" -gt "$_prev" ]; then _prev=$_ln; else _order_ok=0; fi
+done
+[ "$_order_ok" = 1 ] \
+  && ok "卡片顺序：状态→兼容性→操作→配置→应用目录→日志→诊断" \
+  || bad "卡片顺序不对"
+_caps_ln=$(grep -n 'id="patchCaps"' webroot/index.html | head -1 | cut -d: -f1)
+_hint_ln=$(grep -n 'id="patchHint"' webroot/index.html | head -1 | cut -d: -f1)
+_detail_ln=$(grep -n 'id="patchDetail"' webroot/index.html | head -1 | cut -d: -f1)
+[ -n "$_caps_ln" ] && [ -n "$_hint_ln" ] && [ -n "$_detail_ln" ] \
+  && [ "$_caps_ln" -lt "$_hint_ln" ] && [ "$_hint_ln" -lt "$_detail_ln" ] \
+  && ok "兼容性展开：能力清单在前、技术详情沉底" || bad "兼容性展开顺序不对"
+grep -q "st === 'no-target' || st === 'unsupported' || st === 'unknown'" webroot/index.html \
+  && grep -q 'if (err || !isSupportedSdk(sdk) ||' webroot/index.html \
+  && ok "no-target/unsupported/unknown/读取失败不显示能力清单" \
+  || bad "能力清单未按状态隐藏"
+grep -q 'function ensureLogLoaded' webroot/index.html \
+  && grep -q 'function refreshLogIfOpen' webroot/index.html \
+  && grep -q "logCard.addEventListener('toggle'" webroot/index.html \
+  && [ "$(grep -c 'tail -n 40' webroot/index.html)" = 1 ] \
+  && ! grep -q '}).then(loadLog)' webroot/index.html \
+  && ok "日志默认折叠、展开才 tail，刷新只标脏" || bad "日志懒加载接线不对"
+grep -q 'BOOT_MIN_MS = 1200' webroot/index.html \
+  && grep -q 'BOOT_MAX_MS = 10000' webroot/index.html \
+  && grep -q 'STATUS_ERR_DELAY = 1200' webroot/index.html \
+  && grep -q "if (booting()) { setBanner('', 'info'); return; }" webroot/index.html \
+  && grep -q 'function noteStatusFailure' webroot/index.html \
+  && grep -q 'function renderBootSkeleton' webroot/index.html \
+  && ok "首屏乐观：1.2s 宽限/10s 上限/错误延迟/探测期静默" || bad "首屏乐观接线缺失"
+grep -Fq 'items.slice().sort(function (a, b)' webroot/index.html \
+  && grep -q 'bannerSig' webroot/index.html \
+  && ok "banner 按 bad→warn→info 排序并做内容去重" || bad "banner 排序/去重缺失"
+grep -Fq 'id="toast"' webroot/index.html \
+  && grep -q "el.classList.add('show')" webroot/index.html \
+  && ok "toast 与 banner 分离" || bad "toast 未独立"
+grep -q 'function setCfgCardVisible' webroot/index.html \
+  && grep -q 'setCfgCardVisible(false)' webroot/index.html \
+  && ok "无桥接/无 root 隐藏不可用配置表单" || bad "配置表单显隐未接线"
+grep -q '@media (max-width:359px)' webroot/index.html \
+  && grep -q '.btn-grid{grid-template-columns:1fr}' webroot/index.html \
+  && grep -q 'a:focus-visible' webroot/index.html \
+  && grep -q '.btn.tiny{height:34px' webroot/index.html \
+  && ok "320px 单列/焦点样式/34px 小按钮" || bad "移动端/可访问性样式缺失"
+if grep -q '请从\|KsuWebUI 打开\|打开本页\|本面板' webroot/index.html; then
+  bad "WebUI 仍有从模块/KsuWebUI 打开本页的冗余提示"
+else
+  ok "WebUI 已删除从模块/KsuWebUI 打开本页的冗余提示"
+fi
+if grep -qi 'preview' webroot/index.html; then
+  bad "生产 WebUI 含预览残留（PREVIEW/preview-bar/mock）"
+else
+  ok "生产 WebUI 无 PREVIEW/__SI_PREVIEW__/preview-bar 残留"
+fi
+if grep -q '__SI_SNAPSHOT__' webroot/index.html && grep -q 'snapshot.js?t=' webroot/index.html; then
+  ok "保留生产 snapshot.js 加载器"
+else
+  bad "生产 snapshot.js 加载器缺失"
 fi
 
 # ---------- 25) WebUI 动作判定（node 实跑生产函数） ----------
