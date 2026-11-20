@@ -85,7 +85,7 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   || bad "module.prop 仍有 siPatchServer"
 grep -q '"version": "v2.1.0"' update.json && grep -q '"versionCode": 2100' update.json \
   && ok "update.json 指向 v2.1.0/2100" || bad "update.json 版本不对"
-grep -q 'releases/download/v2.1.0/si-mount-fix.zip' update.json \
+grep -q 'releases/download/v2.1/si-mount-fix.zip' update.json \
   && ok "update.json 指向 v2.1.0 release tag" || bad "update.json zipUrl 不对"
 grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json changelog 指向 main" || bad "update.json changelog 不对"
@@ -1351,7 +1351,7 @@ grep -q 'PATCH_SIZE_EXPECT=92856' tools/build.sh && grep -q 'PATCH_SIZE" = "$PAT
   || bad "构建脚本没有校验通用 dex 大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-grep -q 'releases/download/v2.1.0' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
+grep -q 'releases/download/v2.1' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json zipUrl/changelog 指向 v2.1.0 + main" || bad "update.json 发布链不对"
 grep -q 'V_TAG=v$V_MAJOR.$V_MINOR' tools/build.sh \
   && grep -q 'V_TAG=$V_PROP' tools/build.sh \
