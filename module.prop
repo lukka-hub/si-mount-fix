@@ -1,11 +1,11 @@
 id=si-mount-fix
-name=Storage Isolation Mount Fix
-version=v2.0
-versionCode=2000
+name=Storage Isolation 兼容与挂载
+version=v2.0.1
+versionCode=2010
 siPatchModule=zygisk-storage-isolation
 siPatchTarget=main.dex
 siPatchVersion=v29.0.1
 siPatchVersionCode=89
 author=宴生
-description=存储空间隔离挂载自愈（A13~A17）；兼容性检测：A15/A16/A17 通用 main.dex，按系统能力探测，不联网。
+description=面向 Storage Isolation（存储空间隔离）的两项并列能力：兼容性检测（一份 main.dex 通配 Android 15/16/17）与挂载自愈（补回丢失的共享目录挂载，事件驱动、失败回滚）。两者可一起使用，无先后顺序；不修改 SI 配置、不联网。
 updateJson=https://github.com/lukka-hub/si-mount-fix/raw/main/update.json
