@@ -1,11 +1,11 @@
 id=si-mount-fix
 name=Storage Isolation Mount Fix
-version=v2.0.0
+version=v2.0
 versionCode=2000
 siPatchModule=zygisk-storage-isolation
 siPatchTarget=main.dex
 siPatchVersion=v29.0.1
 siPatchVersionCode=89
 author=宴生
-description=存储空间隔离挂载自愈（A13~A17）；兼容性检测：A15/A16/A17 通用 main.dex，自包含，不联网。
+description=存储空间隔离挂载自愈（A13~A17）；兼容性检测：A15/A16/A17 通用 main.dex，按系统能力探测，不联网。
 updateJson=https://github.com/lukka-hub/si-mount-fix/raw/main/update.json
