@@ -146,6 +146,19 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}
 .btn[disabled]{opacity:.42;cursor:default;transform:none}
 .btn[data-armed="1"]{border-color:var(--warn);color:var(--warn)}
+/* 实验性功能：灰度入口，放在右上角状态 pill 下方 */
+.head-side{display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex:none}
+.btn.exp-trigger{background:transparent;color:var(--fg);opacity:.72;border-color:var(--line);height:30px;
+  font-size:11.5px;padding:0 10px;border-radius:8px;font-weight:500;letter-spacing:.02em;min-width:0}
+.btn.exp-trigger:hover,.btn.exp-trigger[aria-expanded="true"]{opacity:1;border-color:var(--muted)}
+.exp-card{border-style:dashed}
+.exp-row{display:flex;align-items:center;gap:8px;margin:0 0 8px}
+.exp-tag{flex:none;padding:1px 7px;border-radius:7px;background:var(--line2);color:var(--muted);
+  font-size:11px;border:1px solid var(--line)}
+.exp-title{font-size:13.5px;font-weight:600}
+.exp-card .hint{margin-bottom:10px}
+.exp-card .hint code{font-family:var(--mono);font-size:11.5px}
+.exp-card .muted.small{margin-top:8px}
 .btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .row-actions .act-btn{flex:1 1 120px}
 #patchDetail{margin-top:12px;padding-top:9px;border-top:1px dashed var(--line);font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
@@ -242,10 +255,46 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     <h1 class="t1">存储空间隔离 · 兼容与挂载</h1>
     <div class="t2"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></div>
   </div>
-  <span class="pill loading" id="statePill" role="status" aria-live="polite">读取中</span>
+  <div class="head-side">
+    <span class="pill loading" id="statePill" role="status" aria-live="polite">读取中</span>
+    <button type="button" class="btn exp-trigger" id="btnExp" aria-expanded="false"
+      aria-controls="expCard" title="实验性功能（灰度，默认不启用）">实验性功能</button>
+  </div>
 </header>
 
 <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+<details class="card fold-card exp-card" id="expCard" hidden>
+  <summary class="fold-summary">
+    <span class="fold-main">
+      <span class="fold-title">实验性功能</span>
+      <span class="pill" id="expBadge">未检查</span>
+    </span>
+    <span class="fold-side"><span class="fold-view">展开</span><span class="chev" aria-hidden="true"></span></span>
+  </summary>
+  <div class="fold-body">
+    <div class="exp-row">
+      <span class="exp-tag">灰度</span>
+      <span class="exp-title">尝试解决 companion 进程高占用</span>
+    </div>
+    <div class="hint neutral" id="expIntro">
+      针对 Zygisk 增强模块的 <code>zn-zygisk-companion</code> 偶发把单核吃满：
+      模块 native 层在「握手读」失败时没有退出路径，会无限重试。本功能把该分支改成失败即返回，
+      每个 ABI 只改 1 个字节，不碰 <code>main.dex</code>、不碰 SI 配置。
+      <br>现状：Zygisk Next 1.4 及以上已不再触发该路径，当前环境通常<strong>无法复现</strong>；
+      只有停在较旧 Zygisk Next（约 1.3.x）且确实遇到 companion 高 CPU 时，才建议尝试。
+    </div>
+    <div class="kv" id="expKv"></div>
+    <div class="btn-grid">
+      <button class="btn primary act-btn" id="btnSoApply" disabled>应用修复</button>
+      <button class="btn ghost act-btn" id="btnSoCheck" disabled>检查</button>
+      <button class="btn ghost act-btn" id="btnSoRestore" hidden disabled>还原原版</button>
+    </div>
+    <div class="muted small" id="expFoot">默认不启用；只写 <code>zygisk-storage-isolation/zygisk/*.so</code>，
+      保留原版备份（后缀 <code>.sieof-orig</code>），可随时还原。</div>
+    <div id="expResult" class="result" role="status" aria-live="polite" hidden></div>
+  </div>
+</details>
 
 <section class="card">
   <div class="card-head"><h2>状态</h2><span class="muted small" id="stamp">—</span></div>
@@ -847,7 +896,9 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     snapshotLogPending: null,
     patch: null, patchError: '', patchSdk: null, patchDismissed: false,
     patchMarked: false, patchMarkedKey: '', patchConfirm: null, patchConfirmTimer: null,
-    patchCache: null, patchCheckMs: 0, patchCheckTimedOut: false, patchCheckSource: ''
+    patchCache: null, patchCheckMs: 0, patchCheckTimedOut: false, patchCheckSource: '',
+    /* 实验性：companion 空转修复（灰度，默认收起） */
+    so: null, soError: '', soPending: false, soBusy: false, soOpen: false, soQueued: false
   };
 
   /* 一条命令同时取：uid（判断有没有 root）、文件是否存在/多大（区分空文件/没文件）、
@@ -2085,6 +2136,198 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     storePatchCache(p);
   }
 
+  /* ============================================================
+     实验性：companion 空转修复（zygisk .so 单字节补丁，灰度）
+     ============================================================ */
+  var SO_STATE_LABEL = {
+    original: '未修改（官方原版）',
+    patched: '已应用补丁',
+    partial: '部分 ABI 已打补丁',
+    unknown: '版本未知（已拒绝）',
+    'no-target': '未检测到模块'
+  };
+  /* 状态读取代次：动作开始时 ++，用于丢弃动作前发出的 check 回包 */
+  var soSeq = 0;
+
+  function parseKvText(text) {
+    var out = {};
+    var lines = String(text || '').split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var m = /^\s*([A-Z0-9_]+)\s*=(.*)$/.exec(lines[i]);
+      if (m) { out[m[1]] = m[2].trim(); }
+    }
+    return out;
+  }
+
+  function soRow(k, v) {
+    return '<div class="row"><span class="k">' + esc(k) + '</span>' +
+      '<span class="v">' + v + '</span></div>';
+  }
+
+  function showExpResult(title, body, tone) {
+    var el = $('expResult');
+    if (!el) { return; }
+    if (!title && !body) { el.hidden = true; el.innerHTML = ''; return; }
+    el.className = 'result' + (tone ? ' ' + tone : '');
+    el.innerHTML = '<div class="r-title">' + esc(title) + '</div>' +
+      (body ? '<div class="r-body">' + esc(body).replace(/\n/g, '<br>') + '</div>' : '');
+    el.hidden = false;
+  }
+
+  function renderExp() {
+    var card = $('expCard');
+    if (!card) { return; }
+    var s = state.so, err = state.soError, st = s ? String(s.SO_STATE || '') : '';
+    var badge = $('expBadge');
+    if (state.soPending && !s) {
+      badge.textContent = '检查中'; badge.className = 'pill info';
+    } else if (err) {
+      badge.textContent = '读取失败'; badge.className = 'pill bad';
+    } else if (!s) {
+      badge.textContent = '未检查'; badge.className = 'pill';
+    } else if (st === 'patched') {
+      badge.textContent = '已应用'; badge.className = 'pill good';
+    } else if (st === 'original') {
+      badge.textContent = '未修改'; badge.className = 'pill';
+    } else if (st === 'partial') {
+      badge.textContent = '部分应用'; badge.className = 'pill warn';
+    } else {
+      badge.textContent = '不可用'; badge.className = 'pill warn';
+    }
+
+    var kv = [];
+    if (err) {
+      kv.push(soRow('读取', esc(err)));
+    } else if (s) {
+      kv.push(soRow('状态', esc(SO_STATE_LABEL[st] || st || '未知')));
+      kv.push(soRow('模块', esc(s.SO_MODULE || 'zygisk-storage-isolation') +
+        (s.SO_TARGET_VERSION ? ' · ' + esc(s.SO_TARGET_VERSION) : '')));
+      kv.push(soRow('设备 ABI', esc(s.SO_PRESENT || '—')));
+      if (s.SO_PATCHED) { kv.push(soRow('已打补丁', esc(s.SO_PATCHED))); }
+      if (s.SO_UNKNOWN) { kv.push(soRow('未知版本', esc(s.SO_UNKNOWN))); }
+      kv.push(soRow('原版备份', s.SO_BACKUP_OK === '1' ? '可用' : '缺少（可自适应重建）'));
+    } else {
+      kv.push(soRow('状态', '点「检查」读取'));
+    }
+    $('expKv').innerHTML = kv.join('');
+
+    var ready = !!BR.ok && !state.soPending && !state.soBusy;
+    var applyBtn = $('btnSoApply'), checkBtn = $('btnSoCheck'), restoreBtn = $('btnSoRestore');
+    checkBtn.disabled = !ready;
+    applyBtn.disabled = !ready || (st !== 'original' && st !== 'partial');
+    applyBtn.textContent = (st === 'patched') ? '已应用' : (st === 'partial' ? '补齐修复' : '应用修复');
+    restoreBtn.hidden = !(st === 'patched' || st === 'partial');
+    restoreBtn.disabled = !ready;
+  }
+
+  function checkSo() {
+    if (!BR.ok) {
+      state.so = null;
+      state.soError = '未连接 WebUI 桥接（需要 root）';
+      renderExp();
+      return Promise.resolve();
+    }
+    /* 动作进行中不并发读状态：只记一个排队标记，动作结束后统一查一次 */
+    if (state.soBusy) {
+      state.soQueued = true;
+      return Promise.resolve();
+    }
+    /* 同一时刻只允许一个 check；重复点击/重复展开直接复用 */
+    if (state.soPending) { return Promise.resolve(); }
+    var seq = ++soSeq;
+    state.soPending = true;
+    state.soError = '';
+    renderExp();
+    function finish() {
+      if (seq !== soSeq) { return; }          /* 过期回包直接丢弃 */
+      state.soPending = false;
+      renderExp();
+      if (state.soQueued) { state.soQueued = false; checkSo(); }
+    }
+    return runBg('sh ' + P.patch + ' so check', { timeoutMs: 12000 }).then(function (res) {
+      if (seq !== soSeq) { return; }
+      if (res && res.timedOut && res.rc === null) {
+        state.so = null;
+        state.soError = '读取超时';
+      } else if (res && res.spawnError) {
+        state.so = null;
+        state.soError = '启动失败：' + res.spawnError;
+      } else {
+        var kv = parseKvText(res && res.out);
+        if (!kv.SO_STATE) {
+          /* 读不到就清空，避免用旧状态误开放 Apply/Restore */
+          state.so = null;
+          state.soError = '无法解析状态输出' +
+            (res && res.rc ? '（退出码 ' + res.rc + '）' : '');
+        } else {
+          state.so = kv;
+        }
+      }
+      finish();
+    }, function (err) {
+      if (seq !== soSeq) { return; }
+      state.so = null;
+      state.soError = String(err && err.message ? err.message : err);
+      finish();
+    });
+  }
+
+  /* 动作成功后先生效的乐观状态；真正的 check 随后异步复核并纠正 */
+  function soOptimistic(action) {
+    if (action !== 'apply' && action !== 'restore') { return; }
+    if (!state.so) {
+      state.so = { SO_MODULE: 'zygisk-storage-isolation', SO_PRESENT: '—', SO_BACKUP_OK: '1' };
+    }
+    state.so.SO_STATE = action === 'apply' ? 'patched' : 'original';
+    state.soError = '';
+    renderExp();
+  }
+
+  function runSoAction(action) {
+    if (!BR.ok) {
+      showExpResult('无法执行', '未连接 WebUI 桥接，需要 root 权限。', 'bad');
+      return;
+    }
+    if (state.soBusy) { return; }
+    if (action !== 'check' && state.so &&
+        String(state.so.SO_STATE) === 'unknown') {
+      showExpResult('已拒绝', '当前 .so 不在支持范围（版本未知），不会做任何修改。', 'warn');
+      return;
+    }
+    state.soBusy = true;
+    state.soQueued = false;
+    soSeq++;                 /* 作废在途 check，防止旧回包覆盖动作后的状态 */
+    state.soPending = false;
+    renderExp();
+    var title = action === 'apply' ? '正在应用修复…'
+      : (action === 'restore' ? '正在还原原版…' : '正在检查…');
+    showExpResult(title, '后台执行中，页面可以继续操作。', '');
+    runBg('sh ' + P.patch + ' so ' + action, {
+      timeoutMs: action === 'check' ? 12000 : 30000
+    }).then(function (res) {
+      state.soBusy = false;
+      state.soQueued = false;
+      var text = String((res && res.out) || '').trim();
+      if (res && res.timedOut && res.rc === null) {
+        showExpResult('结果未知', '执行超时；请稍后点「检查」确认状态。', 'warn');
+      } else if (res && res.spawnError) {
+        showExpResult('启动失败', res.spawnError, 'bad');
+      } else if (res && res.rc !== 0) {
+        showExpResult('执行失败', text || ('退出码 ' + res.rc), 'bad');
+      } else {
+        showExpResult(action === 'restore' ? '已还原原版' : '完成', text || 'OK', 'good');
+        /* 命令成功先生效一个乐观状态，避免等 check 往返期间徽标停在「检查中」 */
+        soOptimistic(action);
+      }
+      return checkSo();
+    }, function (err) {
+      state.soBusy = false;
+      state.soQueued = false;
+      showExpResult('执行失败', String(err && err.message ? err.message : err), 'bad');
+      return checkSo();
+    });
+  }
+
   function runPatchAction(action) {
     if (patchBusy()) {
       showPatchResult('请稍候', '另一个补丁操作正在进行，完成后再试。', 'warn');
@@ -3017,6 +3260,19 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     $('btnPatchForce').addEventListener('click', function () { armPatchAction('force'); });
     $('btnPatchConfirmGo').addEventListener('click', confirmPatchAction);
     $('btnPatchConfirmCancel').addEventListener('click', cancelPatchConfirm);
+    /* 实验性功能：灰度入口 + companion 空转修复 */
+    $('btnExp').addEventListener('click', function () {
+      var card = $('expCard');
+      var open = card.hidden;
+      card.hidden = !open;
+      this.setAttribute('aria-expanded', open ? 'true' : 'false');
+      state.soOpen = open;
+      if (open) { checkSo(); }
+    });
+    $('btnSoCheck').addEventListener('click', function () { checkSo(); });
+    $('btnSoApply').addEventListener('click', function () { runSoAction('apply'); });
+    $('btnSoRestore').addEventListener('click', function () { runSoAction('restore'); });
+    renderExp();
     $('btnRestart').addEventListener('click', function () {
       if (this.getAttribute('data-armed') === '1') {
         this.removeAttribute('data-armed');

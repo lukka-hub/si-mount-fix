@@ -19,8 +19,17 @@
 #   restore        当前为通用版/旧版时，从新到旧找第一份 sha==原版的备份恢复
 #   restore --force 当前不是已知版本（如 unknown）但存在有效原版备份时，显式覆盖恢复
 #
-# 只碰 zygisk-storage-isolation/main.dex：不改 SI 配置、不动 SI 的其它文件；
-# apply/restore 成功只提示重启生效，不杀进程、不等待 server。
+# 实验性（灰度，默认不启用）：sh si-patch.sh so check|apply|restore [--force]
+#   so check       输出 SO_STATE/ABI 明细，只读
+#   so apply       对当前适配版本的 4 个 ABI .so 各改 1 个字节：companion 握手读
+#                  失败时不再无限重试（修 zn-zygisk-companion 高 CPU）。原地写、先备份。
+#   so restore     反写原字节还原（保持同一 inode）
+#   so restore --force 当前为 unknown 但 .sieof-orig 有效时，用备份整份恢复
+#   注意：Zygisk Next 1.4+ 已不再触发该路径，本项属预防性修复；不改 main.dex。
+#
+# 只碰 zygisk-storage-isolation/main.dex（so 子命令是另一条路径，只改 zygisk/*.so）：
+# 不改 SI 配置、不动 SI 的其它文件；apply/restore 成功只提示重启生效。
+# so 子命令会额外杀 companion 让它重新加载（ZN 下次请求自动重建）。
 LC_ALL=C
 export LC_ALL
 
@@ -733,6 +742,268 @@ do_restore() {
   printf '重启生效（Zygisk 模块在开机时加载）。\n'
 }
 
+# ============================================================
+# 实验性：companion 握手读失败兜底（.so 单字节补丁）
+#
+# 背景：zygisk-storage-isolation 的 zygisk_companion_entry 在
+#   "4 字节握手读" 返回 EOF/EAGAIN 时没有退出路径，会在非阻塞 socket 上
+#   无限重试，把 zn-zygisk-companion32/64 单核打到 100%。更早的 28.x 线
+#   根本不读这个 fd，所以没有该问题。
+# 修法：每个 ABI 只改 1 个字节，把条件选择（csel/cmov）的 eq 改成 le，
+#   让 read() <= 0 走 close+返回。
+# 适用：module.prop 声明的 siPatchVersion（当前适配版本）；4 个 ABI 的
+#   "原始 sha256" 全部内置白名单，其它版本一律不改（fail-closed）。
+# 说明：Zygisk Next 1.4+ 已不再触发该路径，本补丁属预防性修复；
+#   文件在 /data/adb/modules/<模块>/zygisk/ 下，改完天然持久化，
+#   模块被重刷/升级后会回到原版，届时 check 会重新报 original。
+# ============================================================
+SO_DIR=$TARGET_DIR/zygisk
+SO_BAK_SUFFIX=.sieof-orig
+
+so_abi_info() {
+  case "$1" in
+    arm64-v8a)
+      SO_ORIG_SHA=5b904241f9a4e226e0ec53b40599945845c9db5044672ad9c56d7c6301239fee
+      SO_PATCH_SHA=b15ba171325af4576d8a7caecc9d271b72d7d9069921bad73ad5f508615f4ab4
+      SO_OFF=42693; SO_OCT='\321'; SO_ORIG_OCT='\001' ;;
+    armeabi-v7a)
+      SO_ORIG_SHA=3dc3a70cc2cfdf2dd5170d448db509c670ac64664a23f9f06ce89230b2a1e291
+      SO_PATCH_SHA=b29ba33743d676d989c045e02bb8f7b1900d541d7b7fa2dffefe8b5d466eecbc
+      SO_OFF=32316; SO_OCT='\334'; SO_ORIG_OCT='\004' ;;
+    x86)
+      SO_ORIG_SHA=0a94c81ba1a20ba4eeddc344c517f2e3eaffd0cb952cb4bcf957772b32870dc0
+      SO_PATCH_SHA=c8bbf8ba17464ba4e03fadb4a22497b3fa435be2c1fd3829e0262c193c4a354d
+      SO_OFF=40407; SO_OCT='\116'; SO_ORIG_OCT='\104' ;;
+    x86_64)
+      SO_ORIG_SHA=32b8c6c23c8d634e8325373fd75401fb4627ccc5b0defa4381f93f35d902b30c
+      SO_PATCH_SHA=69f5522b97b5d0f27b42f28cdc44761a9a516dff60fce1c3b62dc691181a0096
+      SO_OFF=45848; SO_OCT='\116'; SO_ORIG_OCT='\104' ;;
+    *) return 1 ;;
+  esac
+  SO_FILE=$SO_DIR/$1.so
+  return 0
+}
+
+collect_so_state() {
+  SO_STATE=no-target
+  SO_BACKUP_OK=0
+  SO_PRESENT=; SO_ORIG=; SO_PATCHED=; SO_UNKNOWN=; SO_NOBAK=
+  [ -d "$SO_DIR" ] || return 0
+  _n=0
+  for _abi in arm64-v8a armeabi-v7a x86 x86_64; do
+    so_abi_info "$_abi" || continue
+    [ -f "$SO_FILE" ] || continue
+    _n=$((_n + 1))
+    SO_PRESENT="$SO_PRESENT${SO_PRESENT:+,}$_abi"
+    _sha=$(sha256_of "$SO_FILE")
+    _bak=$SO_FILE$SO_BAK_SUFFIX
+    if [ ! -f "$_bak" ] || [ "$(sha256_of "$_bak")" != "$SO_ORIG_SHA" ]; then
+      SO_NOBAK="$SO_NOBAK${SO_NOBAK:+,}$_abi"
+    fi
+    if [ "$_sha" = "$SO_ORIG_SHA" ]; then
+      SO_ORIG="$SO_ORIG${SO_ORIG:+,}$_abi"
+    elif [ "$_sha" = "$SO_PATCH_SHA" ]; then
+      SO_PATCHED="$SO_PATCHED${SO_PATCHED:+,}$_abi"
+    else
+      SO_UNKNOWN="$SO_UNKNOWN${SO_UNKNOWN:+,}$_abi"
+    fi
+  done
+  if [ "$_n" = 0 ]; then SO_STATE=no-target; return 0; fi
+  if [ -n "$SO_UNKNOWN" ]; then
+    SO_STATE=unknown
+  elif [ -z "$SO_ORIG" ]; then
+    SO_STATE=patched
+  elif [ -z "$SO_PATCHED" ]; then
+    SO_STATE=original
+  else
+    SO_STATE=partial
+  fi
+  if [ -n "$SO_NOBAK" ]; then SO_BACKUP_OK=0; else SO_BACKUP_OK=1; fi
+}
+
+print_so_check() {
+  printf 'SO_STATE=%s\n' "$SO_STATE"
+  printf 'SO_MODULE=%s\n' "$PATCH_FOR_MODULE"
+  printf 'SO_TARGET_VERSION=%s\n' "${PATCH_FOR_VERSION:-}"
+  printf 'SO_TARGET_VERSION_CODE=%s\n' "${PATCH_FOR_VERSION_CODE:-}"
+  printf 'SO_DIR=%s\n' "$SO_DIR"
+  printf 'SO_PRESENT=%s\n' "$SO_PRESENT"
+  printf 'SO_ORIGINAL=%s\n' "$SO_ORIG"
+  printf 'SO_PATCHED=%s\n' "$SO_PATCHED"
+  printf 'SO_UNKNOWN=%s\n' "$SO_UNKNOWN"
+  printf 'SO_BACKUP_OK=%s\n' "${SO_BACKUP_OK:-0}"
+  printf 'SO_BACKUP_MISSING=%s\n' "$SO_NOBAK"
+}
+
+# 杀掉现有 companion，让 ZN 用新 .so 重新拉起（有请求时会自动重建）。
+# 没有 pgrep 的环境（部分 toybox）回退到 ps，避免静默不生效。
+so_reload() {
+  if command -v pgrep >/dev/null 2>&1; then
+    _pids=$(pgrep -f 'zygisk-companion.*zygisk-storage-isolation' 2>/dev/null)
+  else
+    _pids=$(ps -A -o PID,ARGS 2>/dev/null \
+      | grep 'zygisk-companion' | grep 'zygisk-storage-isolation' | grep -v grep \
+      | awk '{print $1}')
+  fi
+  if [ -n "$_pids" ]; then
+    kill $_pids 2>/dev/null
+    if [ $? -eq 0 ]; then SO_RELOAD=1; else SO_RELOAD=0; fi
+  else
+    SO_RELOAD=0
+  fi
+}
+
+# 原地改 1 个字节（不截断、不换 inode）。ZN 在开机时把 .so 的 fd 缓存住了，
+# 换 inode（mv/rename）不会生效，所以必须原地写。
+so_write_byte() {   # $1=file $2=octal-escape $3=offset
+  printf '%b' "$2" | dd of="$1" bs=1 seek="$3" conv=notrunc 2>/dev/null
+}
+
+# 保证原版备份存在；没有就从当前文件反推（单字节可逆，不需要网络/原包）
+so_ensure_backup() {   # $1=abi
+  so_abi_info "$1" || return 1
+  _bak=$SO_FILE$SO_BAK_SUFFIX
+  if [ -f "$_bak" ] && [ "$(sha256_of "$_bak")" = "$SO_ORIG_SHA" ]; then
+    return 0
+  fi
+  _cur=$(sha256_of "$SO_FILE")
+  "$CP" -p "$SO_FILE" "$_bak" 2>/dev/null || return 1
+  if [ "$_cur" = "$SO_PATCH_SHA" ]; then
+    so_write_byte "$_bak" "$SO_ORIG_OCT" "$SO_OFF" || { rm -f "$_bak"; return 1; }
+  fi
+  chmod 600 "$_bak" 2>/dev/null
+  if [ "$(sha256_of "$_bak")" != "$SO_ORIG_SHA" ]; then
+    rm -f "$_bak" 2>/dev/null
+    return 1
+  fi
+  return 0
+}
+
+so_restore_one() {   # $1=abi
+  so_abi_info "$1" || return 1
+  _cur=$(sha256_of "$SO_FILE")
+  [ "$_cur" = "$SO_ORIG_SHA" ] && return 0
+  [ "$_cur" = "$SO_PATCH_SHA" ] || return 1
+  so_write_byte "$SO_FILE" "$SO_ORIG_OCT" "$SO_OFF" || return 1
+  [ "$(sha256_of "$SO_FILE")" = "$SO_ORIG_SHA" ] || return 1
+  return 0
+}
+
+# 从 .sieof-orig 整份写回（unknown 状态的恢复通道；只在备份校验严格通过时用）
+so_restore_from_backup() {   # $1=abi
+  so_abi_info "$1" || return 1
+  _bak=$SO_FILE$SO_BAK_SUFFIX
+  [ -f "$_bak" ] || return 1
+  [ "$(sha256_of "$_bak")" = "$SO_ORIG_SHA" ] || return 1
+  cat "$_bak" > "$SO_FILE" 2>/dev/null || return 1
+  [ "$(sha256_of "$SO_FILE")" = "$SO_ORIG_SHA" ] || return 1
+  return 0
+}
+
+so_apply_one() {     # $1=abi；0=成功，1=失败已回滚，2=失败且回滚失败
+  so_abi_info "$1" || return 1
+  so_ensure_backup "$1" || return 1
+  _cur=$(sha256_of "$SO_FILE")
+  [ "$_cur" = "$SO_PATCH_SHA" ] && return 0
+  [ "$_cur" = "$SO_ORIG_SHA" ] || return 1
+  so_write_byte "$SO_FILE" "$SO_OCT" "$SO_OFF" || return 1
+  if [ "$(sha256_of "$SO_FILE")" = "$SO_PATCH_SHA" ]; then
+    return 0
+  fi
+  # 写坏：立刻回滚并复核；回滚也失败再用备份整份恢复
+  so_write_byte "$SO_FILE" "$SO_ORIG_OCT" "$SO_OFF"
+  if [ "$(sha256_of "$SO_FILE")" = "$SO_ORIG_SHA" ]; then
+    return 1
+  fi
+  if so_restore_from_backup "$1"; then
+    return 1
+  fi
+  printf 'si-patch: %s 写入失败且回滚失败；有效原版备份：%s\n' \
+    "$SO_FILE" "$SO_FILE$SO_BAK_SUFFIX" >&2
+  return 2
+}
+
+do_so_apply() {
+  mkdir -p "$DATA" 2>/dev/null
+  collect_so_state
+  case "$SO_STATE" in
+    no-target)
+      die "未找到 $SO_DIR 下的模块 .so（未安装/未启用 $PATCH_FOR_MODULE）" 3 ;;
+    unknown)
+      die "存在未知版本的 .so（$SO_UNKNOWN），不在支持范围，未做任何修改" 4 ;;
+  esac
+  [ -n "$SO_PRESENT" ] || die "没有可处理的 ABI" 4
+  acquire_lock
+  _was=$SO_STATE
+  _ok=
+  for _abi in $(printf '%s' "$SO_PRESENT" | tr ',' ' '); do
+    so_apply_one "$_abi"; _rc=$?
+    if [ "$_rc" = 0 ]; then
+      _ok="$_ok${_ok:+,}$_abi"
+    elif [ "$_rc" = 2 ]; then
+      log_action "SO-PATCH-FATAL abi=$_abi module=$PATCH_FOR_MODULE"
+      die "给 $_abi 写入失败且回滚失败；请在应用里用「还原原版」，或执行 sh $0 so restore --force 从备份恢复" 6
+    else
+      die "给 $_abi 写补丁失败（已回滚到原版），未完成" 5
+    fi
+  done
+  log_action "SO-PATCH abis=$_ok module=$PATCH_FOR_MODULE was=$_was"
+  so_reload
+  if [ "$_was" = patched ]; then
+    printf '已是补丁版：%s（原版备份已校验/补齐）\n' "$_ok"
+  elif [ "$_was" = partial ]; then
+    printf '已补齐 companion 空转修复：%s\n' "$_ok"
+  else
+    printf '已应用 companion 空转修复：%s\n' "$_ok"
+  fi
+  printf '原地改 1 字节（保持同一 inode），原版备份后缀 %s。\n' "$SO_BAK_SUFFIX"
+  if [ "$SO_RELOAD" = 1 ]; then
+    printf '已让 companion 重新加载，通常无需重启；若仍不生效请重启手机。\n'
+  else
+    printf '当前没有运行的 companion；下次有请求时会自动用新文件重建。\n'
+  fi
+}
+
+do_so_restore() {
+  mkdir -p "$DATA" 2>/dev/null
+  collect_so_state
+  case "$SO_STATE" in
+    no-target) die "未找到 $SO_DIR 下的模块 .so" 3 ;;
+    original)
+      printf '当前已是原版，无需还原。\n'
+      return 0 ;;
+    unknown)
+      [ "$SO_FORCE" = 1 ] || die "存在未知版本的 .so（$SO_UNKNOWN），不在支持范围；若 .sieof-orig 备份有效，可用 so restore --force 从备份恢复" 4 ;;
+  esac
+  if [ "$SO_FORCE" = 1 ]; then
+    _list=$SO_PRESENT
+    _mode=backup
+  else
+    _list=$SO_PATCHED
+    _mode=byte
+  fi
+  [ -n "$_list" ] || die "没有可还原的 ABI" 4
+  acquire_lock
+  _ok=
+  for _abi in $(printf '%s' "$_list" | tr ',' ' '); do
+    if [ "$_mode" = backup ]; then
+      if ! so_restore_from_backup "$_abi"; then
+        die "从备份恢复 $_abi 失败（备份缺失或校验不符）" 5
+      fi
+    else
+      if ! so_restore_one "$_abi"; then
+        die "还原 $_abi 失败（写回校验不符）" 5
+      fi
+    fi
+    _ok="$_ok${_ok:+,}$_abi"
+  done
+  log_action "SO-RESTORE abis=$_ok mode=$_mode module=$PATCH_FOR_MODULE"
+  so_reload
+  printf '已还原原版：%s\n' "$_ok"
+  [ "$SO_RELOAD" = 1 ] && printf '已让 companion 重新加载。\n'
+  return 0
+}
+
 case "${1:-}" in
   check) collect_state; print_check ;;
   status) collect_state; status_line ;;
@@ -746,8 +1017,20 @@ case "${1:-}" in
         exit 1 ;;
     esac
     do_restore ;;
+  so)
+    SO_FORCE=0
+    _sub=${2:-}
+    if [ "$_sub" = restore ] && [ "${3:-}" = --force ]; then SO_FORCE=1; fi
+    case "$_sub" in
+      check)   collect_so_state; print_so_check ;;
+      apply)   do_so_apply ;;
+      restore) do_so_restore ;;
+      *)
+        printf '用法：sh %s so check|apply|restore [--force]\n' "${0##*/}" >&2
+        exit 1 ;;
+    esac ;;
   *)
-    printf '用法：sh %s check|status|apply|restore [--force]\n' "${0##*/}" >&2
+    printf '用法：sh %s check|status|apply|restore [--force] | so check|apply|restore [--force]\n' "${0##*/}" >&2
     exit 1 ;;
 esac
 exit 0
