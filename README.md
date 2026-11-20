@@ -117,8 +117,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库：[lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 当前版本：v2.0.1 / versionCode 2010；版本只有一个来源：`module.prop` 的 `version=v2.0.1`
-  与 `versionCode=2010`。
+- 当前版本：v2.0.2 / versionCode 2020；版本只有一个来源：`module.prop` 的 `version=v2.0.2`
+  与 `versionCode=2020`。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
@@ -308,6 +308,28 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
   update、Download E2E。
 - **不包含**：`server-v355.dex`（原因见[根因分析](docs/root-cause.md)）、全局 activity 代理、
   逐包 `getPackageInfo`、多用户/工作资料。
+
+## 实验性功能（默认关闭）
+
+WebUI 右上角状态 pill 下方有一个灰度按钮「实验性功能」，默认收起，不在主流程里显示，
+不影响没点开它的设备。
+
+### 尝试解决 companion 进程高占用
+
+`zygisk-storage-isolation` 的 native 层在 companion「4 字节握手读」返回 EOF / `EAGAIN`
+时没有退出路径，会在非阻塞 socket 上无限重试，把 `zn-zygisk-companion32/64` 单核打到
+100%。Zygisk Next 1.4 及以上已不再触发该路径，**当前环境通常无法复现**；只有停在较旧
+Zygisk Next（约 1.3.x）且确实遇到 companion 高 CPU 时才建议尝试。
+
+- 做法：每个 ABI 只改 1 个字节（条件选择 `eq` → `le`），让 `read() <= 0` 走 close + 返回。
+- 范围：只写 `/data/adb/modules/zygisk-storage-isolation/zygisk/*.so`；不动 `main.dex`、
+  不改 SI 配置、不动 SI 的其它文件。
+- 白名单：4 个 ABI 的原始 `sha256` 全部内置，版本不符一律拒绝，不做任何修改。
+- 备份：首次应用写 `<abi>.so.sieof-orig`；没有备份时也能从补丁版反推原版。
+- 还原：面板「还原原版」，或 `sh scripts/si-patch.sh so restore`；
+  文件被改成未知版本但备份有效时，用 `so restore --force` 从备份整份恢复。
+- **卸载本模块前先点「还原原版」**：`uninstall.sh` 只清理 `main.dex`，不会撤掉 `.so` 补丁。
+- 命令行：`sh scripts/si-patch.sh so check|apply|restore [--force]`。
 
 ## 配置
 
