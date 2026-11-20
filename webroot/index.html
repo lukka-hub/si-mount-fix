@@ -295,6 +295,8 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       针对 Zygisk 增强模块的 <code>zn-zygisk-companion</code> 偶发把单核吃满：
       模块 native 层在「握手读」失败时没有退出路径，会无限重试。本功能把该分支改成失败即返回，
       每个 ABI 只改 1 个字节，不碰 <code>main.dex</code>、不碰 SI 配置。
+      <br><strong>仅支持增强模块 v29.0.1（versionCode 89）</strong>：模块版本或文件哈希对不上时，
+      不会修改任何文件——该缺陷只存在于这一版；更早的 28.x 不读这个 fd，不需要修复。
       <br>现状：Zygisk Next 1.4 及以上已不再触发该路径，当前环境通常<strong>无法复现</strong>；
       只有停在较旧 Zygisk Next（约 1.3.x）且确实遇到 companion 高 CPU 时，才建议尝试。
     </div>
@@ -2158,6 +2160,7 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     patched: '已应用补丁',
     partial: '部分 ABI 已打补丁',
     unknown: '版本未知（已拒绝）',
+    'version-mismatch': '模块版本不匹配（已拒绝）',
     'no-target': '未检测到模块'
   };
   /* 状态读取代次：动作开始时 ++，用于丢弃动作前发出的 check 回包 */
@@ -2205,6 +2208,8 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       badge.textContent = '未修改'; badge.className = 'pill';
     } else if (st === 'partial') {
       badge.textContent = '部分应用'; badge.className = 'pill warn';
+    } else if (st === 'version-mismatch') {
+      badge.textContent = '版本不支持'; badge.className = 'pill warn';
     } else {
       badge.textContent = '不可用'; badge.className = 'pill warn';
     }
@@ -2214,8 +2219,13 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       kv.push(soRow('读取', esc(err)));
     } else if (s) {
       kv.push(soRow('状态', esc(SO_STATE_LABEL[st] || st || '未知')));
-      kv.push(soRow('模块', esc(s.SO_MODULE || 'zygisk-storage-isolation') +
-        (s.SO_TARGET_VERSION ? ' · ' + esc(s.SO_TARGET_VERSION) : '')));
+      kv.push(soRow('模块', esc(s.SO_MODULE || 'zygisk-storage-isolation')));
+      if (s.SO_VERSION || s.SO_TARGET_VERSION) {
+        var cur = s.SO_VERSION || '未读取';
+        var need = s.SO_TARGET_VERSION || '—';
+        kv.push(soRow('模块版本', esc(cur) +
+          (String(s.SO_VERSION_OK) === '1' ? '' : '（仅支持 ' + esc(need) + '）')));
+      }
       kv.push(soRow('设备 ABI', esc(s.SO_PRESENT || '—')));
       if (s.SO_PATCHED) { kv.push(soRow('已打补丁', esc(s.SO_PATCHED))); }
       if (s.SO_UNKNOWN) { kv.push(soRow('未知版本', esc(s.SO_UNKNOWN))); }
@@ -2232,8 +2242,9 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     var ready = !!BR.ok && !state.soPending && !state.soBusy;
     var applyBtn = $('btnSoApply'), checkBtn = $('btnSoCheck'), restoreBtn = $('btnSoRestore');
     checkBtn.disabled = !ready;
-    applyBtn.disabled = !ready || (st !== 'original' && st !== 'partial');
-    applyBtn.className = 'btn act-btn ' + (st === 'patched' ? 'ghost' : 'primary');
+    var canApply = (st === 'original' || st === 'partial');
+    applyBtn.disabled = !ready || !canApply;
+    applyBtn.className = 'btn act-btn ' + (canApply ? 'primary' : 'ghost');
     applyBtn.textContent = (st === 'patched') ? '已应用' : (st === 'partial' ? '补齐修复' : '应用修复');
     restoreBtn.hidden = !(st === 'patched' || st === 'partial');
     restoreBtn.disabled = !ready;
