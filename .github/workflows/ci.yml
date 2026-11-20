@@ -133,13 +133,30 @@ jobs:
       - name: record build sha256
         run: sha256sum si-mount-fix.zip | tee sha256.txt
 
+      # Release 正文取自 CHANGELOG.md 对应版本小节，避免发布出空正文
+      # （generate_release_notes 在没有 PR 时只会生成一行 Full Changelog）。
+      - name: extract changelog for release body
+        run: |
+          v=$(sed -n 's/^version=//p' module.prop | head -1)
+          awk -v v="$v" '
+            index($0, "## " v) == 1 { insec = 1; next }
+            insec && /^## / { exit }
+            insec && $0 == "---" { next }
+            insec { print }
+          ' CHANGELOG.md > release-body.md
+          if [ ! -s release-body.md ]; then
+            printf '详细更新日志见 CHANGELOG.md\n' > release-body.md
+          fi
+          cat release-body.md
+
       # 不硬编码 token：GITHUB_TOKEN 由 Actions 注入，权限来自上面的 contents: write。
       - name: publish release asset
         uses: softprops/action-gh-release@v2
         with:
           files: si-mount-fix.zip
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: release-body.md
+          generate_release_notes: false
 
       # 发布后重新下载资产并比对 sha256：确认线上资产就是这次构建产物。
       - name: verify published asset sha256
