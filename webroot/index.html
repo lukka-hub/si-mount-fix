@@ -2205,7 +2205,11 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       kv.push(soRow('设备 ABI', esc(s.SO_PRESENT || '—')));
       if (s.SO_PATCHED) { kv.push(soRow('已打补丁', esc(s.SO_PATCHED))); }
       if (s.SO_UNKNOWN) { kv.push(soRow('未知版本', esc(s.SO_UNKNOWN))); }
-      kv.push(soRow('原版备份', s.SO_BACKUP_OK === '1' ? '可用' : '缺少（可自适应重建）'));
+      if (st === 'original') {
+        kv.push(soRow('原版备份', '应用时自动创建'));
+      } else {
+        kv.push(soRow('原版备份', s.SO_BACKUP_OK === '1' ? '可用' : '缺少（可自适应重建）'));
+      }
     } else {
       kv.push(soRow('状态', '点「检查」读取'));
     }
@@ -2215,6 +2219,7 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
     var applyBtn = $('btnSoApply'), checkBtn = $('btnSoCheck'), restoreBtn = $('btnSoRestore');
     checkBtn.disabled = !ready;
     applyBtn.disabled = !ready || (st !== 'original' && st !== 'partial');
+    applyBtn.className = 'btn act-btn ' + (st === 'patched' ? 'ghost' : 'primary');
     applyBtn.textContent = (st === 'patched') ? '已应用' : (st === 'partial' ? '补齐修复' : '应用修复');
     restoreBtn.hidden = !(st === 'patched' || st === 'partial');
     restoreBtn.disabled = !ready;
@@ -3265,6 +3270,7 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       var card = $('expCard');
       var open = card.hidden;
       card.hidden = !open;
+      if (open) { card.open = true; }   /* 一步展开，不用再点一次 summary */
       this.setAttribute('aria-expanded', open ? 'true' : 'false');
       state.soOpen = open;
       if (open) { checkSo(); }
