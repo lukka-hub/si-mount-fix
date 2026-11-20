@@ -73,8 +73,8 @@ grep -q "^LEGACY_PATCH_SHA=$LEGACY_SHA_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁 sha" || bad "脚本 LEGACY_PATCH_SHA 不对"
 grep -q "^LEGACY_PATCH_SIZE=$LEGACY_SIZE_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁大小" || bad "脚本 LEGACY_PATCH_SIZE 不对"
-grep -q '^version=v2.0.1$' module.prop && grep -q '^versionCode=2010$' module.prop \
-  && ok "module.prop 版本 v2.0.1 / 2010" || bad "module.prop 版本不对"
+grep -q '^version=v2.0.2$' module.prop && grep -q '^versionCode=2020$' module.prop \
+  && ok "module.prop 版本 v2.0.2 / 2020" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -83,10 +83,10 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v2.0.1"' update.json && grep -q '"versionCode": 2010' update.json \
-  && ok "update.json 指向 v2.0.1/2010" || bad "update.json 版本不对"
-grep -q 'releases/download/v2.0.1/si-mount-fix.zip' update.json \
-  && ok "update.json 指向 v2.0.1 release tag" || bad "update.json zipUrl 不对"
+grep -q '"version": "v2.0.2"' update.json && grep -q '"versionCode": 2020' update.json \
+  && ok "update.json 指向 v2.0.2/2020" || bad "update.json 版本不对"
+grep -q 'releases/download/v2.0.2/si-mount-fix.zip' update.json \
+  && ok "update.json 指向 v2.0.2 release tag" || bad "update.json zipUrl 不对"
 grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json changelog 指向 main" || bad "update.json changelog 不对"
 
@@ -1351,25 +1351,25 @@ grep -q 'PATCH_SIZE_EXPECT=92856' tools/build.sh && grep -q 'PATCH_SIZE" = "$PAT
   || bad "构建脚本没有校验通用 dex 大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-grep -q 'releases/download/v2.0.1' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
-  && ok "update.json zipUrl/changelog 指向 v2.0.1 + main" || bad "update.json 发布链不对"
+grep -q 'releases/download/v2.0.2' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
+  && ok "update.json zipUrl/changelog 指向 v2.0.2 + main" || bad "update.json 发布链不对"
 grep -q 'V_TAG=v$V_MAJOR.$V_MINOR' tools/build.sh \
   && grep -q 'V_TAG=$V_PROP' tools/build.sh \
   && ok "构建脚本按两段/三段推导发布 tag（v2.0.1 → v2.0.1）" || bad "构建脚本发布 tag 规则缺失"
 grep -Fq 'V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100))' tools/build.sh \
   && grep -Fq 'V_CODE_EXPECT=$((V_CODE_EXPECT + V_PATCH * 10))' tools/build.sh \
   && ok "构建脚本支持两段/三段编码（v2.0.1 → 2010）" || bad "构建脚本不支持两段/三段版本"
-[ -f CHANGELOG.md ] && grep -q '^## v2.0.1（versionCode 2010）' CHANGELOG.md \
+[ -f CHANGELOG.md ] && grep -q '^## v2.0.2（versionCode 2020）' CHANGELOG.md \
   && grep -q '^## v2.0' CHANGELOG.md \
   && ! grep -q '^## 1.5.8.1' CHANGELOG.md \
-  && ok "CHANGELOG 含 v2.0.1 条目且保留 v2.0.x" || bad "CHANGELOG 版本段落不对"
+  && ok "CHANGELOG 含 v2.0.2 条目且保留 v2.0.x" || bad "CHANGELOG 版本段落不对"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '92,856' README.md && grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' README.md \
-  && grep -q 'v2.0.1' README.md && grep -q 'versionCode 2010' README.md \
-  && ok "README 写通用 dex 大小/完整哈希及 v2.0.1/2010" || bad "README 哈希/大小/版本不对"
+  && grep -q 'v2.0.2' README.md && grep -q 'versionCode 2020' README.md \
+  && ok "README 写通用 dex 大小/完整哈希及 v2.0.2/2020" || bad "README 哈希/大小/版本不对"
 grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' CHANGELOG.md \
   && ok "CHANGELOG 写完整通用 dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md CHANGELOG.md \
