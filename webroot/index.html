@@ -147,6 +147,11 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 #patchCard .card-head h2{flex:1 1 auto;min-width:0;line-height:1.35;overflow-wrap:anywhere}
 #patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap;line-height:1.6}
 #patchDetail{overflow-wrap:anywhere}
+#patchCaps{margin-top:10px;background:var(--line2);border-radius:10px;padding:10px 12px}
+#patchCaps .patch-caps-title{font-size:12.5px;font-weight:600;color:var(--fg);margin-bottom:6px}
+#patchCaps ul{margin:0;padding-left:18px}
+#patchCaps li{font-size:12.5px;line-height:1.55;color:var(--muted);margin:4px 0;overflow-wrap:anywhere}
+#patchCaps li strong{color:var(--fg);font-weight:600}
 #patchActions{margin-top:14px}
 #patchTiming{display:block;margin-top:8px;line-height:1.4;overflow-wrap:anywhere}
 .result{margin-top:12px;background:var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px}
@@ -249,6 +254,10 @@ details.card[open] summary{margin-bottom:8px}
   <div class="card-head"><h2>兼容性检测（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
   <div id="patchHint" class="hint" hidden></div>
   <div class="muted small" id="patchDetail">—</div>
+  <div id="patchCaps" hidden>
+    <div class="patch-caps-title" id="patchCapsTitle"></div>
+    <ul id="patchCapsList"></ul>
+  </div>
   <div class="btn-grid" id="patchActions" hidden>
     <button class="btn primary act-btn" id="btnPatchApply" disabled>应用补丁</button>
     <button class="btn ghost act-btn" id="btnPatchRestore" hidden disabled>恢复原版</button>
@@ -1204,6 +1213,37 @@ details.card[open] summary{margin-bottom:8px}
     return '未知版本，不做能力探测';
   }
 
+  /* 具体能力清单：与 README「按 Android 版本恢复的能力」同义；SDK 35/36/37 各 6 条。 */
+  function capabilityItems(sdk) {
+    var listText;
+    var serviceText;
+    if (sdk === '35') {
+      listText = '应用列表：沿用旧 ParceledListSlice 路径，列表读取不受影响。';
+      serviceText = 'ServiceManager：A15 release 不启用不存在的 getService2；QPR1/QPR2 按实际 ' +
+        'Service union 适配；只 hook activity/vold。';
+    } else if (sdk === '36') {
+      listText = '应用列表：旧 ParceledListSlice 兼容，列表读取不受影响。';
+      serviceText = 'ServiceManager：getService2 返回 Service（ServiceWithMetadata union），' +
+        'checkService 为 IBinder、checkService2 返回 Service；只 hook activity/vold。';
+    } else if (sdk === '37') {
+      listText = '应用列表：PackageInfoList → List，修复 SI 空列表。';
+      serviceText = 'ServiceManager：getService2/checkService2 返回 Service、checkService 为 IBinder；' +
+        '只 hook activity/vold。';
+    } else {
+      return [];
+    }
+    return [
+      listText,
+      'MediaProvider 导出：accessible 目录与 observer 的 source→target 规则在 insert/update 中生效；' +
+        'relative_path 越界拒绝或改写；只有 _data 的 update fail-closed。',
+      'applyBatch（仅 MediaProvider/DownloadProvider）：批量 insert/update 逐 op 改写，已导出文件不会再被移回源目录；带 back-reference ' +
+        '的整批拒绝。',
+      'DownloadProvider：v.f 规范化 hint、拒绝 ..、target 幂等；v.d 按 /my_downloads 前缀匹配。',
+      serviceText,
+      '能力探测：类/方法缺失时回原路径或空跑，不改写非目标服务。'
+    ];
+  }
+
   function patchSdkText(p) {
     var sdk = p ? String(p.sdk || '') : '';
     var name = p && p.sdkName ? p.sdkName : sdkName(sdk);
@@ -1566,6 +1606,36 @@ details.card[open] summary{margin-bottom:8px}
   }
   /* PATCH-PENDING-HINT-END */
 
+  /* 卡片里的具体能力清单：只在 SDK 35/36/37 且没有读取错误时显示，与摘要 CAPS 并存。 */
+  function renderPatchCaps(p, err) {
+    var box = $('patchCaps');
+    if (!box) { return; }
+    var sdk = p && p.sdk ? String(p.sdk) : '';
+    if (err || !isSupportedSdk(sdk)) {
+      box.hidden = true;
+      return;
+    }
+    var items = capabilityItems(sdk);
+    if (!items.length) {
+      box.hidden = true;
+      return;
+    }
+    var title = $('patchCapsTitle');
+    if (title) {
+      title.textContent = sdkName(sdk) + '（SDK ' + sdk + '）可恢复的能力';
+    }
+    var ul = $('patchCapsList');
+    if (ul) {
+      ul.innerHTML = '';
+      items.forEach(function (text) {
+        var li = document.createElement('li');
+        li.textContent = text;
+        ul.appendChild(li);
+      });
+    }
+    box.hidden = false;
+  }
+
   function renderPatch() {
     var card = $('patchCard');
     var p = state.patch;
@@ -1680,6 +1750,7 @@ details.card[open] summary{margin-bottom:8px}
     }
     $('patchBadge').textContent = badge;
     $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
+    renderPatchCaps(p, err);
 
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
       isSupportedSdk(state.patchSdk) && p && isSupportedSdk(p.sdk) &&

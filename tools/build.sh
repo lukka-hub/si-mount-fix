@@ -68,18 +68,26 @@ V_CODE=$(prop_get versionCode)
 [ -n "$(prop_get siPatchVersionCode)" ] || die 'module.prop 缺少 siPatchVersionCode（补丁适用模块 versionCode）'
 
 # ---------- 2) version ↔ versionCode 一致性 ----------
-# 2.0 起统一四段式编码：v2.0.0 ↔ 2000、v2.0.1 ↔ 2001、v2.1.0 ↔ 2100；
-# 1.x 保留历史三位编码：v1.4.0 ↔ 140、v1.5.8 ↔ 158、v1.5.8.1 ↔ 1581。
+# v2.0 允许两段：major*1000 + minor*100 = 2000；三段按 patch*10 进位（v2.0.1 = 2010、
+# v2.1.0 = 2100），四段再按 micro 进位。1.x 三段沿用三位编码（如 158），四段为 1581。
 VERSION=${V_PROP#v}
 case "$VERSION" in
-  *.*.*) ;;
-  *) die "version 必须是 v<major>.<minor>.<patch>[.<micro>]：$V_PROP" ;;
+  *.*) ;;
+  *) die "version 必须是 v<major>.<minor>[.<patch>[.<micro>]]：$V_PROP" ;;
+esac
+case "$VERSION" in
+  ''|.*|*.|*..*|*[!0-9.]*) die "version 各段必须是数字：$V_PROP" ;;
 esac
 V_MAJOR=${VERSION%%.*}
 V_REST=${VERSION#*.}
-V_MINOR=${V_REST%%.*}
-V_TAIL=${V_REST#*.}
+case "$V_REST" in
+  *.*) V_MINOR=${V_REST%%.*}; V_TAIL=${V_REST#*.} ;;
+  *)   V_MINOR=$V_REST; V_TAIL= ;;
+esac
 case "$V_TAIL" in
+  '')
+    V_PATCH=
+    V_MICRO= ;;
   *.*)
     V_PATCH=${V_TAIL%%.*}
     V_MICRO=${V_TAIL#*.}
@@ -91,16 +99,22 @@ case "$V_TAIL" in
     V_PATCH=$V_TAIL
     V_MICRO= ;;
 esac
-case "$V_MAJOR$V_MINOR$V_PATCH$V_MICRO" in
-  ''|*[!0-9]*) die "version 各段必须是数字：$V_PROP" ;;
-esac
-[ "$V_MINOR" -le 9 ] && [ "$V_PATCH" -le 9 ] \
-  || die "versionCode 规则要求 minor/patch <= 9：$V_PROP"
+for _p in "$V_MAJOR" "$V_MINOR" "$V_PATCH" "$V_MICRO"; do
+  case "$_p" in
+    '') continue ;;
+    *[!0-9]*) die "version 各段必须是数字：$V_PROP" ;;
+  esac
+done
+[ "$V_MINOR" -le 9 ] || die "versionCode 规则要求 minor <= 9：$V_PROP"
+if [ -n "$V_PATCH" ]; then
+  [ "$V_PATCH" -le 9 ] || die "versionCode 规则要求 patch <= 9：$V_PROP"
+fi
 if [ -n "$V_MICRO" ]; then
   [ "$V_MICRO" -le 9 ] || die "versionCode 规则要求 micro <= 9：$V_PROP"
   V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10 + V_MICRO))
-elif [ "$V_MAJOR" -ge 2 ]; then
-  V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH * 10))
+elif [ -z "$V_PATCH" ] || [ "$V_MAJOR" -ge 2 ]; then
+  V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100))
+  [ -z "$V_PATCH" ] || V_CODE_EXPECT=$((V_CODE_EXPECT + V_PATCH * 10))
 else
   V_CODE_EXPECT=$((V_MAJOR * 100 + V_MINOR * 10 + V_PATCH))
 fi
@@ -109,9 +123,10 @@ case "$V_CODE" in
 esac
 [ "$V_CODE" = "$V_CODE_EXPECT" ] \
   || die "versionCode 与 version 不一致：$V_PROP 应为 $V_CODE_EXPECT，module.prop 写的是 $V_CODE"
-# 发布 tag 与 update.json 的 zipUrl 对齐：三段版本且 patch=0 时省略末尾 .0
-# （v2.0.0 → v2.0），其余版本仍使用完整 version（如 v1.5.8.1）。
-if [ "$V_PATCH" = 0 ] && { [ -z "$V_MICRO" ] || [ "$V_MICRO" = 0 ]; }; then
+# 发布 tag 与 update.json 的 zipUrl 对齐：patch 缺省/为 0 且没有 micro 时用两段 tag
+# （v2.0 → v2.0，v2.0.0 → v2.0），其余版本使用完整 version。
+if { [ -z "$V_PATCH" ] || [ "$V_PATCH" = 0 ]; } \
+  && { [ -z "$V_MICRO" ] || [ "$V_MICRO" = 0 ]; }; then
   V_TAG=v$V_MAJOR.$V_MINOR
 else
   V_TAG=$V_PROP

@@ -73,8 +73,8 @@ grep -q "^LEGACY_PATCH_SHA=$LEGACY_SHA_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁 sha" || bad "脚本 LEGACY_PATCH_SHA 不对"
 grep -q "^LEGACY_PATCH_SIZE=$LEGACY_SIZE_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁大小" || bad "脚本 LEGACY_PATCH_SIZE 不对"
-grep -q '^version=v2.0.0$' module.prop && grep -q '^versionCode=2000$' module.prop \
-  && ok "module.prop 版本 v2.0.0 / 2000" || bad "module.prop 版本不对"
+grep -q '^version=v2.0$' module.prop && grep -q '^versionCode=2000$' module.prop \
+  && ok "module.prop 版本 v2.0 / 2000" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -83,8 +83,8 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v2.0.0"' update.json && grep -q '"versionCode": 2000' update.json \
-  && ok "update.json 指向 v2.0.0/2000" || bad "update.json 版本不对"
+grep -q '"version": "v2.0"' update.json && grep -q '"versionCode": 2000' update.json \
+  && ok "update.json 指向 v2.0/2000" || bad "update.json 版本不对"
 grep -q 'releases/download/v2.0/si-mount-fix.zip' update.json \
   && ok "update.json 指向 v2.0 release tag" || bad "update.json zipUrl 不对"
 grep -q 'raw/main/CHANGELOG.md' update.json \
@@ -1042,9 +1042,24 @@ grep -q 'Android 15' webroot/index.html && grep -q 'Android 16' webroot/index.ht
   && grep -q 'Android 17' webroot/index.html \
   && ok "sdkName/capabilityText 覆盖 Android 15/16/17" \
   || bad "WebUI SDK 文案缺少 15/16/17"
+grep -q 'function capabilityItems' webroot/index.html \
+  && grep -q 'function renderPatchCaps' webroot/index.html \
+  && grep -q 'renderPatchCaps(p, err)' webroot/index.html \
+  && ok "WebUI 有 capabilityItems/renderPatchCaps 具体能力清单" \
+  || bad "WebUI 缺少具体能力清单纯函数/渲染"
+for _cap in 'PackageInfoList → List' 'relative_path' 'back-reference' 'my_downloads' 'QPR1/QPR2' 'ServiceWithMetadata'; do
+  grep -Fq "$_cap" webroot/index.html || bad "capabilityItems 缺少具体能力：$_cap"
+done
+for _cap in 'accessible 目录' 'relative_path' 'back-reference' 'my_downloads' 'QPR1/QPR2' 'ServiceWithMetadata'; do
+  grep -Fq "$_cap" README.md || bad "README 能力清单缺少：$_cap"
+done
+grep -Fq 'v.f' README.md && grep -Fq 'v.d' README.md \
+  && ok "README 按 A15/A16/A17 写具体能力（Download/Media/批量/Service）" \
+  || bad "README 具体能力清单不完整"
 for _id in patchCard patchHint patchActions patchTiming btnPatchCheck \
            btnPatchApply btnPatchRestore btnPatchForce \
-           patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult; do
+           patchConfirm btnPatchConfirmGo btnPatchConfirmCancel patchResult \
+           patchCaps patchCapsTitle patchCapsList; do
   grep -q "id=\"$_id\"" webroot/index.html || bad "WebUI 缺少元素 $_id"
 done
 grep -q 'patch-confirm-go' webroot/index.html && grep -q 'patch-confirm-cancel' webroot/index.html \
@@ -1333,21 +1348,23 @@ grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh
 grep -q 'releases/download/v2.0' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json zipUrl/changelog 指向 v2.0 + main" || bad "update.json 发布链不对"
 grep -q 'V_TAG=v$V_MAJOR.$V_MINOR' tools/build.sh \
-  && ok "构建脚本为 v2.0.0 推导 v2.0 发布 tag" || bad "构建脚本发布 tag 规则缺失"
-[ -f CHANGELOG.md ] && grep -q '^## v2.0.0' CHANGELOG.md \
-  && grep -q '^## 1.5.8.1' CHANGELOG.md \
-  && ok "CHANGELOG 含 v2.0.0 与 1.5.8.1 历史" || bad "CHANGELOG 版本段落不对"
+  && ok "构建脚本为 v2.0 推导 v2.0 发布 tag" || bad "构建脚本发布 tag 规则缺失"
+grep -Fq 'V_CODE_EXPECT=$((V_MAJOR * 1000 + V_MINOR * 100))' tools/build.sh \
+  && ok "构建脚本允许两段 v2.0 → 2000" || bad "构建脚本不支持两段版本"
+[ -f CHANGELOG.md ] && grep -q '^## v2.0' CHANGELOG.md \
+  && ! grep -q '^## 1.5.8.1' CHANGELOG.md \
+  && ok "CHANGELOG 只保留 v2.0 条目" || bad "CHANGELOG 版本段落不对"
 grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG" \
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
 grep -q '92,856' README.md && grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' README.md \
-  && grep -q 'v2.0.0' README.md && grep -q 'versionCode 2000' README.md \
-  && ok "README 写通用 dex 大小/完整哈希及 2.0.0/2000" || bad "README 哈希/大小/版本不对"
+  && grep -q 'v2.0' README.md && grep -q 'versionCode 2000' README.md \
+  && ok "README 写通用 dex 大小/完整哈希及 v2.0/2000" || bad "README 哈希/大小/版本不对"
 grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' CHANGELOG.md \
   && ok "CHANGELOG 写完整通用 dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md CHANGELOG.md \
-  && ok "README/CHANGELOG 写完整 1.5.8 旧补丁哈希" || bad "README/CHANGELOG 缺少 1.5.8 旧补丁哈希"
+  && ok "README/CHANGELOG 写完整旧补丁哈希" || bad "README/CHANGELOG 缺少旧补丁哈希"
 grep -q 'patched-legacy' README.md && grep -q 'main.dex.legacy' README.md \
   && grep -q 'LEGACY' README.md \
   && ok "README 说明 patched-legacy/legacy 备份/LEGACY" \

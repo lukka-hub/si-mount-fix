@@ -3,9 +3,9 @@
 给 **Storage Isolation / 存储空间隔离**（`moe.shizuku.redirectstorage`）补回丢失的共享目录挂载。
 
 支持 Android 13~17，**Magisk / KernelSU**。默认只补挂载：不修改 SI 的
-`configuration.json`，不联网，不收集数据。另有一个需用户确认的兼容性检测：把
-`zygisk-storage-isolation` 的 `main.dex` 替换为自包含通用 dex（A15/A16/A17 共用），
-重启手机后生效（见「兼容性检测」）。
+`configuration.json`，不联网，不收集数据。另有一个需用户确认的兼容性检测：一份
+`main.dex` 通配 Android 15/16/17，向下兼容；运行时按系统能力探测，不按 SDK 拆资产。
+用户确认后替换 `zygisk-storage-isolation` 的 `main.dex`，重启手机后生效（见「兼容性检测」）。
 
 ## 问题与根因
 
@@ -46,7 +46,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
   只认本 boot、同 namespace、同进程（uid + `starttime` 都一致）的 `.sandbox_seen` 证据；
   没有同 ns 证据（升级后首次、同 boot 换了 namespace）时普通根（root=`/` 或 `/0`）不卸不
   bind，报 `sandbox_skip`，只补目标本来没有挂载（n=0）的包。
-  本 boot 有该包任意 namespace 的行（或完全没有历史记录）时，才允许这条“源存在+属主匹配”
+  本 boot 有该包任意 namespace 的行（或完全没有本 boot 记录）时，才允许这条“源存在+属主匹配”
   的回落；只有全部是别的 boot 的旧行才拒绝回落。旧格式的 `.sandbox_seen` 只有
   `pkg|boot|ns|SB` 四段，没有 uid/starttime 指纹，升级后按“无证据”处理（走上面的回落），
   不会因此放过真实丢失。
@@ -58,7 +58,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
   （普通根/退避路径不变）。普通应用 uid（10000–19999）不受影响。
 - **失败退避**：修复失败按 (包, 目标) 记在 `.repairs`，180 秒内不再重试；key 带 FUSE 设备号、
   boot 和 namespace，任一变化立即失效。退避计时用 `/proc/uptime` 的单调时钟，系统时间被
-  修改不会让退避提前到期或无限延长；旧版本只写墙钟的失败行按“无退避”处理。沙箱重建与
+  修改不会让退避提前到期或无限延长；没有单调时钟列、只有墙钟的失败行按“无退避”处理。沙箱重建与
   共享目录修复共用这套退避，RESULT 带 `retry=`（仍是剩余秒数），不会因为一次坏包每轮
   重复 bind/回滚。
 - **PID/ns 再校验**：扫描时记下进程的 starttime（`/proc/<pid>/stat` 第 22 字段）、uid 和
@@ -85,7 +85,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
-- 兼容性检测：A15/A16/A17 使用同一份自包含 `main.dex`（92,856 B / `2f3ca326…`），
+- 兼容性检测：A15/A16/A17 使用同一份 `main.dex`（92,856 B / `2f3ca326…`），运行时按系统能力探测，
   用户确认后替换 `zygisk-storage-isolation` 的 `main.dex`；自动备份、校验并支持恢复，不动 SI 配置。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
 - 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录
@@ -103,26 +103,25 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 升级用同一个 zip 覆盖安装即可，配置与状态保存在 `/data/adb/si-mount-fix/`，升级不会清空；
 卸载会删除该目录（只要 `patch-backup` 里存在 `main.dex.*` 备份，就只保留该目录）。安装后无需手动执行脚本。
 
-**覆盖升级后要重启手机**（或在 WebUI 里点「重启守护」）：模块文件会立即替换，但已经在运行的
-旧守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是旧守护写下的状态，
+**覆盖升级后要重启手机**（或在 WebUI 里点「重启守护」）：模块文件会立即替换，但正在运行的
+守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是重启前的状态，
 版本号却已经是新模块的——这属于正常现象。
 
-**从旧版补丁升级**：早期 server dex 方式已废弃（SI daemon 每次启动会把内嵌原版写回）；
-新版只处理 `zygisk-storage-isolation/main.dex`。如果检测到 88,336 B /
-`5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891` 的旧版 `main.dex`，
-卡片显示为旧版注入；点「升级到通用版」时先备份为 `main.dex.legacy.<时间戳>`，再安装通用
-dex，已有原版备份保留。升级后重新 `check`，按卡片状态操作。
+**补丁状态**：兼容性检测只处理 `zygisk-storage-isolation/main.dex`。如果检测到 88,336 B /
+`5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891` 的 `main.dex`，
+卡片显示为 `patched-legacy`；点「升级到通用版」时先备份为 `main.dex.legacy.<时间戳>`，再安装
+通用 dex，已有原版备份保留。升级后重新 `check`，按卡片状态操作。
 
 ### 版本与更新检查
 
-- 仓库已迁到 [lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
+- 仓库：[lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 当前版本：v2.0.0 / versionCode 2000；版本只有一个来源：`module.prop` 的 `version=v2.0.0`
+- 当前版本：v2.0 / versionCode 2000；版本只有一个来源：`module.prop` 的 `version=v2.0`
   与 `versionCode=2000`。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
-  [CHANGELOG.md](CHANGELOG.md)，只放当前版本的更新内容，不把整篇演化历史展示给管理器。
+  [CHANGELOG.md](CHANGELOG.md)，只列当前版本的更新内容。
 
 **打开面板**：KernelSU 管理器可在模块页打开 WebUI；Magisk 本体没有内建 WebUI，
 需安装 **KsuWebUI Standalone** 后从其中打开本模块。没有 WebUI 时，点模块的「操作」按钮
@@ -131,42 +130,71 @@ dex，已有原版备份保留。升级后重新 `check`，按卡片状态操作
 ## 兼容性检测（main.dex）
 
 **适用**：Android 15/16/17（SDK 35/36/37）+ Zygisk 模块 **zygisk-storage-isolation v29.0.1**
-（versionCode 89，`main.dex`）。模块自带一份自包含的通用 `main.dex`（92,856 B / sha256
-`2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22`），A15/A16/A17 共用，
-不需要按版本换文件。其它模块版本不要使用。
+（versionCode 89，`main.dex`）。兼容性检测使用一份 `main.dex`（92,856 B / sha256
+`2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22`）通配 Android 15/16/17，
+向下兼容；运行时按系统能力探测，不按 SDK 拆资产。其它模块版本不要使用。
 
 **现象**：SI 的应用列表为空，或隔离应用的导出规则、批量写入、Download 下载不生效。根因是
 Android 17 的 `IPackageManager.getInstalledPackages` 返回类型从 `ParceledListSlice` 变成
-`PackageInfoList`，旧调用解析不了；以及 `ServiceManager.getService2`、`applyBatch`、
-DownloadProvider 等路径没有被覆盖（见 [根因分析](docs/root-cause.md)）。
+`PackageInfoList`，旧调用解析不了；A15/A16 的列表仍走旧 `ParceledListSlice`，读列表不受影响。
+`ServiceManager.getService2`、MediaProvider 导出规则、`applyBatch`、DownloadProvider 等路径在
+原 dex 里没有被覆盖（见 [根因分析](docs/root-cause.md)）。
 
-**为什么补 main.dex**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回自己的
-server dex，所以补 server dex 每次开机必被还原。`main.dex` 是持久的那一半：替换
+**为什么只补 main.dex**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回自己的
+server dex，补 server dex 每次开机都会被还原。`main.dex` 是持久的那一半：替换
 `/data/adb/modules/zygisk-storage-isolation/main.dex` 后重启手机，server dex 虽被还原成
-原版，列表/导出仍正常，且跨重启保持。
+原版，列表/导出/批量/下载仍正常，且跨重启保持。
 
 **状态颜色**：
 
 | 颜色 | 状态 | 含义 |
 |---|---|---|
-| 黄 | 未注入/无法确认 | `original` 可应用；`patched-legacy`（旧版注入 88,336 B）可升级/恢复；`unknown` 可强制恢复（有有效原版备份且版本匹配时）；`no-target`/`unsupported` 显示原因，检查可用、动作按钮隐藏；模块版本不匹配时动作置灰 |
+| 黄 | 未注入/无法确认 | `original` 可应用；`patched-legacy`（88,336 B 旧补丁格式）可升级/恢复；`unknown` 可强制恢复（有有效原版备份且版本匹配时）；`no-target`/`unsupported` 显示原因，检查可用、动作按钮隐藏；模块版本不匹配时动作置灰 |
 | 绿 | 已注入 | `patched`：通用 dex 已写入；重启手机后生效；版本匹配且有原版备份时可恢复；模块版本不匹配时仍为绿色（表示已注入），但动作置灰 |
 | 红 | 错误 | 检查/读取失败或 apply/restore 失败；保留当前文件 |
 
-**按 Android 版本恢复的能力**：
+**按 Android 版本恢复的能力**（同一份 dex，运行时探测；三个版本各自恢复的具体能力如下）：
 
-- Android 15（SDK 35）：应用列表兼容旧 `ParceledListSlice`；MediaProvider 导出规则；applyBatch；
-  DownloadProvider；ServiceManager 旧接口，系统提供 QPR union 时按实际类型适配，不启用不存在的
-  `getService2`。
-- Android 16（SDK 36）：应用列表；MediaProvider；applyBatch；Download；`getService2` /
-  `checkService` / `checkService2`（A16 形态）。
-- Android 17（SDK 37）：应用列表 `PackageInfoList` → `List`；MediaProvider；applyBatch；Download；
-  `getService2` / `checkService2`，`checkService` 为 `IBinder`。
+**Android 15（SDK 35）**
 
-2.0 按系统能力探测，不按版本猜：a1 看 `getInstalledPackages` 的实际返回对象；u0 只在系统真的
+- 应用列表：沿用旧 `ParceledListSlice` 路径，列表读取不受影响。
+- MediaProvider 导出：accessible 目录与 observer 的 source→target 规则在 insert/update 中生效；
+  `relative_path` 越界拒绝或改写；只有 `_data` 的 update fail-closed。
+- applyBatch（仅 MediaProvider/DownloadProvider）：批量 insert/update 逐 op 改写，已导出文件不会再被移回源目录；带 back-reference
+  的整批拒绝。
+- DownloadProvider：`v.f` 规范化 hint、拒绝 `..`、target 幂等；`v.d` 按 `/my_downloads` 前缀匹配。
+- ServiceManager：A15 release 不启用不存在的 `getService2`；QPR1/QPR2 按实际 `Service` union
+  适配；只 hook `activity`/`vold`。
+- 能力探测：类/方法缺失时回原路径或空跑，不改写非目标服务。
+
+**Android 16（SDK 36）**
+
+- 应用列表：旧 `ParceledListSlice` 兼容，列表读取不受影响。
+- MediaProvider 导出：accessible 目录与 observer 的 source→target 规则在 insert/update 中生效；
+  `relative_path` 越界拒绝或改写；只有 `_data` 的 update fail-closed。
+- applyBatch（仅 MediaProvider/DownloadProvider）：批量 insert/update 逐 op 改写，已导出文件不会再被移回源目录；带 back-reference
+  的整批拒绝。
+- DownloadProvider：`v.f` 规范化 hint、拒绝 `..`、target 幂等；`v.d` 按 `/my_downloads` 前缀匹配。
+- ServiceManager：`getService2` 返回 `Service`（`ServiceWithMetadata` union），`checkService` 为
+  `IBinder`，`checkService2` 返回 `Service`；只 hook `activity`/`vold`。
+- 能力探测：类/方法缺失时回原路径或空跑，不改写非目标服务。
+
+**Android 17（SDK 37）**
+
+- 应用列表：`PackageInfoList` → `List`，修复 SI 空列表。
+- MediaProvider 导出：accessible 目录与 observer 的 source→target 规则在 insert/update 中生效；
+  `relative_path` 越界拒绝或改写；只有 `_data` 的 update fail-closed。
+- applyBatch（仅 MediaProvider/DownloadProvider）：批量 insert/update 逐 op 改写，已导出文件不会再被移回源目录；带 back-reference
+  的整批拒绝。
+- DownloadProvider：`v.f` 规范化 hint、拒绝 `..`、target 幂等；`v.d` 按 `/my_downloads` 前缀匹配。
+- ServiceManager：`getService2`/`checkService2` 返回 `Service`，`checkService` 为 `IBinder`；
+  只 hook `activity`/`vold`。
+- 能力探测：类/方法缺失时回原路径或空跑，不改写非目标服务。
+
+兼容层按系统能力探测，不按版本猜：a1 看 `getInstalledPackages` 的实际返回对象；u0 只在系统真的
 调用到某个方法名时处理；u2 用反射先试 `getServiceWithMetadata`，失败再试 `getBinder`。类/方法
-缺失时回原路径或空跑。A15/A16/A17 共用同一份 dex；dex 内对 `PackageInfoList`、
-`android.os.Service`、`ServiceWithMetadata` 的直接引用为 0。
+缺失时回原路径或空跑。三版共用同一份 dex；dex 内对 `PackageInfoList`、`android.os.Service`、
+`ServiceWithMetadata` 的直接引用为 0。
 
 **版本校验**：
 
@@ -263,7 +291,7 @@ sh /data/adb/modules/si-mount-fix/scripts/si-patch.sh restore --force  # unknown
 - 模块版本不匹配时不允许 `apply`/`restore`/`restore --force`，避免把别的模块版本覆盖坏。
 - **上游覆盖**：官方更新 zygisk-storage-isolation 可能覆盖 `main.dex`，补丁会失效；更新后重新
   `check`，只有模块版本仍是 v29.0.1 且状态为 `original` 或旧版注入时才重新应用。版本变化后
-  会显示 `unknown`，不要强行用旧版本原版备份恢复。
+  会显示 `unknown`，不要强行用旧的原版备份恢复。
 - **卸载不会自动恢复 `main.dex`**：只要 `/data/adb/si-mount-fix/patch-backup/main.dex.*`
   存在，卸载时就只保留该目录并打印路径，其余运行期数据照旧删除；保留不依赖 `BACKUP_OK`
   或 `sha256sum` 是否可用（保守处理）。需要恢复请在卸载前运行 `restore --force`
@@ -313,7 +341,7 @@ sh /data/adb/modules/si-mount-fix/scripts/restart.sh               # 重启守�
 ```
 
 `status.json` 同时提供 `reason`（机器可读）与 `reason_text`（中文短标签，面板/「操作」按钮直接用；
-旧版守护没有该字段时，两端保留一份兜底词表）。无桥接时用的只读快照 `webroot/snapshot.js` 里另带
+守护状态没有该字段时，两端保留一份兜底词表）。无桥接时用的只读快照 `webroot/snapshot.js` 里另带
 `config{enabled,mode,interval,min_age}`，面板据此渲染配置。另有 `sandbox_gone` / `sandbox_stale` /
 `sandbox_rollback` / `sandbox_skip` 四个 0/1 字段，表示最近一轮扫描的沙箱问题；最近一轮 fix
 报错时可能仍是上一次的值。`last_fixed` 是“本次修复”的条数，每轮成功扫描都会按本轮 `fixed`
