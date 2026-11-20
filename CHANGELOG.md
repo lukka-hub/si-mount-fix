@@ -2,30 +2,12 @@
 
 ## v2.0.2（versionCode 2020）
 
-新增「实验性功能」入口：WebUI 右上角状态 pill 下方一个灰度按钮，默认收起，
-不在主流程里显示。首个实验项为「尝试解决 companion 进程高占用」：
+- 新增「实验性功能」入口（右上角，默认关闭）：尝试解决 `zn-zygisk-companion` 偶发高 CPU。
+  仅对增强模块 v29.0.1 / versionCode 89 生效，其它版本不改动。
+- WebUI：状态 pill 移到版本行末尾；实验性入口固定在右上角。
+- 技术说明见 [docs/companion-cpu.md](docs/companion-cpu.md)。
 
-- **背景**：`zygisk-storage-isolation` v29.0.1 的 native 层在 companion「4 字节握手读」
-  返回 EOF / `EAGAIN` 时没有退出路径，会在非阻塞 socket 上无限重试，把
-  `zn-zygisk-companion32/64` 单核打到 100%。v28.2.0 根本不读该 fd，所以没有此问题。
-- **做法**：只改每个 ABI 的 1 个字节，把条件选择（`csel` / `cmov`）的 `eq` 改成 `le`，
-  让 `read() <= 0` 走 `close` + 返回。4 个 ABI 的原始 `sha256` 全部内置白名单，
-  其它版本一律拒绝，不改 `main.dex`、不改 SI 配置。
-- **持久化**：文件在 `/data/adb/modules/zygisk-storage-isolation/zygisk/` 下，天然跨重启；
-  首次应用前写 `.sieof-orig` 备份（也可从补丁版反推原版），支持一键还原。
-- **原位写**：Zygisk Next 开机时缓存了 `.so` 的 fd，所以必须原地改同一 inode
-  （不 `mv` / 不换文件）；应用后顺手让 companion 重新加载，通常无需重启。
-- **当前复现状态**：Zygisk Next 1.4 及以上已不再触发该路径，当前环境通常无法复现；
-  只有停留在较旧 ZN（约 1.3.x）且确实遇到 companion 高 CPU 时才建议尝试。
-  文案已在面板内如实告知，不承诺「已修复」。
-
-命令行同样可用（不依赖 WebUI）：
-
-```sh
-sh scripts/si-patch.sh so check     # 只读：SO_STATE / ABI / 备份状态
-sh scripts/si-patch.sh so apply     # 应用（原地 1 字节，先备份后校验）
-sh scripts/si-patch.sh so restore   # 还原原版
-```
+---
 
 ## v2.0.1（versionCode 2010）
 
@@ -55,6 +37,8 @@ WebUI 交互与首屏体验更新，不改变 dex、补丁流程与守护逻辑�
 - 日志长行改用 `overflow-wrap:anywhere`，不再把 `fixed=0` 之类的词拆开。
 - 移动端 320px 操作按钮单列，小按钮点按高度 34px；补齐焦点样式与 `role`/`aria-live`；
   暗色模式颜色保持一致。无 root / 无桥接时隐藏不可用的空白配置表单。
+
+---
 
 ## v2.0（versionCode 2000）
 

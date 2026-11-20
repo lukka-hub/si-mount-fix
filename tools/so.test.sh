@@ -26,7 +26,14 @@ fi
 
 T=${TMPDIR:-/tmp}/si-so-test.$$
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/data" "$T/mod-a/zygisk" "$T/mod-empty" || exit 1
+mkdir -p "$T/data" "$T/mod-a/zygisk" "$T/mod-empty" "$T/mod-old/zygisk" || exit 1
+
+# 从仓库 module.prop 取当前适配版本，避免测试里再写一份版本字面量
+SI_V=$(sed -n 's/^siPatchVersion=//p' module.prop 2>/dev/null | head -1)
+SI_VC=$(sed -n 's/^siPatchVersionCode=//p' module.prop 2>/dev/null | head -1)
+[ -n "$SI_V" ] || { echo "读不到 module.prop 的 siPatchVersion"; exit 1; }
+printf 'id=zygisk-storage-isolation\nversion=%s\nversionCode=%s\n' "$SI_V" "$SI_VC" > "$T/mod-a/module.prop"
+printf 'id=zygisk-storage-isolation\nversion=v28.2.0\nversionCode=86\n' > "$T/mod-old/module.prop"
 
 ok=0; bad=0
 pass() { ok=$((ok + 1)); echo "  ok   $1"; }
@@ -97,11 +104,11 @@ else
   fail "restore --force 行为不对（rc=$rc）"
 fi
 
-echo "== 6. check 契约键 + 只读"
+echo "== 6. 契约键 + 只读"
 out=$(run_so "$T/mod-a" check)
 missing=""
-for k in SO_STATE SO_MODULE SO_TARGET_VERSION SO_DIR SO_PRESENT SO_ORIGINAL \
-         SO_PATCHED SO_UNKNOWN SO_BACKUP_OK SO_BACKUP_MISSING; do
+for k in SO_STATE SO_MODULE SO_TARGET_VERSION SO_VERSION SO_VERSION_OK SO_DIR SO_PRESENT \
+         SO_ORIGINAL SO_PATCHED SO_UNKNOWN SO_BACKUP_OK SO_BACKUP_MISSING; do
   echo "$out" | grep -q "^$k=" || missing="$missing $k"
 done
 if [ -z "$missing" ]; then
@@ -113,6 +120,24 @@ if [ -d "$T/data" ] && [ -z "$(ls -A "$T/data" 2>/dev/null)" ]; then
   pass "check 未往数据目录写东西"
 else
   fail "check 写入了数据目录（只读承诺被破坏）"
+fi
+
+echo "== 7. 版本门禁：非 v29 模块必须拒绝且不动文件"
+cp "$T/mod-a/zygisk/arm64-v8a.so" "$T/mod-old/zygisk/arm64-v8a.so"
+old_before=$(sha256sum "$T/mod-old/zygisk/arm64-v8a.so" | awk '{print $1}')
+out=$(run_so "$T/mod-old" check); rc=$?
+if [ "$rc" = 0 ] && echo "$out" | grep -q '^SO_STATE=version-mismatch$' \
+   && echo "$out" | grep -q '^SO_VERSION_OK=0$'; then
+  pass "非适配版本报 version-mismatch"
+else
+  fail "版本门禁状态不对（rc=$rc out=$out）"
+fi
+rc=$(rc_of "$T/mod-old" apply)
+old_after=$(sha256sum "$T/mod-old/zygisk/arm64-v8a.so" | awk '{print $1}')
+if [ "$rc" = 4 ] && [ "$old_before" = "$old_after" ]; then
+  pass "非适配版本 apply 拒绝且文件未变"
+else
+  fail "非适配版本 apply 未按预期拒绝（rc=$rc）"
 fi
 
 echo

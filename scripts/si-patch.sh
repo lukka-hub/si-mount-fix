@@ -787,8 +787,19 @@ so_abi_info() {
 collect_so_state() {
   SO_STATE=no-target
   SO_BACKUP_OK=0
+  SO_VERSION_OK=0
+  SO_VERSION=; SO_VERSION_CODE=
   SO_PRESENT=; SO_ORIG=; SO_PATCHED=; SO_UNKNOWN=; SO_NOBAK=
   [ -d "$SO_DIR" ] || return 0
+  # 严格版本门禁：只认 module.prop 里声明的当前适配版本 + versionCode
+  if [ -r "$MODULE_PROP" ]; then
+    SO_VERSION=$(sed -n 's/^version=//p' "$MODULE_PROP" 2>/dev/null | head -1)
+    SO_VERSION_CODE=$(sed -n 's/^versionCode=//p' "$MODULE_PROP" 2>/dev/null | head -1)
+  fi
+  if [ -n "$PATCH_FOR_VERSION" ] && [ "$SO_VERSION" = "$PATCH_FOR_VERSION" ] \
+     && { [ -z "$PATCH_FOR_VERSION_CODE" ] || [ "$SO_VERSION_CODE" = "$PATCH_FOR_VERSION_CODE" ]; }; then
+    SO_VERSION_OK=1
+  fi
   _n=0
   for _abi in arm64-v8a armeabi-v7a x86 x86_64; do
     so_abi_info "$_abi" || continue
@@ -809,7 +820,9 @@ collect_so_state() {
     fi
   done
   if [ "$_n" = 0 ]; then SO_STATE=no-target; return 0; fi
-  if [ -n "$SO_UNKNOWN" ]; then
+  if [ "$SO_VERSION_OK" != 1 ]; then
+    SO_STATE=version-mismatch
+  elif [ -n "$SO_UNKNOWN" ]; then
     SO_STATE=unknown
   elif [ -z "$SO_ORIG" ]; then
     SO_STATE=patched
@@ -826,6 +839,9 @@ print_so_check() {
   printf 'SO_MODULE=%s\n' "$PATCH_FOR_MODULE"
   printf 'SO_TARGET_VERSION=%s\n' "${PATCH_FOR_VERSION:-}"
   printf 'SO_TARGET_VERSION_CODE=%s\n' "${PATCH_FOR_VERSION_CODE:-}"
+  printf 'SO_VERSION=%s\n' "${SO_VERSION:-}"
+  printf 'SO_VERSION_CODE=%s\n' "${SO_VERSION_CODE:-}"
+  printf 'SO_VERSION_OK=%s\n' "${SO_VERSION_OK:-0}"
   printf 'SO_DIR=%s\n' "$SO_DIR"
   printf 'SO_PRESENT=%s\n' "$SO_PRESENT"
   printf 'SO_ORIGINAL=%s\n' "$SO_ORIG"
@@ -929,6 +945,8 @@ do_so_apply() {
   case "$SO_STATE" in
     no-target)
       die "未找到 $SO_DIR 下的模块 .so（未安装/未启用 $PATCH_FOR_MODULE）" 3 ;;
+    version-mismatch)
+      die "增强模块版本不匹配：当前 ${SO_VERSION:-未知}（versionCode ${SO_VERSION_CODE:-?}），仅支持 ${PATCH_FOR_VERSION}（versionCode ${PATCH_FOR_VERSION_CODE}）。该问题只在这一版存在，其它版本不做任何修改。" 4 ;;
     unknown)
       die "存在未知版本的 .so（$SO_UNKNOWN），不在支持范围，未做任何修改" 4 ;;
   esac
@@ -972,6 +990,15 @@ do_so_restore() {
     original)
       printf '当前已是原版，无需还原。\n'
       return 0 ;;
+    version-mismatch)
+      if [ "$SO_FORCE" != 1 ]; then
+        if [ -n "$SO_PATCHED" ]; then
+          # 版本不匹配也允许撤掉我们打过的补丁：按哈希识别，与模块版本无关
+          :
+        else
+          die "增强模块版本不匹配：当前 ${SO_VERSION:-未知}，仅支持 ${PATCH_FOR_VERSION}；当前没有本工具打过的补丁，未做任何修改" 4
+        fi
+      fi ;;
     unknown)
       [ "$SO_FORCE" = 1 ] || die "存在未知版本的 .so（$SO_UNKNOWN），不在支持范围；若 .sieof-orig 备份有效，可用 so restore --force 从备份恢复" 4 ;;
   esac

@@ -322,14 +322,18 @@ WebUI 右上角状态 pill 下方有一个灰度按钮「实验性功能」，�
 Zygisk Next（约 1.3.x）且确实遇到 companion 高 CPU 时才建议尝试。
 
 - 做法：每个 ABI 只改 1 个字节（条件选择 `eq` → `le`），让 `read() <= 0` 走 close + 返回。
+- **版本门禁（严格）**：只对增强模块 **v29.0.1（versionCode 89）** 生效。先核对
+  `zygisk-storage-isolation/module.prop` 的 `version`/`versionCode`，再核对 4 个 ABI 的原始
+  `sha256`；任一不符就拒绝，**不修改任何文件**，并提示「仅支持 v29.0.1、该问题只存在于这一版」。
+  更早的 28.x 不读该 fd，本来就不需要这个修复。
 - 范围：只写 `/data/adb/modules/zygisk-storage-isolation/zygisk/*.so`；不动 `main.dex`、
   不改 SI 配置、不动 SI 的其它文件。
-- 白名单：4 个 ABI 的原始 `sha256` 全部内置，版本不符一律拒绝，不做任何修改。
 - 备份：首次应用写 `<abi>.so.sieof-orig`；没有备份时也能从补丁版反推原版。
 - 还原：面板「还原原版」，或 `sh scripts/si-patch.sh so restore`；
   文件被改成未知版本但备份有效时，用 `so restore --force` 从备份整份恢复。
 - **卸载本模块前先点「还原原版」**：`uninstall.sh` 只清理 `main.dex`，不会撤掉 `.so` 补丁。
 - 命令行：`sh scripts/si-patch.sh so check|apply|restore [--force]`。
+- 根因、版本窗口、4 ABI 偏移与验证记录见 [docs/companion-cpu.md](docs/companion-cpu.md)。
 
 ## 配置
 
