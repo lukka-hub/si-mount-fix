@@ -53,13 +53,17 @@ header{display:flex;align-items:flex-start;justify-content:space-between;gap:10p
 .pill.warn{background:var(--warn-bg);color:var(--warn)}
 .pill.bad{background:var(--bad-bg);color:var(--bad)}
 .pill.info{background:var(--info-bg);color:var(--info)}
+.pill.loading::before{
+  content:"";flex:none;width:10px;height:10px;border-radius:50%;
+  border:2px solid currentColor;border-right-color:transparent;animation:sp .7s linear infinite;
+}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
 .card.tone-warn{border-color:var(--warn)}
 .card.tone-good{border-color:var(--good)}
 .card.tone-bad{border-color:var(--bad)}
-.card.tone-warn .card-head h2,.card.tone-warn #patchBadge{color:var(--warn)}
-.card.tone-good .card-head h2,.card.tone-good #patchBadge{color:var(--good)}
-.card.tone-bad .card-head h2,.card.tone-bad #patchBadge{color:var(--bad)}
+.card.tone-warn .card-head h2{color:var(--warn)}
+.card.tone-good .card-head h2{color:var(--good)}
+.card.tone-bad .card-head h2{color:var(--bad)}
 .card.tone-good .hint{background:var(--good-bg);color:var(--good)}
 .card.tone-bad .hint{background:var(--bad-bg);color:var(--bad)}
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
@@ -99,7 +103,7 @@ header{display:flex;align-items:flex-start;justify-content:space-between;gap:10p
 .switch-row input:checked + i::after{transform:translateX(19px)}
 .switch-row input:disabled + i{opacity:.45}
 .switch-row input:focus-visible + i{outline:2px solid var(--accent);outline-offset:2px}
-button:focus-visible,input:focus-visible,summary:focus-visible,pre:focus-visible{
+button:focus-visible,input:focus-visible,summary:focus-visible,pre:focus-visible,a:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px;
 }
 .field-label{display:flex;align-items:center;gap:6px;font-size:12.5px;margin:12px 0 6px;color:var(--fg)}
@@ -137,23 +141,24 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .btn:active{transform:translateY(1px)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
 .btn.ghost{background:transparent}
-.btn.tiny{height:30px;font-size:12.5px;padding:0 10px;border-radius:8px}
+.btn.tiny{height:34px;font-size:12.5px;padding:0 11px;border-radius:8px}
 .btn.danger{color:var(--bad);border-color:var(--bad)}
 .btn.act-btn{height:44px;min-width:120px;padding:0 16px;font-size:13.5px;border-radius:11px;margin:0}
 .btn[disabled]{opacity:.42;cursor:default;transform:none}
+.btn[data-armed="1"]{border-color:var(--warn);color:var(--warn)}
 .btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .row-actions .act-btn{flex:1 1 120px}
-#patchCard .card-head{align-items:flex-start;flex-wrap:wrap;gap:6px 10px}
-#patchCard .card-head h2{flex:1 1 auto;min-width:0;line-height:1.35;overflow-wrap:anywhere}
-#patchBadge{flex:none;margin-left:auto;text-align:right;white-space:nowrap;line-height:1.6}
-#patchDetail{overflow-wrap:anywhere}
-#patchCaps{margin-top:10px;background:var(--line2);border-radius:10px;padding:10px 12px}
+#patchDetail{margin-top:12px;padding-top:9px;border-top:1px dashed var(--line);font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
+#patchCaps{margin:0 0 10px;background:var(--line2);border-radius:10px;padding:10px 12px}
 #patchCaps .patch-caps-title{font-size:12.5px;font-weight:600;color:var(--fg);margin-bottom:6px}
 #patchCaps ul{margin:0;padding-left:18px}
 #patchCaps li{font-size:12.5px;line-height:1.55;color:var(--muted);margin:4px 0;overflow-wrap:anywhere}
 #patchCaps li strong{color:var(--fg);font-weight:600}
-#patchActions{margin-top:14px}
+#patchActions{margin-top:12px}
 #patchTiming{display:block;margin-top:8px;line-height:1.4;overflow-wrap:anywhere}
+#patchConfirm{margin-top:0}
+.hint.info{background:var(--info-bg);color:var(--info)}
+.hint.neutral{background:var(--line2);color:var(--muted)}
 .result{margin-top:12px;background:var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px}
 .result.good{background:var(--good-bg);color:var(--good)}
 .result.warn{background:var(--warn-bg);color:var(--warn)}
@@ -175,16 +180,60 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 .st.miss{color:var(--bad);font-weight:600}
 .st.off{color:var(--muted)}
 pre{
-  margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-all;
+  margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;
   background:var(--line2);border-radius:10px;padding:10px;max-height:300px;overflow:auto;
 }
-details.card summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);list-style:none}
-details.card summary::-webkit-details-marker{display:none}
-details.card[open] summary{margin-bottom:8px}
+details.card.fold-card{padding:0}
+details.card.fold-card>.fold-summary{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  min-height:48px;padding:12px 14px;cursor:pointer;list-style:none;
+}
+details.card.fold-card>.fold-summary::-webkit-details-marker{display:none}
+details.card.fold-card>.fold-summary:focus-visible{outline-offset:-2px}
+details.card.fold-card[open]>.fold-summary{border-bottom:1px solid var(--line)}
+details.card.fold-card>.fold-body{padding:12px 14px 14px}
+.fold-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.fold-title{font-size:13.5px;font-weight:600;color:var(--fg);letter-spacing:.2px;white-space:nowrap}
+.fold-meta{font-size:12px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fold-side{display:inline-flex;align-items:center;gap:7px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
+.fold-view{font-size:12px;color:var(--muted)}
+details[open] .fold-view{display:none}
+.chev{
+  width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg) translateY(-1px);transition:transform .16s;margin-right:2px;
+}
+details[open] .chev{transform:rotate(225deg) translateY(-1px)}
+#patchCard .fold-summary .pill{font-size:11.5px;padding:3px 9px}
+#patchCard.tone-warn .fold-title{color:var(--warn)}
+#patchCard.tone-good .fold-title{color:var(--good)}
+#patchCard.tone-bad .fold-title{color:var(--bad)}
+.log-actions{display:flex;justify-content:flex-end;margin-bottom:8px}
+.metric.skeleton{background:var(--line2)}
+.metric.skeleton .value{color:transparent;background:var(--line);border-radius:6px;width:64%;animation:sk 1.4s ease-in-out infinite}
+@keyframes sk{0%,100%{opacity:.55}50%{opacity:1}}
+#toast{
+  position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));z-index:20;
+  max-width:calc(100vw - 32px);padding:8px 14px;border-radius:999px;
+  background:var(--fg);color:var(--bg);font-size:12.5px;line-height:1.45;text-align:center;
+  opacity:0;pointer-events:none;transform:translateX(-50%) translateY(8px);
+  transition:opacity .16s,transform .16s;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .empty{color:var(--muted);font-size:12.5px;padding:10px 0}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
 @keyframes sp{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+@media (prefers-reduced-motion:reduce){
+  .spin,.pill.loading::before,.metric.skeleton .value{animation:none}
+  #toast,.chev{transition:none}
+}
+@media (max-width:420px){
+  .btn.act-btn{min-width:0}
+}
+@media (max-width:359px){
+  body{padding-left:10px;padding-right:10px}
+  .btn-grid{grid-template-columns:1fr}
+  .t1{font-size:16px}
+}
 </style>
 </head>
 <body>
@@ -193,7 +242,7 @@ details.card[open] summary{margin-bottom:8px}
     <h1 class="t1">存储空间隔离 · 兼容与挂载</h1>
     <div class="t2"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></div>
   </div>
-  <span class="pill" id="statePill" role="status" aria-live="polite">读取中</span>
+  <span class="pill loading" id="statePill" role="status" aria-live="polite">读取中</span>
 </header>
 
 <div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
@@ -204,15 +253,63 @@ details.card[open] summary{margin-bottom:8px}
   <div class="kv" id="kv"></div>
 </section>
 
+<details class="card fold-card" id="patchCard" hidden>
+  <summary class="fold-summary">
+    <span class="fold-main">
+      <span class="fold-title">兼容性检测</span>
+      <span class="pill" id="patchBadge">检查中</span>
+    </span>
+    <span class="fold-side">
+      <span class="fold-view">查看</span>
+      <span class="chev" aria-hidden="true"></span>
+    </span>
+  </summary>
+  <div class="fold-body">
+    <div id="patchCaps" hidden>
+      <div class="patch-caps-title" id="patchCapsTitle"></div>
+      <ul id="patchCapsList" aria-labelledby="patchCapsTitle"></ul>
+    </div>
+    <div id="patchHint" class="hint" hidden></div>
+    <div class="btn-grid" id="patchActions" hidden>
+      <button class="btn primary act-btn" id="btnPatchApply" disabled>应用补丁</button>
+      <button class="btn ghost act-btn" id="btnPatchRestore" hidden disabled>恢复原版</button>
+      <button class="btn danger act-btn" id="btnPatchForce" hidden disabled>强制恢复</button>
+      <button class="btn ghost act-btn" id="btnPatchCheck" disabled>检查补丁</button>
+    </div>
+    <div class="muted small" id="patchTiming">—</div>
+    <div id="patchConfirm" class="result warn" role="alert" hidden>
+      <div class="r-title" id="patchConfirmTitle"></div>
+      <div class="r-body" id="patchConfirmBody"></div>
+      <div class="btn-grid">
+        <button class="btn primary act-btn" id="btnPatchConfirmGo" disabled>确认执行</button>
+        <button class="btn ghost act-btn" id="btnPatchConfirmCancel">取消</button>
+      </div>
+    </div>
+    <div id="patchResult" class="result" role="status" aria-live="polite" hidden></div>
+    <div id="patchDetail" class="muted small" hidden></div>
+  </div>
+</details>
+
 <section class="card">
+  <div class="card-head"><h2>操作</h2><span class="muted small" id="opStamp"></span></div>
+  <div class="btn-grid">
+    <button class="btn ghost act-btn" id="btnRefresh">刷新</button>
+    <button class="btn ghost act-btn" id="btnCheck" disabled>体检</button>
+    <button class="btn primary act-btn" id="btnFix" disabled>立即修复</button>
+    <button class="btn ghost act-btn" id="btnRestart" disabled>重启守护</button>
+  </div>
+  <div id="opResult" class="result" role="status" aria-live="polite" hidden></div>
+</section>
+
+<section class="card" id="cfgCard">
   <div class="card-head"><h2>配置</h2><span class="muted small">config.conf</span></div>
-  <div id="cfgHint" class="hint" hidden></div>
+  <div id="cfgHint" class="hint info" role="status" aria-live="polite" hidden></div>
   <label class="switch-row">
     <span>启用挂载自愈</span>
     <input type="checkbox" id="cfgEnabled" disabled><i></i>
   </label>
   <div class="field-label">模式偏好 <code>MODE</code></div>
-  <div class="seg" id="cfgMode">
+  <div class="seg" id="cfgMode" role="group" aria-label="模式偏好">
     <button type="button" data-mode="auto" disabled>自动</button>
     <button type="button" data-mode="event" disabled>事件</button>
     <button type="button" data-mode="poll" disabled>轮询</button>
@@ -240,58 +337,37 @@ details.card[open] summary{margin-bottom:8px}
 </section>
 
 <section class="card">
-  <div class="card-head"><h2>操作</h2><span class="muted small" id="opStamp"></span></div>
-  <div class="btn-grid">
-    <button class="btn ghost act-btn" id="btnRefresh">刷新</button>
-    <button class="btn ghost act-btn" id="btnCheck" disabled>体检</button>
-    <button class="btn primary act-btn" id="btnFix" disabled>立即修复</button>
-    <button class="btn ghost act-btn" id="btnRestart" disabled>重启守护</button>
-  </div>
-  <div id="opResult" class="result" role="status" aria-live="polite" hidden></div>
-</section>
-
-<section class="card" id="patchCard" hidden>
-  <div class="card-head"><h2>兼容性检测（main.dex）</h2><span class="muted small" id="patchBadge"></span></div>
-  <div id="patchHint" class="hint" hidden></div>
-  <div class="muted small" id="patchDetail">—</div>
-  <div id="patchCaps" hidden>
-    <div class="patch-caps-title" id="patchCapsTitle"></div>
-    <ul id="patchCapsList"></ul>
-  </div>
-  <div class="btn-grid" id="patchActions" hidden>
-    <button class="btn primary act-btn" id="btnPatchApply" disabled>应用补丁</button>
-    <button class="btn ghost act-btn" id="btnPatchRestore" hidden disabled>恢复原版</button>
-    <button class="btn danger act-btn" id="btnPatchForce" hidden disabled>强制恢复</button>
-    <button class="btn ghost act-btn" id="btnPatchCheck" disabled>检查补丁</button>
-  </div>
-  <div class="muted small" id="patchTiming">—</div>
-  <div id="patchConfirm" class="result warn" role="alert" hidden>
-    <div class="r-title" id="patchConfirmTitle"></div>
-    <div class="r-body" id="patchConfirmBody"></div>
-    <div class="btn-grid">
-      <button class="btn primary act-btn" id="btnPatchConfirmGo" disabled>确认执行</button>
-      <button class="btn ghost act-btn" id="btnPatchConfirmCancel">取消</button>
-    </div>
-  </div>
-  <div id="patchResult" class="result" role="status" aria-live="polite" hidden></div>
-</section>
-
-<section class="card">
   <div class="card-head"><h2>应用与可访问目录</h2><button class="btn tiny ghost" id="btnApps" disabled>读取</button></div>
-  <div class="muted small" id="appsSum">未读取</div>
+  <div class="muted small" id="appsSum" aria-live="polite">未读取</div>
   <div id="appsBody"></div>
 </section>
 
-<section class="card">
-  <div class="card-head"><h2>日志</h2><button class="btn tiny ghost" id="btnLog" disabled>重新加载</button></div>
-  <pre id="logBox" tabindex="0" aria-label="守护进程日志">（未加载）</pre>
-  <div class="muted small" id="logStamp"></div>
-</section>
-
-<details class="card">
-  <summary>诊断</summary>
-  <div class="kv" id="diag"></div>
+<details class="card fold-card" id="logCard">
+  <summary class="fold-summary">
+    <span class="fold-main">
+      <span class="fold-title">日志</span>
+      <span class="fold-meta" id="logStamp" aria-live="polite">展开后加载</span>
+    </span>
+    <span class="fold-side">
+      <span class="fold-view">查看</span>
+      <span class="chev" aria-hidden="true"></span>
+    </span>
+  </summary>
+  <div class="fold-body">
+    <div class="log-actions"><button class="btn tiny ghost" id="btnLog" disabled>加载日志</button></div>
+    <pre id="logBox" tabindex="0" aria-label="守护进程日志">展开后加载最近 40 行日志</pre>
+  </div>
 </details>
+
+<details class="card fold-card" id="diagCard">
+  <summary class="fold-summary">
+    <span class="fold-main"><span class="fold-title">诊断</span></span>
+    <span class="fold-side"><span class="fold-view">查看</span><span class="chev" aria-hidden="true"></span></span>
+  </summary>
+  <div class="fold-body"><div class="kv" id="diag"></div></div>
+</details>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 /* 只读快照：守护进程定期写入 webroot/snapshot.js，没有 WebUI 桥接时也能显示状态 */
@@ -333,6 +409,9 @@ details.card[open] summary{margin-bottom:8px}
   var BRIDGE_FAIL_LIMIT = 3;   /* 连续失败 N 次：桥接判定失效，回落只读快照 */
   var REPROBE_MS = 20000;      /* 只读模式下重新探测桥接的最小间隔 */
   var SNAPSHOT_STALE = 600;    /* 快照超过 10 分钟没更新，视为守护已停 */
+  var BOOT_MIN_MS = 1200;      /* 首屏乐观加载最短宽限：期间不显示任何“未连接” */
+  var BOOT_MAX_MS = 10000;     /* 探针仍在跑时最多等这么久，再回落只读 */
+  var STATUS_ERR_DELAY = 1200; /* 状态读取失败延迟上屏，避免抓取抖动一闪而过 */
 
   var MODE_CHIP = {
     event: { label: '事件驱动', tone: 'good' },
@@ -448,12 +527,40 @@ details.card[open] summary{margin-bottom:8px}
     if (sec < 86400) { return Math.floor(sec / 3600) + ' 小时 ' + Math.floor((sec % 3600) / 60) + ' 分'; }
     return Math.floor(sec / 86400) + ' 天 ' + Math.floor((sec % 86400) / 3600) + ' 小时';
   }
+  var bannerSig = '';
   function setBanner(html, tone) {
     var el = $('banner');
-    if (!html) { el.hidden = true; el.innerHTML = ''; return; }
-    el.className = 'banner ' + (tone || 'info');
-    el.innerHTML = html;
+    var next = html || '';
+    var nextTone = tone || 'info';
+    var sig = next ? (nextTone + '|' + next) : '';
+    /* 每 8 秒轮询都会重算 banner；内容没变就不重写 DOM，避免 aria-live 反复播报 */
+    if (sig === bannerSig && (next ? !el.hidden : el.hidden)) { return; }
+    bannerSig = sig;
+    if (!next) { el.hidden = true; el.innerHTML = ''; return; }
+    el.className = 'banner ' + nextTone;
+    el.innerHTML = next;
     el.hidden = false;
+  }
+
+  function booting() { return !state.boot.settled; }
+
+  function setPill(label, tone, loading) {
+    var pill = $('statePill');
+    if (!pill) { return; }
+    pill.textContent = label;
+    pill.className = 'pill' + (tone ? ' ' + tone : '') + (loading ? ' loading' : '');
+  }
+
+  function clearBootTimer() {
+    if (state.boot.timer) {
+      clearTimeout(state.boot.timer);
+      state.boot.timer = null;
+    }
+  }
+
+  function setCfgCardVisible(show) {
+    var el = $('cfgCard');
+    if (el) { el.hidden = !show; }
   }
 
   /* 多条提示合并成一个 banner：tone 取最严重的，正文一律 esc()。
@@ -462,6 +569,10 @@ details.card[open] summary{margin-bottom:8px}
   var TONE_RANK = { info: 0, warn: 1, bad: 2 };
   function setBannerItems(items) {
     items = (items || []).filter(Boolean);
+    /* 先按严重程度排序：bad → warn → info；同级别保持原顺序。 */
+    items = items.slice().sort(function (a, b) {
+      return (TONE_RANK[b.tone] || 0) - (TONE_RANK[a.tone] || 0);
+    });
     if (!items.length) { setBanner('', 'info'); return; }
     var tone = 'info';
     var html = [];
@@ -729,6 +840,11 @@ details.card[open] summary{margin-bottom:8px}
     config: null, configRaw: null, snapshot: null, snapshotTs: 0,
     uid: null, noRoot: false, statusExist: null, statusSize: null,
     apps: null, log: null, busy: false, locked: false, actionBusy: {},
+    boot: { startedAt: 0, settled: false, probeDone: false, timedOut: false, timer: null },
+    statusError: '', statusErrTimer: null, statusFailSeq: 0, statusRetryTimer: null,
+    statusPending: false, statusRetried: false,
+    logLoaded: false, logDirty: false, logLoading: false, logPromise: null,
+    snapshotLogPending: null,
     patch: null, patchError: '', patchSdk: null, patchDismissed: false,
     patchMarked: false, patchMarkedKey: '', patchConfirm: null, patchConfirmTimer: null,
     patchCache: null, patchCheckMs: 0, patchCheckTimedOut: false, patchCheckSource: ''
@@ -836,13 +952,22 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function renderStatus() {
+    var boot = booting();
     var s = state.status;
-    var alive = state.alive;
-    var chip = pillFor(s, alive);
+    /* 首屏乐观模式：即使快照里 PID 已死，也先按“读取中”显示，避免一开门就是红/黄 */
+    var alive = boot ? null : state.alive;
+    var chip;
+    if (boot) {
+      chip = { label: '读取中', tone: '', loading: true };
+    } else if (state.statusPending) {
+      chip = state.statusError
+        ? { label: '读取失败', tone: 'bad' }
+        : { label: '读取中', tone: '', loading: true };
+    } else {
+      chip = pillFor(s, alive);
+    }
 
-    var pill = $('statePill');
-    pill.textContent = chip.label;
-    pill.className = 'pill' + (chip.tone ? ' ' + chip.tone : '');
+    setPill(chip.label, chip.tone, chip.loading);
 
     var m = [];
     var since = s ? toInt(s.since, 0) : 0;
@@ -897,7 +1022,7 @@ details.card[open] summary{margin-bottom:8px}
     kv.push(row('版本', s && s.version ? 'v' + esc(s.version) : '—'));
     $('kv').innerHTML = kv.join('');
 
-    $('stamp').textContent = state.fetchedAt ? ('更新于 ' + clock(Math.floor(state.fetchedAt / 1000))) : '—';
+    $('stamp').textContent = boot ? '读取中…' : (state.fetchedAt ? ('更新于 ' + clock(Math.floor(state.fetchedAt / 1000))) : '—');
 
     if (s && s.version) { $('ver').textContent = 'v' + s.version; }
     else if (state.snapshot && state.snapshot.version) { $('ver').textContent = 'v' + state.snapshot.version; }
@@ -920,26 +1045,34 @@ details.card[open] summary{margin-bottom:8px}
   function bannerItemsForState() {
     var s = state.status;
     var items = [];
+    /* 状态读取错误延迟出现；桥接还在时只作为一条可恢复提示，不抢占首屏 */
+    if (!booting() && BR.ok && state.mode !== 'snapshot' && state.statusError) {
+      items.push({ tone: 'bad', title: '状态读取失败',
+        body: state.statusError + '。页面会继续重试；已有数据保留为上次读取。' });
+    }
     if (state.noRoot) {
       items.push({ tone: 'bad', title: '没有 root 权限',
-        body: '当前上下文读不到 ' + D + ' 下的状态与配置。请从 Magisk 模块页的「操作」按钮或 KsuWebUI 打开本面板。' });
+        body: '当前上下文读不到 ' + D + ' 下的状态与配置。页面没有 root 权限，无法读取或执行。' });
       if (!s) { return items; }
     }
     if (state.mode === 'snapshot') {
       var age = state.snapshotTs ? (nowSec() - state.snapshotTs) : -1;
       if (isDisabledStatus(s)) {
         items.push({ tone: 'info', title: '守护已停用',
-          body: '配置里 ENABLED=0，守护不会修复挂载，这是预期状态。' });
+          body: '配置里 ENABLED=0，守护不会修复挂载，这是预期状态。当前没有 WebUI 桥接，配置只读。',
+          action: 'retry-bridge', actionLabel: '重试连接' });
       } else if (!state.alive) {
         items.push({ tone: 'warn', title: '快照很久没更新',
           body: '最近一次状态是 ' + (age >= 0 ? rel(state.snapshotTs) : '未知') + '，守护进程可能没在运行。' +
-            '到 Magisk 模块页点「操作」可以看当前状态。' });
+            '当前没有 WebUI 桥接。',
+          action: 'retry-bridge', actionLabel: '重试连接' });
       } else {
         items.push({ tone: 'info', title: '只读快照',
           body: '这是守护进程写入的静态状态（' + (age >= 0 ? rel(state.snapshotTs) : '未知') + '）。' +
-            '装 KsuWebUI Standalone 后打开本页即可修改配置、执行体检/修复。' });
+            '当前没有 WebUI 桥接，配置只读；可以查看状态，不能修改配置或执行操作。',
+          action: 'retry-bridge', actionLabel: '重试连接' });
       }
-    } else if (!s) {
+    } else if (!s && !state.statusError) {
       if (state.statusExist === false) {
         items.push({ tone: 'warn', title: '状态文件不存在',
           body: '还没生成 status.json：守护可能没启动过，或被停用。重启手机后会自动生成。' });
@@ -953,7 +1086,7 @@ details.card[open] summary{margin-bottom:8px}
     } else if (isDisabledStatus(s)) {
       items.push({ tone: 'info', title: '守护已停用',
         body: '配置里 ENABLED=0，守护不会修复挂载，这是预期状态。在「配置」里启用并保存即可恢复。' });
-    } else if (state.alive === false) {
+    } else if (state.alive === false && !state.statusError) {
       items.push({ tone: 'warn', title: '守护进程没在运行',
         body: '下面是上一次写下的状态；点「重启守护」可以重新拉起，或重启手机。' });
     }
@@ -1016,23 +1149,19 @@ details.card[open] summary{margin-bottom:8px}
         ] });
     } else if (patchPromptable()) {
       items.push({ tone: 'warn', title: '兼容性检测：main.dex 未注入',
-        body: '当前 dex 未注入，可应用 A15/A16/A17 通用 main.dex（按系统能力探测）。' +
-          '只替换 zygisk-storage-isolation 的 main.dex，确认后才会执行；应用后重启手机生效。' +
-          '之后仍可在下方「兼容性检测（main.dex）」里手动应用。',
+        body: '可应用 A15/A16/A17 通用 main.dex；仅替换 zygisk-storage-isolation 的 main.dex，' +
+          '应用后重启手机生效。也可稍后在「兼容性检测」卡片中操作。',
         actions: [
           { action: 'patch-apply', label: '应用补丁' },
           { action: 'patch-dismiss', label: '暂不' }
         ] });
     }
-    if (state.mode === 'snapshot' && !BR.ok) {
-      items.push({ tone: 'warn', title: '没有可用的 WebUI 桥接',
-        body: (BR.note || '桥接没有响应') + '。页面处于只读快照，配置只读。',
-        action: 'retry-bridge', actionLabel: '重试连接' });
-    }
     return items;
   }
 
   function renderStateBanner() {
+    /* 首屏宽限期内一律不显示错误/只读提示，先让乐观占位稳定呈现 */
+    if (booting()) { setBanner('', 'info'); return; }
     /* 不在渲染时写提示标记：只有用户点「暂不」或动作成功后才写，
        这样失败/超时不会让下次打开误以为已经提示过。 */
     setBannerItems(bannerItemsForState());
@@ -1046,10 +1175,96 @@ details.card[open] summary{margin-bottom:8px}
     return '<div class="row"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
   }
 
+  function renderBootSkeleton() {
+    var labels = ['运行时长', '守护进程', '本次修复', '累计修复', '隔离进程', '最后事件'];
+    var m = labels.map(function (label) {
+      return '<div class="metric skeleton"><div class="label">' + esc(label) +
+        '</div><div class="value">—</div></div>';
+    });
+    $('metrics').innerHTML = m.join('');
+    $('kv').innerHTML = row('状态', '<span class="spin"></span> 正在读取守护状态');
+    $('stamp').textContent = '读取中…';
+  }
+
   var statusLoading = false;
   var lastReprobe = 0;
 
+  function clearStatusError() {
+    state.statusFailSeq += 1;
+    state.statusError = '';
+    state.statusPending = false;
+    state.statusRetried = false;
+    if (state.statusErrTimer) { clearTimeout(state.statusErrTimer); state.statusErrTimer = null; }
+    if (state.statusRetryTimer) { clearTimeout(state.statusRetryTimer); state.statusRetryTimer = null; }
+  }
+
+  /* 单次读取失败先静默重试一次；仍失败才在 1.2 秒后把错误放进 banner。
+     这样桥接刚就绪/页面刚恢复时的瞬时抖动不会闪一条红条。 */
+  function noteStatusFailure(err) {
+    var seq = ++state.statusFailSeq;
+    var msg = String(err && err.message ? err.message : err);
+    state.statusPending = true;
+    if (state.statusErrTimer) { clearTimeout(state.statusErrTimer); }
+    state.statusErrTimer = setTimeout(function () {
+      state.statusErrTimer = null;
+      if (seq !== state.statusFailSeq || !BR.ok || booting()) { return; }
+      state.statusError = msg;
+      renderStatus();
+    }, STATUS_ERR_DELAY);
+    if (!state.statusRetried) {
+      state.statusRetried = true;
+      if (state.statusRetryTimer) { clearTimeout(state.statusRetryTimer); }
+      state.statusRetryTimer = setTimeout(function () {
+        state.statusRetryTimer = null;
+        if (seq === state.statusFailSeq && BR.ok && !statusLoading) { refreshStatus(); }
+      }, 700);
+    }
+  }
+
+  function refreshStatus() {
+    if (!BR.ok) { return Promise.resolve(false); }
+    if (statusLoading) { return Promise.resolve(false); }
+    statusLoading = true;
+    return run(STATUS_CMD).then(function (res) {
+      BR.fails = 0;
+      var p = parseStatusOutput(res.stdout);
+      state.uid = p.uid;
+      state.statusExist = p.exist;
+      state.statusSize = p.size;
+      /* 没有 root 时读不到 /data/adb：明确告诉用户，不要误报"文件为空/守护没运行" */
+      if (p.uid !== null && p.uid !== 0) {
+        applyPermissionLock('当前不是 root（uid ' + p.uid + '），配置只读。');
+        return false;
+      }
+      clearStatusError();
+      state.noRoot = false;
+      state.status = p.obj;
+      state.alive = p.alive;
+      state.fetchedAt = Date.now();
+      state.mode = 'live';
+      state.boot.settled = true;
+      renderStatus();
+      return true;
+    }).catch(function (err) {
+      /* 连续失败：桥接可能已经失效，回落到快照模式，并在后台重新探测 */
+      if (BR.ok) { noteBridgeFailure(); }
+      if (BR.ok) {
+        /* 保留上一次数据，别因为一次读取失败把整页清空；错误延迟上屏 */
+        noteStatusFailure(err);
+      } else {
+        clearStatusError();
+      }
+      return false;
+    }).then(function (r) {
+      statusLoading = false;
+      return r;
+    });
+  }
   function applyPermissionLock(msg) {
+    state.boot.settled = true;
+    state.boot.probeDone = true;
+    clearBootTimer();
+    clearStatusError();
     state.noRoot = true;
     state.patchCache = null;
     clearPatchConfirmState();
@@ -1065,47 +1280,9 @@ details.card[open] summary{margin-bottom:8px}
     }
     renderPatch();
     renderStatus();
-    lockConfig(msg || '没有 root 权限，配置只读。');
+    lockConfig(msg || '没有 root 权限，配置只读。', 'warn');
+    setCfgCardVisible(false);
     lockActions();
-  }
-
-  function refreshStatus() {
-    if (!BR.ok) { return Promise.resolve(false); }
-    if (statusLoading) { return Promise.resolve(false); }
-    statusLoading = true;
-    return run(STATUS_CMD).then(function (res) {
-      BR.fails = 0;
-      var p = parseStatusOutput(res.stdout);
-      state.uid = p.uid;
-      state.statusExist = p.exist;
-      state.statusSize = p.size;
-      /* 没有 root 时读不到 /data/adb：明确告诉用户，不要误报"文件为空/守护没运行" */
-      if (p.uid !== null && p.uid !== 0) {
-        applyPermissionLock('当前不是 root（uid ' + p.uid + '），配置只读。请从 Magisk / KsuWebUI 打开本面板。');
-        return false;
-      }
-      state.noRoot = false;
-      state.status = p.obj;
-      state.alive = p.alive;
-      state.fetchedAt = Date.now();
-      state.mode = 'live';
-      renderStatus();
-      return true;
-    }).catch(function (err) {
-      /* 连续失败：桥接可能已经失效，回落到快照模式，并在后台重新探测 */
-      if (BR.ok) { noteBridgeFailure(); }
-      if (BR.ok) {
-        state.status = null;
-        state.alive = null;
-        state.fetchedAt = Date.now();
-        renderStatus();
-        setBanner('<div class="b-title">状态读取失败</div>' + esc(err.message || err), 'bad');
-      }
-      return false;
-    }).then(function (r) {
-      statusLoading = false;
-      return r;
-    });
   }
 
   function noteBridgeFailure() {
@@ -1121,7 +1298,9 @@ details.card[open] summary{margin-bottom:8px}
     if (!candidates().length) { return; }
     if (Date.now() - lastReprobe < REPROBE_MS) { return; }
     lastReprobe = Date.now();
-    probeBridge().then(function (ok) { if (ok) { restoreLive(); } });
+    probeBridge().then(function (ok) {
+      if (ok) { restoreLive().then(function () { toast('已重新连接桥接'); }); }
+    });
   }
 
   function retryBridge() {
@@ -1137,14 +1316,22 @@ details.card[open] summary{margin-bottom:8px}
 
   function restoreLive() {
     BR.fails = 0;
+    state.boot.settled = true;
+    state.boot.probeDone = true;
+    clearBootTimer();
+    clearStatusError();
     state.noRoot = false;
+    state.mode = 'live';
+    state.snapshotLogPending = null;
+    state.logLoaded = false;
+    setCfgCardVisible(true);
     unlockAll();
-    $('bridgeName').textContent = BR.note;
+    $('bridgeName').textContent = BR.note || 'WebUI 桥接';
     setBanner('', 'info');
     return refreshStatus().then(function () {
       return state.noRoot ? false : loadConfig();
     }).then(function () {
-      return state.noRoot ? false : loadLog();
+      return state.noRoot ? false : refreshLogIfOpen();
     }).then(function () {
       /* 即使没有 root 也先读 SDK：不支持的 Android 版本直接隐藏卡片；支持的版本再显示权限错误。 */
       return loadPatch();
@@ -1248,11 +1435,6 @@ details.card[open] summary{margin-bottom:8px}
     var sdk = p ? String(p.sdk || '') : '';
     var name = p && p.sdkName ? p.sdkName : sdkName(sdk);
     return name + '（SDK ' + (sdk || '?') + '）';
-  }
-
-  function patchCapsText(p) {
-    if (p && p.caps) { return p.caps; }
-    return capabilityText(p ? p.sdk : '');
   }
 
   function hidePatchCard() {
@@ -1585,6 +1767,8 @@ details.card[open] summary{margin-bottom:8px}
         renderStateBanner();
       }
     }, 10000);
+    /* 用户主动点动作时展开卡片（不是状态渲染自动展开），确认框/结果才看得见 */
+    if ($('patchCard')) { $('patchCard').open = true; }
     renderPatch();
     renderStateBanner();
   }
@@ -1611,7 +1795,8 @@ details.card[open] summary{margin-bottom:8px}
     var box = $('patchCaps');
     if (!box) { return; }
     var sdk = p && p.sdk ? String(p.sdk) : '';
-    if (err || !isSupportedSdk(sdk)) {
+    var st = p ? String(p.state || '') : '';
+    if (err || !isSupportedSdk(sdk) || st === 'no-target' || st === 'unsupported' || st === 'unknown') {
       box.hidden = true;
       return;
     }
@@ -1622,7 +1807,8 @@ details.card[open] summary{margin-bottom:8px}
     }
     var title = $('patchCapsTitle');
     if (title) {
-      title.textContent = sdkName(sdk) + '（SDK ' + sdk + '）可恢复的能力';
+      title.textContent = sdkName(sdk) + '（SDK ' + sdk + '）' +
+        (p && p.state === 'patched' ? '已恢复的能力' : '可恢复的能力');
     }
     var ul = $('patchCapsList');
     if (ul) {
@@ -1656,7 +1842,7 @@ details.card[open] summary{margin-bottom:8px}
     card.hidden = false;
     /* 未注入/未知/旧版/不可用：黄色；已注入：绿色；读取失败：红色。 */
     var tone = err ? 'bad' : (st === 'patched' ? 'good' : 'warn');
-    card.className = 'card tone-' + tone;
+    card.className = 'card fold-card tone-' + tone;
 
     var applyBtn = $('btnPatchApply');
     var restoreBtn = $('btnPatchRestore');
@@ -1665,11 +1851,14 @@ details.card[open] summary{margin-bottom:8px}
     var hint = $('patchHint');
     var bits = [];
     var badge = '';
+    var badgeTone = tone;
     var mod = p ? (p.targetModule || 'zygisk-storage-isolation') : 'zygisk-storage-isolation';
     var file = p ? (p.targetFile || 'main.dex') : 'main.dex';
+    var capsShown = !err && p && isSupportedSdk(p.sdk);
 
     if (err) {
       badge = '读取失败';
+      badgeTone = 'bad';
       hint.textContent = err;
       hint.hidden = false;
       if (p) {
@@ -1681,30 +1870,33 @@ details.card[open] summary{margin-bottom:8px}
       bits.push(p.size ? (p.size + ' B') : '大小未知');
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       if (p.lastAction === 'restored') {
-        badge = '已恢复';
-        hint.textContent = '已恢复原版，重启生效（Zygisk 模块在开机时加载）。';
+        badge = '已恢复原版';
+        hint.textContent = '已恢复原版，重启手机生效（Zygisk 模块在开机时加载）。';
       } else if (p.match) {
-        badge = '未注入';
-        hint.textContent = '兼容性检测：当前 dex 未注入。可应用 A15/A16/A17 通用 main.dex，' +
-          '按系统能力探测；只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
+        badge = '当前 dex 未注入';
+        hint.textContent = '当前 dex 未注入，可应用通用 main.dex；' +
+          '只替换 ' + mod + ' 的 ' + file + '，确认后才会执行；应用后重启手机生效。';
       } else {
         badge = '版本不匹配';
-        hint.textContent = '兼容性检测：当前 dex 未注入，但 ' + mod + ' 版本不在支持范围，未做任何修改。' +
+        hint.textContent = '当前 dex 未注入，但 ' + mod + ' 版本不在支持范围，未做任何修改。' +
           '仅适用于 ' + (p.targetVersion || '未知版本') + '（' + file + '）。';
       }
       hint.hidden = false;
     } else if (st === 'patched') {
       bits.push(mod + ' ' + (p.si || '版本未知'));
-      bits.push(p.match ? '已注入，可恢复原版' : '版本/哈希不在支持范围');
+      bits.push(p.size ? (p.size + ' B') : '大小未知');
+      bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
       if (p.match) {
-        badge = '已注入';
+        badge = '当前 dex 已注入';
+        badgeTone = 'good';
         var rebootHint = patchPendingHint(p);
-        hint.textContent = '兼容性检测：当前 dex 已注入。' + (rebootHint ? rebootHint : '');
+        hint.textContent = '当前 dex 已注入。' + (rebootHint ? rebootHint : '');
         hint.hidden = false;
       } else {
-        badge = '版本不匹配';
-        hint.textContent = '兼容性检测：dex 已注入，但当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
+        badge = '已注入 · 版本不匹配';
+        badgeTone = 'good';
+        hint.textContent = 'dex 已注入，但当前 ' + mod + ' 版本不在支持范围，未做任何修改。' +
           '版本不匹配时不允许恢复或强制恢复。';
         hint.hidden = false;
       }
@@ -1712,44 +1904,47 @@ details.card[open] summary{margin-bottom:8px}
       bits.push(mod + ' ' + (p.si || '版本未知'));
       bits.push('旧版注入' + (p.size ? ' · ' + p.size + ' B' : ''));
       bits.push(p.backupOk ? '有可用的原版备份' : '缺少原版备份');
-      badge = '旧版注入';
-      hint.textContent = '兼容性检测：检测到旧版注入，可升级到 A15/A16/A17 通用 main.dex，' +
-        '或恢复原版。' +
+      badge = '旧版已注入';
+      hint.textContent = '检测到旧版注入，可升级到通用 main.dex，或恢复原版。' +
         (p.backupOk ? '' : ' 缺少原版备份，无法直接恢复。') +
         (p.match ? '' : ' 当前模块版本不匹配，暂不能升级或恢复。');
       hint.hidden = false;
     } else if (st === 'no-target') {
-      badge = '未检测到';
+      badge = '未装兼容插件';
       bits.push(mod);
-      hint.textContent = '兼容性检测：未检测到 ' + mod + ' 的 ' + file + '。' +
-        '请先安装/启用该 Zygisk 模块；当前不会修改任何文件。';
+      hint.textContent = '未检测到 ' + mod + ' 的 ' + file + '。' +
+        '安装/启用该 Zygisk 兼容模块后再来检测；当前不会修改任何文件。';
       hint.hidden = false;
     } else if (st === 'unsupported') {
       badge = '不适用';
-      hint.textContent = '兼容性检测：当前 Android SDK ' + (p.sdk || '?') + ' 不在支持范围，' +
+      hint.textContent = '当前 Android SDK ' + (p.sdk || '?') + ' 不在支持范围，' +
         '仅支持 Android 15/16/17（SDK 35/36/37）；未做任何修改。';
       hint.hidden = false;
     } else {
       badge = '未知版本';
       bits.push(mod + ' ' + (p.si || '版本未知'));
+      bits.push(p.size ? (p.size + ' B') : '大小未知');
       bits.push('sha256 ' + (p.sha ? p.sha.slice(0, 12) + '…' : '读取失败'));
       bits.push(p.backupOk ? '有可用的原版备份' : '没有可用的原版备份');
-      hint.textContent = '兼容性检测：当前 dex 是未知版本，未做任何修改。' +
+      hint.textContent = '当前 dex 是未知版本，未做任何修改。' +
         (!p.match ? '模块版本不匹配时不允许强制恢复。' :
           (p.backupOk ? '检测到有效原版备份，可强制恢复。' : '也没有可用的原版备份。'));
       hint.hidden = false;
     }
-    if (!err) {
-      bits.unshift(patchSdkText(p));
-      bits.push('能力：' + patchCapsText(p));
-    }
     if (actionBusy('patchCheck')) {
       badge = '检查中';
+      badgeTone = 'info';
       hint.textContent = '正在检测兼容性，请稍候…';
       hint.hidden = false;
     }
+    /* 能力清单标题已带 SDK；“检测详情”只留模块/大小/哈希，避免和 CAPS 摘要重复 */
+    if (!err && p) {
+      if (!capsShown) { bits.unshift(patchSdkText(p)); }
+    }
     $('patchBadge').textContent = badge;
-    $('patchDetail').textContent = bits.length ? bits.join(' · ') : '—';
+    $('patchBadge').className = 'pill' + (badgeTone ? ' ' + badgeTone : '');
+    $('patchDetail').textContent = bits.length ? ('检测详情：' + bits.join(' · ')) : '';
+    $('patchDetail').hidden = !bits.length;
     renderPatchCaps(p, err);
 
     var canAct = !err && BR.ok && !state.noRoot && !state.locked &&
@@ -1919,6 +2114,7 @@ details.card[open] summary{margin-bottom:8px}
       ? (fromLegacy ? '正在升级到通用版…' : '正在应用补丁…')
       : '正在恢复原版…';
     showPatchResult(progressTitle, '后台执行中，页面可以继续操作', '');
+    toast(progressTitle);
     runBg('sh ' + P.patch + ' ' + cmd, {
       timeoutMs: PATCH_ACTION_TIMEOUT,
       onProgress: function (ms) {
@@ -1930,11 +2126,13 @@ details.card[open] summary{margin-bottom:8px}
       if (res.timedOut && res.rc === null) {
         var tu = patchActionVerdict(action, '', false, null, true);
         showPatchResult(tu.title, tu.body, tu.tone);
+        toast(tu.title);
         return;
       }
       if (res.spawnError) {
         var su = patchActionVerdict(action, '启动失败：' + res.spawnError, false, null, true);
         showPatchResult(su.title, su.body, su.tone);
+        toast(su.title);
         return;
       }
       var text = String(res.out || '');
@@ -1942,6 +2140,7 @@ details.card[open] summary{margin-bottom:8px}
       if (v.tone !== 'good') {
         if (v.tone === 'info') { actionOk = true; }
         showPatchResult(v.title, v.body, v.tone);
+        toast(v.title);
         return;
       }
       return verifyPatchTarget(action).then(function (ok) {
@@ -1949,6 +2148,7 @@ details.card[open] summary{margin-bottom:8px}
           showPatchResult('结果未知，请刷新检查',
             (text ? text + '\n' : '') +
             '动作命令已返回，但读取 main.dex 新状态失败；请点「检查补丁」确认。', 'warn');
+          toast('结果未知，请刷新检查');
           return;
         }
         var expected = isApply ? 'patched' : 'original';
@@ -1957,6 +2157,7 @@ details.card[open] summary{margin-bottom:8px}
           showPatchResult(isApply ? '补丁应用失败' : '恢复失败',
             (text ? text + '\n' : '') + '复核发现 main.dex 当前为 ' +
             state.patch.state + '，不是预期的 ' + expected + '。', 'bad');
+          toast(isApply ? '补丁应用失败' : '恢复失败');
           return;
         }
         applyPatchState(action, fromLegacy);
@@ -1970,12 +2171,14 @@ details.card[open] summary{margin-bottom:8px}
         var okTitle = (isApply && fromLegacy)
           ? '已升级到通用版，重启手机生效' : v.title;
         showPatchResult(okTitle, body, v.tone);
+        toast(okTitle);
       });
     }).catch(function (err) {
       /* 动作可能已经执行：异常时按“结果未知”处理，不要直接判失败或成功。 */
       var eu = patchActionVerdict(action, '补丁操作异常：' +
         String(err && err.message ? err.message : err), false, null, true);
       showPatchResult(eu.title, eu.body, eu.tone);
+      toast(eu.title);
     }).then(function () {
       endAction(key);
       if (actionOk && state.patch) {
@@ -1995,33 +2198,52 @@ details.card[open] summary{margin-bottom:8px}
   /* ============================================================
      只读快照（无桥接）
      ============================================================ */
-  function snapshotMode() {
+  function snapshotMode(opts) {
+    opts = opts || {};
+    var optimistic = !!opts.optimistic;
     var snap = window.__SI_SNAPSHOT__;
-    state.mode = 'snapshot';
+    state.mode = optimistic ? 'boot' : 'snapshot';
+    state.statusPending = false;
+    if (!optimistic) { clearStatusError(); }
     clearPatchConfirmState();
-    if (state.patch) {
+    if (state.patch && !optimistic) {
       state.patchError = '未连接 WebUI 桥接，补丁操作不可用；以下是上次读取的状态。';
-    } else {
+    } else if (!optimistic) {
       state.patchError = '';
     }
-    renderPatch();
+    if (!optimistic) { renderPatch(); }
     if (!snap || !snap.status) {
       state.snapshot = null; state.snapshotTs = 0;
       state.status = null; state.alive = null; state.fetchedAt = 0;
       state.config = null; state.configRaw = null;
-      $('statePill').textContent = '未连接';
-      $('statePill').className = 'pill';
-      $('bridgeName').textContent = '无 WebUI 桥接';
+      state.snapshotLogPending = null;
+      if (optimistic) {
+        $('bridgeName').textContent = '正在连接 WebUI 桥接…';
+        setPill('读取中', '', true);
+        renderBootSkeleton();
+        return;
+      }
+      setPill('未连接', '', false);
+      $('bridgeName').textContent = opts.timedOut ? '连接超时，仍在后台重试…' : '无 WebUI 桥接';
+      $('stamp').textContent = '—';
+      $('logStamp').textContent = '未连接';
+      $('logBox').textContent = '展开后加载最近 40 行日志';
+      $('btnLog').textContent = '加载日志';
       $('metrics').innerHTML = metric('运行时长', '—', '') + metric('守护进程', '—', '') +
         metric('本次修复', '—', '') + metric('累计修复', '—', '') +
         metric('隔离进程', '—', '') + metric('最后事件', '—', '');
-      $('kv').innerHTML = row('提示', '请从模块「操作」按钮或 KsuWebUI 打开本页');
-      setBannerItems([{ tone: 'warn', title: '只读模式',
-        body: '这里没有可用的 WebUI 桥接，也还没生成状态快照。Magisk 里点模块的「操作」按钮可以直接看到守护状态；装了 KsuWebUI 后可在其中打开本面板。',
+      $('kv').innerHTML = '';
+      setBannerItems([{ tone: 'warn',
+        title: opts.timedOut ? '仍在连接 WebUI 桥接' : '只读模式',
+        body: opts.timedOut
+          ? '首屏没有在 10 秒内连上桥接，页面先回落只读；后台仍会继续重试，连上后会自动恢复实时状态。'
+          : '这里没有可用的 WebUI 桥接，也还没生成状态快照。',
         action: 'retry-bridge', actionLabel: '重试连接' }]);
-      lockConfig('未连接桥接，配置只读。');
+      lockConfig('未连接桥接，配置只读。', 'warn');
+      setCfgCardVisible(false);
       lockActions();
       renderDiag();
+      if ($('logCard') && $('logCard').open) { ensureLogLoaded(true); }
       return;
     }
     state.snapshot = snap;
@@ -2031,18 +2253,35 @@ details.card[open] summary{margin-bottom:8px}
     /* 快照超过 10 分钟没更新，基本可以判定守护没在跑 */
     state.alive = age >= 0 && age <= SNAPSHOT_STALE;
     state.fetchedAt = state.snapshotTs * 1000;
+    if (optimistic) {
+      /* 乐观模式：先把快照里的状态/配置画出来，但 pill 保持“读取中”，不弹只读警告 */
+      $('bridgeName').textContent = '正在连接 WebUI 桥接…';
+      setCfgCardVisible(true);
+      renderStatus();
+      showReadOnlyConfig(snap.config);
+      lockConfig('正在探测 WebUI 桥接…', 'info');
+      return;
+    }
     $('bridgeName').textContent = '只读快照';
+    setCfgCardVisible(true);
+    state.snapshotLogPending = (snap.log && snap.log.length) ? snap.log : null;
+    state.logLoaded = false;
+    state.logDirty = false;
+    state.logLoading = false;
+    $('logStamp').textContent = state.snapshotLogPending ? '快照日志 · 展开查看' : '快照里没有日志';
+    $('logBox').textContent = state.snapshotLogPending ? '展开后加载快照日志' : '快照里没有日志';
+    $('btnLog').textContent = '加载日志';
     renderStatus();
-    lockConfig('只读快照：修改配置需要 WebUI 桥接。');
+    lockConfig('只读快照：修改配置需要 WebUI 桥接。', 'info');
     showReadOnlyConfig(snap.config);
     lockActions();
-    if (snap.log && snap.log.length) { renderLog(snap.log, true); }
-    else { $('logBox').textContent = '（快照里没有日志）'; }
+    if ($('logCard') && $('logCard').open) { ensureLogLoaded(true); }
   }
 
   /* 快照里的配置是只读展示（契约：snapshot.config = {enabled,mode,interval,min_age}） */
   function showReadOnlyConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') {
+      $('cfgHint').className = 'hint info';
       $('cfgHint').textContent = '只读快照里没有配置信息（守护版本可能较旧），配置只读。';
       $('cfgHint').hidden = false;
       return;
@@ -2067,9 +2306,11 @@ details.card[open] summary{margin-bottom:8px}
     $('cfgActions').hidden = true;
   }
 
-  function lockConfig(msg) {
-    $('cfgHint').textContent = msg;
-    $('cfgHint').hidden = false;
+  function lockConfig(msg, tone) {
+    var hint = $('cfgHint');
+    hint.className = 'hint ' + (tone || 'warn');
+    hint.textContent = msg;
+    hint.hidden = false;
     $('cfgEnabled').disabled = true;
     var segs = $('cfgMode').getElementsByTagName('button');
     for (var i = 0; i < segs.length; i++) { segs[i].disabled = true; }
@@ -2154,6 +2395,7 @@ details.card[open] summary{margin-bottom:8px}
   }
 
   function applyConfig(cfg) {
+    setCfgCardVisible(true);
     form.enabled = cfgEnabled(cfg.ENABLED);
     form.mode = (cfg.MODE === 'event' || cfg.MODE === 'poll') ? cfg.MODE : 'auto';
     form.interval = Math.min(600, Math.max(10, toInt(cfg.POLL_INTERVAL, 60)));
@@ -2567,7 +2809,8 @@ details.card[open] summary{margin-bottom:8px}
   function loadApps() {
     var btn = $('btnApps');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spin"></span>';
+    btn.setAttribute('aria-busy', 'true');
+    btn.innerHTML = '<span class="spin" aria-hidden="true"></span> 读取中';
     $('appsSum').textContent = '读取中…';
     return run('sh ' + P.list).then(function (res) {
       var raw = String(res.stdout || '').trim();
@@ -2589,6 +2832,7 @@ details.card[open] summary{margin-bottom:8px}
       $('appsBody').innerHTML = '';
     }).then(function () {
       btn.disabled = false;
+      btn.removeAttribute('aria-busy');
       btn.textContent = '重新读取';
     });
   }
@@ -2596,31 +2840,103 @@ details.card[open] summary{margin-bottom:8px}
   /* ============================================================
      日志
      ============================================================ */
+  function setLogMessage(text, stamp) {
+    if ($('logBox')) { $('logBox').textContent = text; }
+    if (stamp) { $('logStamp').textContent = stamp; }
+  }
+
   function renderLog(lines, fromSnapshot) {
     var box = $('logBox');
     var arr = Array.isArray(lines) ? lines : String(lines || '').split('\n');
     arr = arr.filter(function (l) { return String(l).length > 0; });
     box.textContent = arr.length ? arr.join('\n') : '（日志为空）';
     box.scrollTop = box.scrollHeight;
-    $('logStamp').textContent = arr.length
-      ? (arr.length + ' 行 · ' + (fromSnapshot ? '快照' : '已更新'))
+    var stamp = arr.length
+      ? (arr.length + ' 行 · ' + (fromSnapshot ? '快照' : clock(nowSec())))
       : (fromSnapshot ? '快照里没有日志' : '日志为空');
+    $('logStamp').textContent = stamp;
+    $('btnLog').textContent = '重新加载';
+    $('btnLog').disabled = !BR.ok || state.noRoot;
+    state.logLoaded = true;
+    state.logDirty = false;
   }
 
   function loadLog() {
-    if (!BR.ok) { return Promise.resolve(false); }
-    if (state.noRoot) { return Promise.resolve(false); }
+    if (!BR.ok) {
+      setLogMessage('未连接桥接，无法加载日志', '未连接');
+      return Promise.resolve(false);
+    }
+    if (state.noRoot) {
+      setLogMessage('没有 root 权限，无法读取日志', '只读');
+      return Promise.resolve(false);
+    }
+    if (state.logLoading) { return state.logPromise || Promise.resolve(false); }
     var btn = $('btnLog');
+    state.logLoading = true;
     btn.disabled = true;
-    return run('tail -n 40 ' + P.log).then(function (res) {
+    btn.setAttribute('aria-busy', 'true');
+    btn.innerHTML = '<span class="spin" aria-hidden="true"></span> 加载中';
+    $('logStamp').textContent = '加载中…';
+    state.logPromise = run('tail -n 40 ' + P.log).then(function (res) {
       renderLog(res.stdout, false);
-      $('logStamp').textContent = '最近 40 行 · ' + clock(nowSec());
       return true;
     }).catch(function (err) {
-      $('logBox').textContent = '日志读取失败：' + (err.message || err);
-      $('logStamp').textContent = '读取失败';
+      var msg = '日志读取失败：' + (err && err.message ? err.message : String(err));
+      setLogMessage(msg, '读取失败');
+      state.logLoaded = false;
       return false;
-    }).then(function () { btn.disabled = false; });
+    }).then(function (ok) {
+      state.logLoading = false;
+      state.logPromise = null;
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      btn.textContent = ok ? '重新加载' : '重试加载';
+      return ok;
+    });
+    return state.logPromise;
+  }
+
+  /* 日志默认折叠：只在用户展开时加载；页面刷新/轮询只标脏，不拉 tail */
+  function ensureLogLoaded(force) {
+    if (state.mode === 'snapshot' || !BR.ok) {
+      if (state.mode === 'snapshot' && state.snapshotLogPending) {
+        renderLog(state.snapshotLogPending, true);
+        state.snapshotLogPending = null;
+        return Promise.resolve(true);
+      }
+      if (state.mode === 'snapshot') {
+        setLogMessage(state.snapshot ? '快照里没有日志' : '未连接桥接，无法加载日志',
+          state.snapshot ? '快照里没有日志' : '未连接');
+      } else {
+        setLogMessage('未连接桥接，无法加载日志', '未连接');
+      }
+      return Promise.resolve(false);
+    }
+    if (booting()) {
+      setLogMessage('正在连接 WebUI 桥接…', '连接后加载');
+      return Promise.resolve(false);
+    }
+    if (state.noRoot) {
+      setLogMessage('没有 root 权限，无法读取日志', '只读');
+      return Promise.resolve(false);
+    }
+    if (state.logLoading) { return state.logPromise || Promise.resolve(false); }
+    if (!force && state.logLoaded && !state.logDirty) { return Promise.resolve(true); }
+    return loadLog();
+  }
+
+  /* 实时模式下如果日志卡开着就刷新；关着只标脏，避免首屏/每次刷新都拉日志 */
+  function refreshLogIfOpen() {
+    if ($('logCard') && $('logCard').open) {
+      return ensureLogLoaded(true);
+    }
+    if (!state.logLoaded) {
+      $('logStamp').textContent = '展开后加载';
+    } else {
+      $('logStamp').textContent = '有更新 · 展开后加载';
+    }
+    state.logDirty = true;
+    return Promise.resolve(false);
   }
 
   /* ============================================================
@@ -2633,7 +2949,7 @@ details.card[open] summary{margin-bottom:8px}
     d.push(row('最近耗时', esc(BR.latency ? (BR.latency + ' ms') : '—')));
     d.push(row('权限', esc(state.uid === null || state.uid === undefined ? '未知' :
       (state.uid === 0 ? 'root' : 'uid ' + state.uid))));
-    d.push(row('模式', esc(state.mode === 'snapshot' ? '只读快照' : '实时')));
+    d.push(row('模式', esc(booting() ? '连接中' : (state.mode === 'snapshot' ? '只读快照' : '实时'))));
     if (!BR.ok && BR.fails) {
       d.push(row('桥接失败', esc(BR.fails + ' 次（连续 ' + BRIDGE_FAIL_LIMIT + ' 次回落只读）')));
     }
@@ -2655,13 +2971,18 @@ details.card[open] summary{margin-bottom:8px}
      ============================================================ */
   var toastTimer = null;
   function toast(msg) {
-    if (state.mode === 'snapshot' || !BR.ok) { return; }   /* 只读模式别盖掉常驻提示 */
-    setBanner(esc(msg), 'info');
+    var el = $('toast');
+    if (!el) {
+      /* 兼容旧页面结构：没有独立 toast 时退回 banner */
+      setBanner(esc(msg), 'info');
+      if (toastTimer) { clearTimeout(toastTimer); }
+      toastTimer = setTimeout(function () { setBanner('', 'info'); }, 3200);
+      return;
+    }
+    el.textContent = String(msg == null ? '' : msg);
+    el.classList.add('show');
     if (toastTimer) { clearTimeout(toastTimer); }
-    toastTimer = setTimeout(function () {
-      if (state.mode === 'snapshot' || !BR.ok) { return; }
-      $('banner').hidden = true;
-    }, 3200);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 3200);
   }
 
   function boot() {
@@ -2683,7 +3004,7 @@ details.card[open] summary{margin-bottom:8px}
       var dirty = refreshDirty();
       refreshStatus().then(function () {
         return dirty ? true : loadConfig();
-      }).then(loadLog).then(function () { return loadPatch(false); }).then(function () {
+      }).then(refreshLogIfOpen).then(function () { return loadPatch(false); }).then(function () {
         toast('已刷新');
         done();
       }, done);
@@ -2714,7 +3035,14 @@ details.card[open] summary{margin-bottom:8px}
       }, 4000);
     });
     $('btnApps').addEventListener('click', loadApps);
-    $('btnLog').addEventListener('click', loadLog);
+    $('btnLog').addEventListener('click', function () { ensureLogLoaded(true); });
+    /* 日志默认折叠：展开时才拉取；关闭时不发命令 */
+    var logCard = $('logCard');
+    if (logCard) {
+      logCard.addEventListener('toggle', function () {
+        if (logCard.open) { ensureLogLoaded(true); }
+      });
+    }
     $('cfgSave').addEventListener('click', saveConfig);
     $('cfgDiscard').addEventListener('click', function () {
       if (state.config) { applyConfig(state.config); }
@@ -2763,18 +3091,60 @@ details.card[open] summary{margin-bottom:8px}
       });
     }
 
-    /* 先用手上的快照把界面填上，再去探测桥接（避免冷启动时白屏 7 秒） */
-    lockConfig('正在探测 WebUI 桥接…');
+    /* 首屏乐观模式：先画快照/骨架 + “读取中”，不在探针返回前显示任何错误。
+       探针成功立即进入实时；失败则等最短宽限（1200ms）再显示只读；探针仍在跑时最多等 10s。 */
+    state.boot.startedAt = Date.now();
+    state.boot.settled = false;
+    state.boot.probeDone = false;
+    state.boot.timedOut = false;
+    state.boot.timer = setTimeout(function () {
+      if (state.boot.settled) { return; }
+      state.boot.timedOut = true;
+      state.boot.settled = true;
+      $('bridgeName').textContent = '连接超时，仍在后台重试…';
+      snapshotMode({ timedOut: true });
+    }, BOOT_MAX_MS);
+
+    lockConfig('正在探测 WebUI 桥接…', 'info');
     lockActions();
-    if (window.__SI_SNAPSHOT__) { snapshotMode(); }
+    setPill('读取中', '', true);
+    snapshotMode({ optimistic: true });
 
     probeBridge().then(function (ok) {
-      if (!ok) {
-        $('bridgeName').textContent = BR.note || '无桥接';
-        snapshotMode();
+      state.boot.probeDone = true;
+      if (ok) {
+        state.boot.settled = true;
+        clearBootTimer();
+        restoreLive();
         return;
       }
-      restoreLive();
+      var wait = Math.max(0, BOOT_MIN_MS - (Date.now() - state.boot.startedAt));
+      setTimeout(function () {
+        if (state.boot.settled) {
+          $('bridgeName').textContent = BR.note || '无 WebUI 桥接';
+          /* 10s 超时后探针才失败：把“仍在重试”改成最终只读提示，只更新这一次 */
+          if (state.boot.timedOut) {
+            state.boot.timedOut = false;
+            snapshotMode();
+          }
+          return;
+        }
+        state.boot.settled = true;
+        clearBootTimer();
+        $('bridgeName').textContent = BR.note || '无 WebUI 桥接';
+        snapshotMode();
+      }, wait);
+    }, function (err) {
+      state.boot.probeDone = true;
+      BR.note = '桥接探测失败：' + (err && err.message ? err.message : err);
+      var wait = Math.max(0, BOOT_MIN_MS - (Date.now() - state.boot.startedAt));
+      setTimeout(function () {
+        if (state.boot.settled) { return; }
+        state.boot.settled = true;
+        clearBootTimer();
+        $('bridgeName').textContent = BR.note;
+        snapshotMode();
+      }, wait);
     });
 
     /* 轮询：只在页面可见时读状态；桥接失效时改做重新探测 */
