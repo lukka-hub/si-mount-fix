@@ -41,13 +41,14 @@ body{
 h1,h2{margin:0;font-weight:600}
 header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin:2px 2px 14px}
 .t1{font-size:17px;font-weight:600;letter-spacing:.2px}
-.t2{font-size:12px;color:var(--muted);margin-top:2px}
+.t2{font-size:12px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.t2-text{white-space:nowrap}
 .t2 .sep{margin:0 5px;opacity:.5}
+/* 版本行里的小号状态 pill：跟 12px 文案同高，读起来是一条 */
+.t2 .pill{padding:2px 8px;font-size:11px;font-weight:600;letter-spacing:0}
+.t2 .pill.loading::before{width:8px;height:8px;border-width:1.5px}
 .title-row{min-width:0}
-/* 状态 pill 挪到标题后面；窄屏下长状态词自然折到第二行 */
 .head-main{flex:1;min-width:0}
-.title-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.title-line .pill{flex:none}
 .pill{
   flex:none;display:inline-flex;align-items:center;gap:5px;
   padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;
@@ -157,6 +158,8 @@ code{font-family:var(--mono);font-size:11px;background:var(--line2);color:var(--
 /* 窄屏紧凑：按钮缩成「实验」+ 标题略微收小，保证标题与状态同一行 */
 @media (max-width:400px){
   .t1{font-size:16px}
+}
+@media (max-width:359px){
   .btn.exp-trigger{font-size:11px;padding:0 8px}
   .exp-full{display:none}
   .exp-mini{display:inline}
@@ -263,11 +266,11 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
 <body>
 <header>
   <div class="head-main">
-    <div class="title-line">
-      <h1 class="t1">存储空间隔离 · 兼容与挂载</h1>
+    <h1 class="t1">存储空间隔离 · 兼容与挂载</h1>
+    <div class="t2">
+      <span class="t2-text"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></span>
       <span class="pill loading" id="statePill" role="status" aria-live="polite">读取中</span>
     </div>
-    <div class="t2"><span id="ver">v—</span><span class="sep">·</span><span id="bridgeName">桥接检测中…</span></div>
   </div>
   <button type="button" class="btn exp-trigger" id="btnExp" aria-expanded="false" aria-label="实验性功能"
     aria-controls="expCard" title="实验性功能（灰度，默认不启用）"><span class="exp-full">实验性功能</span><span class="exp-mini">实验</span></button>
