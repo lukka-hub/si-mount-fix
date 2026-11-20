@@ -1,11 +1,11 @@
 # Storage Isolation 兼容与挂载
 
-为 **Storage Isolation / 存储空间隔离**（`moe.shizuku.redirectstorage`）提供两项**并列**能力，互不依赖，也没有先后顺序：
+为 **Storage Isolation / 存储空间隔离**（`moe.shizuku.redirectstorage`）提供两项能力：
 
 - **兼容性检测**：一份 `main.dex` 通配 Android 15/16/17（向下兼容）；运行时按系统能力探测，不按 SDK 拆资产。用户确认后替换 `zygisk-storage-isolation/main.dex`，重启手机后生效。
 - **挂载自愈**：补回 SI 增强模式丢失的共享目录挂载；事件驱动、轮询兜底、失败回滚。
 
-两项可以一起使用。支持 Android 13~17，**Magisk / KernelSU**；不修改 SI 的
+支持 Android 13~17，**Magisk / KernelSU**；不修改 SI 的
 `configuration.json`，不联网，不收集数据。
 
 ## 问题与根因
@@ -117,8 +117,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 
 - 仓库：[lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 当前版本：v2.0.1 / versionCode 2010；版本只有一个来源：`module.prop` 的 `version=v2.0.1`
-  与 `versionCode=2010`。
+- 当前版本：v2.0.2 / versionCode 2020；版本只有一个来源：`module.prop` 的 `version=v2.0.2`
+  与 `versionCode=2020`。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
