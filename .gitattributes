@@ -1,0 +1,11 @@
+# Android 上 /system/bin/sh 按 LF 解析脚本，CRLF 会直接语法错误。
+# 之前 Windows 工作区因 core.autocrlf 产出过 CRLF 的发布包，这里统一强制 LF。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
+*.apk binary
+*.dex binary
+*.so binary
+*.jar binary
