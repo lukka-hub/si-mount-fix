@@ -7,8 +7,9 @@
 - 修正 `size==9` 启动诊断日志方向：只有反射不完整（size!=9）才告警。
 - 保留 `q0.b` 的 fail-closed update placement 过度拦截，不在本版放开（安全侧偏严，见 README 已知限制）。
 - 识别并升级旧兼容补丁：v2.1 通用版 `92,856 / 2f3ca326…`、中间版 `99,804 / f7ffc4b5…` 显示 `patched-legacy`，可备份后升级到 v2.2 dex。
+- 新增 [main-dex-capabilities.md](docs/main-dex-capabilities.md)，列明读写拦截、保留能力和未覆盖项。
+- 新增最小探针 [probe/DCIMGrid.apk](probe/DCIMGrid.apk)（源码与说明在 `probe/`）。
 - 「恢复原版」仍恢复到官方 `90,740 / a407674b…`；升级前旧 dex 备份为 `main.dex.legacy.*`，原版备份保留。
-- 本版基于 v2.1，不含 L3 文件监视功能；挂载自愈逻辑不变。
 
 ---
 

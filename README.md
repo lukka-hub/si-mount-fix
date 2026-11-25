@@ -140,6 +140,10 @@ Android 17 的 `IPackageManager.getInstalledPackages` 返回类型从 `ParceledL
 `ServiceManager.getService2`、MediaProvider 导出规则、`applyBatch`、DownloadProvider 等路径在
 原 dex 里没有被覆盖（见 [根因分析](docs/root-cause.md)）。
 
+**能力说明**：新的 `main.dex` 具体拒绝哪些读写、保留哪些存储能力，见
+[main-dex-capabilities.md](docs/main-dex-capabilities.md)；最小验证探针见
+[probe/README.md](probe/README.md)（`probe/DCIMGrid.apk`）。
+
 **为什么只补 main.dex**：SI 的 `daemon-v355` 每次启动（含开机）都会把内嵌原版写回自己的
 server dex，补 server dex 每次开机都会被还原。`main.dex` 是持久的那一半：替换
 `/data/adb/modules/zygisk-storage-isolation/main.dex` 后重启手机，server dex 虽被还原成
