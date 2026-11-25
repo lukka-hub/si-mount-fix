@@ -18,8 +18,8 @@ REPO_URL=https://github.com/lukka-hub/si-mount-fix
 UPDATE_JSON_URL=$REPO_URL/raw/main/update.json
 # 兼容性检测 dex：只替换 zygisk-storage-isolation 的 main.dex，重启手机后由 Zygisk 模块加载。
 PATCH_ASSET=assets/main.dex
-PATCH_SHA=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
-PATCH_SIZE_EXPECT=92856
+PATCH_SHA=5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51
+PATCH_SIZE_EXPECT=99840
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }

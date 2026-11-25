@@ -1,5 +1,17 @@
 # 更新日志
 
+## v2.2.0（versionCode 2200）
+
+- 兼容性 `main.dex` 更新为 `99,840 B / 5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51`，仍是一份 dex 通配 Android 15/16/17。
+- 修复 L1 provider open guard：`i<=0` 前置拒绝、`_data` 列判断、`/mnt/user` 归一化、URI 段数边界；`wt/rwt` 模式在 open 前拒绝，避免先截断后被 fd 复检拒绝。
+- 修正 `size==9` 启动诊断日志方向：只有反射不完整（size!=9）才告警。
+- 保留 `q0.b` 的 fail-closed update placement 过度拦截，不在本版放开（安全侧偏严，见 README 已知限制）。
+- 识别并升级旧兼容补丁：v2.1 通用版 `92,856 / 2f3ca326…`、中间版 `99,804 / f7ffc4b5…` 显示 `patched-legacy`，可备份后升级到 v2.2 dex。
+- 「恢复原版」仍恢复到官方 `90,740 / a407674b…`；升级前旧 dex 备份为 `main.dex.legacy.*`，原版备份保留。
+- 本版基于 v2.1，不含 L3 文件监视功能；挂载自愈逻辑不变。
+
+---
+
 ## v2.1.0（versionCode 2100）
 
 - 新增「实验性功能」入口（右上角，默认关闭）：尝试解决 `zn-zygisk-companion` 偶发高 CPU。

@@ -86,7 +86,7 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 - 状态：`status.json`（含四类沙箱状态）、模块列表描述、WebUI 面板、模块「操作」按钮文本报告。
 - 日志：`daemon.log`，超过 256 KB 轮转为 `daemon.log.1`；`.repairs` 每轮最多 200 行，启动/裁剪时清理 1 小时前的记录。
 - WebUI：状态、配置、体检、立即修复、重启守护、应用与可访问目录比对、最近 40 行日志、桥接诊断。
-- 兼容性检测：A15/A16/A17 使用同一份 `main.dex`（92,856 B / `2f3ca326…`），运行时按系统能力探测，
+- 兼容性检测：A15/A16/A17 使用同一份 `main.dex`（99,840 B / `65d51f6f…`），运行时按系统能力探测，
   用户确认后替换 `zygisk-storage-isolation` 的 `main.dex`；自动备份、校验并支持恢复，不动 SI 配置。
 - 无桥接时仍可看：守护进程写 `webroot/snapshot.js`，任何 WebView 打开面板都能显示只读快照。
 - 不联网，不写 `configuration.json`，不修改 SI 的隔离记录；卸载时清理守护、kprobe、trace 实例和数据目录
@@ -108,17 +108,16 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 守护进程要重启后才换成新代码。重启前，面板/「操作」按钮读到的仍是重启前的状态，
 版本号却已经是新模块的——这属于正常现象。
 
-**补丁状态**：兼容性检测只处理 `zygisk-storage-isolation/main.dex`。如果检测到 88,336 B /
-`5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891` 的 `main.dex`，
-卡片显示为 `patched-legacy`；点「升级到通用版」时先备份为 `main.dex.legacy.<时间戳>`，再安装
+**补丁状态**：兼容性检测只处理 `zygisk-storage-isolation/main.dex`。如果检测到旧版 `main.dex`（88,336 B / `5413a01b…`、v2.1 92,856 B / `2f3ca326…`、
+中间版 99,804 B / `f7ffc4b5…`），卡片显示为 `patched-legacy`；点「升级到通用版」时先备份为 `main.dex.legacy.<时间戳>`，再安装
 通用 dex，已有原版备份保留。升级后重新 `check`，按卡片状态操作。
 
 ### 版本与更新检查
 
 - 仓库：[lukka-hub/si-mount-fix](https://github.com/lukka-hub/si-mount-fix)，
   `update.json` 与 Release 资产都以这里为准。
-- 当前版本：v2.1.0 / versionCode 2100；版本只有一个来源：`module.prop` 的 `version=v2.1.0`
-  与 `versionCode=2100`。
+- 当前版本：v2.2.0 / versionCode 2200；版本只有一个来源：`module.prop` 的 `version=v2.2.0`
+  与 `versionCode=2200`。
 - `updateJson` 指向仓库 `main` 分支的 `update.json`（Magisk 要求绝对 URL，相对路径拉不到）。
 - `update.json` 按 Magisk 更新格式写：`version` / `versionCode` / `zipUrl` / `changelog`；
   `zipUrl` 指向对应 tag 的 GitHub Release 资产，发版时自动更新。`changelog` 指向
@@ -131,8 +130,8 @@ SI 的增强模式会为每个被隔离应用准备各自的 mount namespace，�
 ## 兼容性检测（main.dex）
 
 **适用**：Android 15/16/17（SDK 35/36/37）+ Zygisk 模块 **zygisk-storage-isolation v29.0.1**
-（versionCode 89，`main.dex`）。兼容性检测使用一份 `main.dex`（92,856 B / sha256
-`2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22`）通配 Android 15/16/17，
+（versionCode 89，`main.dex`）。兼容性检测使用一份 `main.dex`（99,840 B / sha256
+`5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51`）通配 Android 15/16/17，
 向下兼容；运行时按系统能力探测，不按 SDK 拆资产。其它模块版本不要使用。
 
 **现象**：SI 的应用列表为空，或隔离应用的导出规则、批量写入、Download 下载不生效。根因是
@@ -150,7 +149,7 @@ server dex，补 server dex 每次开机都会被还原。`main.dex` 是持久�
 
 | 颜色 | 状态 | 含义 |
 |---|---|---|
-| 黄 | 未注入/无法确认 | `original` 可应用；`patched-legacy`（88,336 B 旧补丁格式）可升级/恢复；`unknown` 可强制恢复（有有效原版备份且版本匹配时）；`no-target`/`unsupported` 显示原因，检查可用、动作按钮隐藏；模块版本不匹配时动作置灰 |
+| 黄 | 未注入/无法确认 | `original` 可应用；`patched-legacy`（v1.5.8 88,336 B / v2.1 92,856 B / 中间版 99,804 B）可升级/恢复；`unknown` 可强制恢复（有有效原版备份且版本匹配时）；`no-target`/`unsupported` 显示原因，检查可用、动作按钮隐藏；模块版本不匹配时动作置灰 |
 | 绿 | 已注入 | `patched`：通用 dex 已写入；重启手机后生效；版本匹配且有原版备份时可恢复；模块版本不匹配时仍为绿色（表示已注入），但动作置灰 |
 | 红 | 错误 | 检查/读取失败或 apply/restore 失败；保留当前文件 |
 
@@ -201,10 +200,10 @@ server dex，补 server dex 每次开机都会被还原。`main.dex` 是持久�
 
 - 原版 `main.dex`：90,740 B，sha256
   `a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9`
-- 通用 `main.dex`：92,856 B，sha256
-  `2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22`
-- 旧版注入 `main.dex`：88,336 B，sha256
-  `5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891`
+- 通用 `main.dex`：99,840 B，sha256
+  `5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51`
+- 旧版注入 `main.dex`：88,336 B / `5413a01b…`；v2.1 92,856 B / `2f3ca326…`；
+  中间版 99,804 B / `f7ffc4b5…`
 
 `check` 按 sha256 + 大小判断：`original`（可应用）、`patched`（已注入通用版）、
 `patched-legacy`（旧版注入，`LEGACY=1`）、`unknown`（未知版本，拒绝操作）、

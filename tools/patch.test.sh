@@ -42,9 +42,9 @@ sha_of() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 size_of() { wc -c < "$1" 2>/dev/null | tr -d '[:space:]'; }
 
 ASSET_SHA=$(sha_of "$ASSET_REAL")
-PATCH_SHA_EXPECT=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+PATCH_SHA_EXPECT=5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51
 ORIGINAL_SHA_EXPECT=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-PATCH_SIZE_EXPECT=92856
+PATCH_SIZE_EXPECT=99840
 ORIGINAL_SIZE_EXPECT=90740
 LEGACY_SHA_EXPECT=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 LEGACY_SIZE_EXPECT=88336
@@ -53,7 +53,7 @@ LEGACY_SIZE_EXPECT=88336
 [ -f "$ASSET_REAL" ] && ok "兼容性检测资产存在" || bad "兼容性检测资产不存在：$ASSET_REAL"
 [ "$ASSET_SHA" = "$PATCH_SHA_EXPECT" ] && ok "兼容性检测资产 sha256 正确" \
   || bad "兼容性检测资产 sha256 不对：$ASSET_SHA"
-[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "兼容性检测资产大小 92856 B" \
+[ "$(size_of "$ASSET_REAL")" = "$PATCH_SIZE_EXPECT" ] && ok "兼容性检测资产大小 99840 B" \
   || bad "兼容性检测资产大小不对：$(size_of "$ASSET_REAL")"
 extra_asset=0
 for _f in assets/*; do
@@ -73,8 +73,8 @@ grep -q "^LEGACY_PATCH_SHA=$LEGACY_SHA_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁 sha" || bad "脚本 LEGACY_PATCH_SHA 不对"
 grep -q "^LEGACY_PATCH_SIZE=$LEGACY_SIZE_EXPECT$" "$PATCH" \
   && ok "脚本识别 1.5.8 旧补丁大小" || bad "脚本 LEGACY_PATCH_SIZE 不对"
-grep -q '^version=v2.1.0$' module.prop && grep -q '^versionCode=2100$' module.prop \
-  && ok "module.prop 版本 v2.1.0 / 2100" || bad "module.prop 版本不对"
+grep -q '^version=v2.2.0$' module.prop && grep -q '^versionCode=2200$' module.prop \
+  && ok "module.prop 版本 v2.2.0 / 2200" || bad "module.prop 版本不对"
 grep -q '^siPatchModule=zygisk-storage-isolation$' module.prop \
   && ok "module.prop 提供 siPatchModule" || bad "module.prop 缺少 siPatchModule"
 grep -q '^siPatchTarget=main.dex$' module.prop \
@@ -83,10 +83,10 @@ grep -q '^siPatchVersion=v29.0.1$' module.prop && grep -q '^siPatchVersionCode=8
   && ok "module.prop 提供模块版本 v29.0.1/89" || bad "module.prop 缺少模块版本字段"
 ! grep -q '^siPatchServer=' module.prop && ok "module.prop 去掉 siPatchServer" \
   || bad "module.prop 仍有 siPatchServer"
-grep -q '"version": "v2.1.0"' update.json && grep -q '"versionCode": 2100' update.json \
-  && ok "update.json 指向 v2.1.0/2100" || bad "update.json 版本不对"
-grep -q 'releases/download/v2.1/si-mount-fix.zip' update.json \
-  && ok "update.json 指向 v2.1.0 release tag" || bad "update.json zipUrl 不对"
+grep -q '"version": "v2.2.0"' update.json && grep -q '"versionCode": 2200' update.json \
+  && ok "update.json 指向 v2.2.0/2200" || bad "update.json 版本不对"
+grep -q 'releases/download/v2.2/si-mount-fix.zip' update.json \
+  && ok "update.json 指向 v2.2.0 release tag" || bad "update.json zipUrl 不对"
 grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json changelog 指向 main" || bad "update.json changelog 不对"
 
@@ -1344,14 +1344,14 @@ grep -q '版本不匹配时不能用原版备份覆盖' scripts/si-patch.sh \
   && ok "U2：CLI restore 版本门禁" || bad "U2 CLI 没有版本门禁"
 grep -q 'assets/main.dex' tools/build.sh && ok "构建脚本包含 main.dex 资产" \
   || bad "构建脚本没有 main.dex 资产"
-grep -q 'PATCH_SHA=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' tools/build.sh && ok "构建脚本校验通用 dex 完整 sha" \
+grep -q 'PATCH_SHA=5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51' tools/build.sh && ok "构建脚本校验通用 dex 完整 sha" \
   || bad "构建脚本没有校验通用 dex sha"
-grep -q 'PATCH_SIZE_EXPECT=92856' tools/build.sh && grep -q 'PATCH_SIZE" = "$PATCH_SIZE_EXPECT' tools/build.sh \
-  && ok "构建脚本校验通用 dex 大小（92856）" \
+grep -q 'PATCH_SIZE_EXPECT=99840' tools/build.sh && grep -q 'PATCH_SIZE" = "$PATCH_SIZE_EXPECT' tools/build.sh \
+  && ok "构建脚本校验通用 dex 大小（99840）" \
   || bad "构建脚本没有校验通用 dex 大小"
 grep -q 'siPatchModule' tools/build.sh && grep -q 'siPatchTarget' tools/build.sh \
   && ok "构建脚本校验适用模块/目标字段" || bad "构建脚本没有校验适用字段"
-grep -q 'releases/download/v2.1' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
+grep -q 'releases/download/v2.2' update.json && grep -q 'raw/main/CHANGELOG.md' update.json \
   && ok "update.json zipUrl/changelog 指向 v2.1.0 + main" || bad "update.json 发布链不对"
 grep -q 'V_TAG=v$V_MAJOR.$V_MINOR' tools/build.sh \
   && grep -q 'V_TAG=$V_PROP' tools/build.sh \
@@ -1367,10 +1367,10 @@ grep -q 'raw/main/CHANGELOG.md' update.json && ok "update.json 指向 CHANGELOG"
   || bad "update.json 没指向 CHANGELOG"
 grep -q 'CHANGELOG.md' tools/build.sh && ok "构建脚本打包 CHANGELOG" \
   || bad "构建脚本没有打包 CHANGELOG"
-grep -q '92,856' README.md && grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' README.md \
-  && grep -q 'v2.1.0' README.md && grep -q 'versionCode 2100' README.md \
-  && ok "README 写通用 dex 大小/完整哈希及 v2.1.0/2100" || bad "README 哈希/大小/版本不对"
-grep -q '2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22' CHANGELOG.md \
+grep -q '99,840' README.md && grep -q '5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51' README.md \
+  && grep -q 'v2.2.0' README.md && grep -q 'versionCode 2200' README.md \
+  && ok "README 写通用 dex 大小/完整哈希及 v2.2.0/2200" || bad "README 哈希/大小/版本不对"
+grep -q '5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51' CHANGELOG.md \
   && ok "CHANGELOG 写完整通用 dex 哈希" || bad "CHANGELOG 哈希不对"
 grep -q '5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891' README.md CHANGELOG.md \
   && ok "README/CHANGELOG 写完整旧补丁哈希" || bad "README/CHANGELOG 缺少旧补丁哈希"

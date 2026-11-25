@@ -1973,7 +1973,7 @@ details[open] .chev{transform:rotate(225deg) translateY(-1px)}
       bits.push('旧版注入' + (p.size ? ' · ' + p.size + ' B' : ''));
       bits.push(p.backupOk ? '有可用的原版备份' : '缺少原版备份');
       badge = '旧版已注入';
-      hint.textContent = '检测到旧版注入，可升级到通用 main.dex，或恢复原版。' +
+      hint.textContent = '检测到旧版注入，有新的兼容性补丁可更新；可升级到 v2.2 main.dex，或恢复原版。' +
         (p.backupOk ? '' : ' 缺少原版备份，无法直接恢复。') +
         (p.match ? '' : ' 当前模块版本不匹配，暂不能升级或恢复。');
       hint.hidden = false;

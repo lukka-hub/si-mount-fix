@@ -303,7 +303,7 @@ key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT
 - **已验证（模拟器/构建）**：115 个类；baksmali→assemble 往返 byte-identical；
   禁止直接引用 `PackageInfoList`/`android.os.Service`/`ServiceWithMetadata` 的扫描为 0；
   A15/A17 模拟器 `dex2oat` 0 个 verification error、115/115 类加载，harness 58/58；
-  构建可复现 92,856 B / `2f3ca326…`。
+  构建可复现 99,840 B / `65d51f6f…`。
 - **未验证**：A16、A15 QPR1/QPR2 无真镜像，相关 Service union 只有 AOSP 静态核对 +
   harness 桩；通用 dex 没有真机 E2E，真实 `IPackageManager`/PMS、真实
   MediaProvider/DownloadProvider、`applyBatch` 的真实 `onTransact`、`q0.b` 跨 uid
@@ -331,7 +331,7 @@ key 含 FUSE 设备号、boot 和 namespace，任一变化立即失效，`RESULT
 
 ```sh
 sha256sum assets/main.dex
-# 2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+# 5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51
 java -cp "<smali 依赖>" org.jf.baksmali.Main disassemble -o /tmp/si-main assets/main.dex
 dexdump -d assets/main.dex | grep -n -E 'a1;|u0;|q0;|r;|v;|x3;'
 ```

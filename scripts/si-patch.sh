@@ -4,7 +4,8 @@
 # 只替换 zygisk-storage-isolation 模块的 main.dex：
 #   /data/adb/modules/zygisk-storage-isolation/main.dex
 #   原版 90,740 B / sha256 a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
-#   通用 92,856 B / sha256 2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+#   通用 99,840 B / sha256 5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51
+#   历史 v2.1 92,856 B / 2f3ca326...；中间版 99,804 B / f7ffc4b5...
 #   旧版 88,336 B / sha256 5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 # 通用 main.dex 自包含、不联网，按系统能力探测；A15/A16/A17 使用同一 dex。
 # main.dex 由 Zygisk 模块在开机时加载，替换后跨重启保持；只写文件，不重启 SI server。
@@ -35,8 +36,13 @@ export LC_ALL
 
 ORIGINAL_SHA=a407674bba778267bac3d50bbdf528fa72fc219f46ef0463ad91bc58a56e82b9
 ORIGINAL_SIZE=90740
-PATCH_SHA=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
-PATCH_SIZE=92856
+PATCH_SHA=5e342a662f9e553ee7ce4dd666cac3de46b2cb08f86d25d0f768e7df7e8d4b51
+PATCH_SIZE=99840
+# 历史兼容补丁：上一通用版、中间版。可识别、可升级。
+PREV_PATCH_SHA_21=2f3ca3263225d2577ab132e16dcc7273a61a80feea232b2f32e0100f6b3c8a22
+PREV_PATCH_SIZE_21=92856
+PREV_PATCH_SHA_MID=f7ffc4b53386a48ab48f8356569d27d88c8b41022389e180eb4a1e789fbf8258
+PREV_PATCH_SIZE_MID=99804
 # 旧版自建补丁：可识别、可升级到通用版、可在有原版备份时恢复。
 LEGACY_PATCH_SHA=5413a01b6c49f360f3851af60be8820fcb8a4595d0c15697fcebac88b6d73891
 LEGACY_PATCH_SIZE=88336
@@ -302,6 +308,16 @@ collect_state() {
   elif [ "$SHA" = "$LEGACY_PATCH_SHA" ] && [ "$SIZE" = "$LEGACY_PATCH_SIZE" ]; then
     STATE=patched-legacy
     LEGACY=1
+  elif [ "$SHA" = "$PREV_PATCH_SHA_21" ] && [ "$SIZE" = "$PREV_PATCH_SIZE_21" ]; then
+    STATE=patched-legacy
+    LEGACY=1
+    LEGACY_PATCH_SHA=$SHA
+    LEGACY_PATCH_SIZE=$SIZE
+  elif [ "$SHA" = "$PREV_PATCH_SHA_MID" ] && [ "$SIZE" = "$PREV_PATCH_SIZE_MID" ]; then
+    STATE=patched-legacy
+    LEGACY=1
+    LEGACY_PATCH_SHA=$SHA
+    LEGACY_PATCH_SIZE=$SIZE
   else
     STATE=unknown
   fi
